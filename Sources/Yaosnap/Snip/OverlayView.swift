@@ -178,16 +178,13 @@ final class OverlayView: NSView {
                 selectModeMouseDown(at: point, event: event)
                 return
             }
-            // 选区内按下：按当前工具起一笔 draft，单击不落形状（点序列除外，单击即圆点）
-            guard let canvas else { return }
-            let start = canvasPoint(from: point)
-            if toolStore.currentKind == .text {
-                beginTextEditing(at: point)
+            beginDraft(at: point)
+        case .selected(let id):
+            // 自动选中后仍要保留双击复制的既有节奏，否则双击会落到拖动分支。
+            if event.clickCount == 2, selectionRect.contains(point) {
+                requestCopy()
                 return
             }
-            canvas.draft = makeDraft(origin: start, current: start)
-            phase = .drawing(origin: start)
-        case .selected:
             guard selectionRect.contains(point) else {
                 removeCanvas()
                 beginSelection(at: point)
@@ -195,7 +192,16 @@ final class OverlayView: NSView {
             }
             if isSelectMode {
                 selectModeMouseDown(at: point, event: event)
+                return
             }
+            // 画完自动选中后仍在 draw 模式：按在选中的形状上直接拖，按在别处开新一笔。
+            let start = canvasPoint(from: point)
+            if let hit = hitAnnotation(at: start), hit.id == id {
+                phase = .moving(id: id, grab: start, original: hit.shape, pendingClone: nil)
+                return
+            }
+            clearSelection()
+            beginDraft(at: point)
         case .editing:
             commitTextEditing()
         case .selecting, .drawing, .moving:
@@ -269,6 +275,18 @@ final class OverlayView: NSView {
             canvas?.selectedID = id
         case .idle, .ready, .editing, .selected:
             break // ready 下单击保留选区，等待 Enter / 双击 / ⌘S
+        }
+    }
+
+    /// 右键：绘制中结束当前笔画，文字编辑中不打断输入，其余取消截图。
+    override func rightMouseDown(with event: NSEvent) {
+        switch phase {
+        case .editing:
+            break
+        case .drawing:
+            commitDraft()
+        default:
+            requestCancel()
         }
     }
 
@@ -504,6 +522,18 @@ final class OverlayView: NSView {
         updateActionBar()
     }
 
+    /// 选区内按当前工具起一笔 draft。单击不落形状（点序列除外，单击即圆点）。
+    private func beginDraft(at viewPoint: CGPoint) {
+        guard let canvas else { return }
+        let start = canvasPoint(from: viewPoint)
+        if toolStore.currentKind == .text {
+            beginTextEditing(at: viewPoint)
+            return
+        }
+        canvas.draft = makeDraft(origin: start, current: start)
+        phase = .drawing(origin: start)
+    }
+
     /// 拖拽的标注落笔。矩形系两边不足、线系位移不足则丢弃，单击不产生形状；
     /// 点序列非空即提交，单击落成圆点。
     private func commitDraft() {
@@ -514,7 +544,9 @@ final class OverlayView: NSView {
         }
         canvas.annotations.append(draft)
         canvas.draft = nil
-        phase = .ready
+        // Snipaste 的 auto_select_on_creation：新标注立即选中，可直接拖动或缩放。
+        canvas.selectedID = draft.id
+        phase = .selected(id: draft.id)
     }
 
     private func isDraftValid(_ draft: Annotation) -> Bool {
@@ -614,15 +646,20 @@ final class OverlayView: NSView {
         let origin = textOrigin
         let style = textStyle
         endTextEditing()
-        phase = .ready
         window?.makeFirstResponder(self)
         // 空内容丢弃；非空原样入列，换行符保留给多行渲染。
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              let canvas, let style else { return }
-        canvas.annotations.append(Annotation(
+              let canvas, let style else {
+            phase = .ready
+            return
+        }
+        let annotation = Annotation(
             shape: .text(text, origin: origin, fontSize: style.pen.textFontSize),
             style: style
-        ))
+        )
+        canvas.annotations.append(annotation)
+        canvas.selectedID = annotation.id
+        phase = .selected(id: annotation.id)
     }
 
     private func cancelTextEditing() {

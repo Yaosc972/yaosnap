@@ -126,6 +126,12 @@ final class AnnotateHarness {
         pump(0.2)
     }
 
+    private func rightClick(_ view: OverlayView, window: NSWindow, at point: CGPoint) {
+        guard let event = mouseEvent(.rightMouseDown, at: point, in: window) else { return }
+        view.rightMouseDown(with: event)
+        pump(0.2)
+    }
+
     private func keyDown(
         _ keyCode: UInt16,
         characters: String,
@@ -1105,6 +1111,132 @@ final class AnnotateHarness {
         endSession()
     }
 
+    // MARK: - Snipaste 节奏（自动选中 / 右键）
+
+    /// 画完形状立即选中，文字提交同样自动选中。
+    private func runAutoSelectOnCreate() {
+        guard let (window, view) = beginSession("AUTO-SELECT") else { return }
+        drag(view, window: window, from: CGPoint(x: 200, y: 200), to: CGPoint(x: 600, y: 500))
+        let selection = view.selectionRect
+        press(view, window: window, path: [
+            CGPoint(x: selection.minX + 50, y: selection.minY + 50),
+            CGPoint(x: selection.minX + 250, y: selection.minY + 150),
+        ])
+        guard view.annotations.count == 1,
+              let canvas = view.subviews.compactMap({ $0 as? AnnotationCanvas }).first else {
+            fail("AUTO-SELECT", "前置画矩形失败 annotations=\(view.annotations.count)")
+            endSession()
+            return
+        }
+        let shapeID = view.annotations[0].id
+        if canvas.selectedID == shapeID {
+            pass("AUTO-SELECT", "画完后 canvas.selectedID 等于新标注 \(shapeID)")
+        } else {
+            fail("AUTO-SELECT", "selectedID=\(String(describing: canvas.selectedID)) 期望 \(shapeID)")
+        }
+
+        guard tapTool(view, .text, id: "AUTO-SELECT-TEXT") else {
+            endSession()
+            return
+        }
+        press(view, window: window, path: [
+            CGPoint(x: selection.minX + 60, y: selection.minY + 250),
+        ])
+        guard let editor = view.subviews.compactMap({ $0 as? NSTextView }).first else {
+            fail("AUTO-SELECT-TEXT", "单击后没有出现文字编辑器")
+            endSession()
+            return
+        }
+        editor.string = "Auto"
+        sendKey(36, characters: "\r", to: editor, in: window, modifierFlags: .command)
+        guard view.annotations.count == 2 else {
+            fail("AUTO-SELECT-TEXT", "文字未入列 annotations=\(view.annotations.count)")
+            endSession()
+            return
+        }
+        let textID = view.annotations[1].id
+        if canvas.selectedID == textID {
+            pass("AUTO-SELECT-TEXT", "文字提交后 canvas.selectedID 等于新标注 \(textID)")
+        } else {
+            fail("AUTO-SELECT-TEXT", "selectedID=\(String(describing: canvas.selectedID)) 期望 \(textID)")
+        }
+        endSession()
+    }
+
+    /// 选中态下在选区另一处直接落笔：画出第二条，第一笔留在原位且不再选中。
+    private func runDrawAgainAfterAutoSelect() {
+        guard let (window, view) = beginSession("AUTO-SELECT-REDRAW") else { return }
+        drag(view, window: window, from: CGPoint(x: 200, y: 200), to: CGPoint(x: 700, y: 600))
+        let selection = view.selectionRect
+        let firstRect = CGRect(x: 50, y: 50, width: 150, height: 100)
+        let secondRect = CGRect(x: 250, y: 50, width: 150, height: 100)
+        press(view, window: window, path: [
+            CGPoint(x: selection.minX + firstRect.minX, y: selection.minY + firstRect.minY),
+            CGPoint(x: selection.minX + firstRect.maxX, y: selection.minY + firstRect.maxY),
+        ])
+        guard view.annotations.count == 1,
+              let canvas = view.subviews.compactMap({ $0 as? AnnotationCanvas }).first else {
+            fail("AUTO-SELECT-REDRAW", "前置画矩形失败 annotations=\(view.annotations.count)")
+            endSession()
+            return
+        }
+        let firstID = view.annotations[0].id
+        press(view, window: window, path: [
+            CGPoint(x: selection.minX + secondRect.minX, y: selection.minY + secondRect.minY),
+            CGPoint(x: selection.minX + secondRect.maxX, y: selection.minY + secondRect.maxY),
+        ])
+        guard view.annotations.count == 2,
+              view.annotations[0].id == firstID,
+              case .rect(let kept) = view.annotations[0].shape,
+              kept == firstRect,
+              canvas.selectedID == view.annotations[1].id else {
+            fail("AUTO-SELECT-REDRAW", "annotations=\(view.annotations.count) 第一条=\(String(describing: view.annotations.first?.shape)) selectedID=\(String(describing: canvas.selectedID))")
+            endSession()
+            return
+        }
+        pass("AUTO-SELECT-REDRAW", "第二条矩形已画出，第一条保持 \(kept) 且选中已转移")
+        endSession()
+    }
+
+    /// 右键取消截图：覆盖窗口全部关闭。
+    private func runRightClickCancels() {
+        guard let (window, view) = beginSession("RIGHT-CLICK-CANCEL") else { return }
+        drag(view, window: window, from: CGPoint(x: 200, y: 200), to: CGPoint(x: 600, y: 500))
+        rightClick(view, window: window, at: CGPoint(x: 300, y: 300))
+        if visibleOverlayWindows.isEmpty {
+            pass("RIGHT-CLICK-CANCEL", "选区确定后右键取消，覆盖窗口已全部关闭")
+        } else {
+            fail("RIGHT-CLICK-CANCEL", "右键后仍有 \(visibleOverlayWindows.count) 个可见覆盖窗口")
+        }
+    }
+
+    /// 绘制中右键结束当前笔画并提交，截图不取消。
+    private func runRightClickFinishesStroke() {
+        guard let (window, view) = beginSession("RIGHT-CLICK-DRAW") else { return }
+        drag(view, window: window, from: CGPoint(x: 200, y: 200), to: CGPoint(x: 700, y: 600))
+        let selection = view.selectionRect
+        let start = CGPoint(x: selection.minX + 50, y: selection.minY + 50)
+        let end = CGPoint(x: selection.minX + 250, y: selection.minY + 150)
+        if let down = mouseEvent(.leftMouseDown, at: start, in: window) {
+            view.mouseDown(with: down)
+        }
+        if let dragged = mouseEvent(.leftMouseDragged, at: end, in: window) {
+            view.mouseDragged(with: dragged)
+        }
+        rightClick(view, window: window, at: end)
+        let expected = CGRect(x: 50, y: 50, width: 200, height: 100)
+        guard !visibleOverlayWindows.isEmpty,
+              view.annotations.count == 1,
+              case .rect(let rect) = view.annotations[0].shape,
+              rect == expected else {
+            fail("RIGHT-CLICK-DRAW", "右键结束笔画后 annotations=\(view.annotations) 窗口数=\(visibleOverlayWindows.count)")
+            endSession()
+            return
+        }
+        pass("RIGHT-CLICK-DRAW", "右键提交矩形 \(rect)，截图会话保留")
+        endSession()
+    }
+
     // MARK: - 主流程
 
     func runAll() {
@@ -1126,6 +1258,10 @@ final class AnnotateHarness {
         runDeleteSelection()
         runCopyPasteSelection()
         runControlDragCopy()
+        runAutoSelectOnCreate()
+        runDrawAgainAfterAutoSelect()
+        runRightClickCancels()
+        runRightClickFinishesStroke()
 
         print("SUMMARY passes=\(passes) failures=\(failures)")
         exit(failures == 0 ? 0 : 1)
