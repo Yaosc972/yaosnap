@@ -14,4 +14,11 @@ struct HotkeyTests {
         #expect(Hotkey.f1.keyCode == 122)
         #expect(Hotkey.f1.modifiers == 0)
     }
+
+    // ⌃⇧A 是默认热键：kVK_ANSI_A=0，Control(0x1000)+Shift(0x0200)
+    @Test func ctrlShiftAConstant() {
+        #expect(Hotkey.ctrlShiftA.keyCode == 0)
+        #expect(Hotkey.ctrlShiftA.modifiers == 0x1200)
+        #expect(Hotkey.ctrlShiftA.modifiers != Hotkey.f1.modifiers)
+    }
 }
