@@ -66,7 +66,6 @@ struct ShapeGeometryTests {
         let shapes: [Shape] = [
             .rect(rect),
             .roundedRect(rect, radius: 5),
-            .ellipse(rect),
         ]
         for shape in shapes {
             #expect(shape.contains(CGPoint(x: 25, y: 40), tolerance: 0))
@@ -75,6 +74,14 @@ struct ShapeGeometryTests {
             #expect(shape.contains(CGPoint(x: 43, y: 62), tolerance: 4), "右上角外扩 3pt 应在容差内")
             #expect(!shape.contains(CGPoint(x: 0, y: 0), tolerance: 4))
         }
+    }
+
+    @Test func ellipseHitFollowsEllipseEquation() {
+        let shape = Shape.ellipse(CGRect(x: 10, y: 20, width: 30, height: 40))
+        #expect(shape.contains(CGPoint(x: 25, y: 40), tolerance: 0), "中心命中")
+        #expect(shape.contains(CGPoint(x: 42, y: 40), tolerance: 4), "右边缘外扩命中")
+        #expect(!shape.contains(CGPoint(x: 43, y: 62), tolerance: 4), "包围盒四角在椭圆外")
+        #expect(!shape.contains(CGPoint(x: 0, y: 0), tolerance: 4))
     }
 
     @Test func textHitUsesInflatedBounds() {

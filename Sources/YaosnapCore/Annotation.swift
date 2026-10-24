@@ -125,8 +125,16 @@ public enum Shape: Equatable, Codable {
     /// 命中测试。面状形状按包围盒（外扩 tolerance）判断，线状按到路径的距离判断。
     public func contains(_ point: CGPoint, tolerance: CGFloat) -> Bool {
         switch self {
-        case .rect(let rect), .roundedRect(let rect, _), .ellipse(let rect):
+        case .rect(let rect), .roundedRect(let rect, _):
             return rect.insetBy(dx: -tolerance, dy: -tolerance).contains(point)
+        case .ellipse(let rect):
+            // 按椭圆方程判断，包围盒四角不算命中。
+            let rx = rect.width / 2 + tolerance
+            let ry = rect.height / 2 + tolerance
+            guard rx > 0, ry > 0 else { return false }
+            let nx = (point.x - rect.midX) / rx
+            let ny = (point.y - rect.midY) / ry
+            return nx * nx + ny * ny <= 1
         case .text:
             return bounds.insetBy(dx: -tolerance, dy: -tolerance).contains(point)
         case .line(let from, let to), .arrow(let from, let to):

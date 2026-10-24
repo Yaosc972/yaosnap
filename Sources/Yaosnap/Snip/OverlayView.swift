@@ -299,15 +299,19 @@ final class OverlayView: NSView {
     /// 自上而下取最上层命中。
     private func hitAnnotation(at canvasPoint: CGPoint) -> Annotation? {
         canvas?.annotations.reversed().first {
-            $0.shape.contains(canvasPoint, tolerance: Self.hitTolerance)
+            // 线宽算进容差，否则粗笔画边缘点不中。
+            $0.shape.contains(canvasPoint, tolerance: Self.hitTolerance + $0.style.pen.lineWidth / 2)
         }
     }
 
     /// 清除选中。阶段退回 ready，选区与标注不动。
     private func clearSelection() {
         canvas?.selectedID = nil
-        if case .selected = phase {
+        switch phase {
+        case .selected, .moving:
             phase = .ready
+        default:
+            break
         }
     }
 
@@ -340,8 +344,13 @@ final class OverlayView: NSView {
             style: source.style
         )
         canvas.annotations.append(pasted)
+        // 连续粘贴以新副本为源，否则每次偏移基准相同，多个副本会叠在同一处。
+        copiedAnnotation = pasted
         canvas.selectedID = pasted.id
         phase = .selected(id: pasted.id)
+        // 粘贴后切到选择模式，用户可以直接拖动刚贴出的副本。
+        toolMode = .select
+        toolbar.selectMode()
     }
 
     override func keyDown(with event: NSEvent) {
@@ -354,14 +363,14 @@ final class OverlayView: NSView {
             }
             NotificationCenter.default.post(name: .snipEscapePressed, object: nil)
         case 36: // Return
-            guard isCommittedPhase, !selectionRect.isEmpty else {
+            guard canOutput, !selectionRect.isEmpty else {
                 NSSound.beep()
                 return
             }
             requestCopy()
         // ⌘S 只认 command，⌘⌃S / ⌘⌥S 不是保存快捷键
         case 1 where event.modifierFlags.intersection([.command, .control, .option]) == .command:
-            guard isCommittedPhase, !selectionRect.isEmpty else {
+            guard canOutput, !selectionRect.isEmpty else {
                 NSSound.beep()
                 return
             }
@@ -389,6 +398,14 @@ final class OverlayView: NSView {
         }
     }
 
+    /// 能出图的阶段。拖动中途按 Enter / ⌘S 会把半成品输出，所以排除 moving。
+    private var canOutput: Bool {
+        switch phase {
+        case .ready, .selected: return true
+        case .idle, .selecting, .drawing, .editing, .moving: return false
+        }
+    }
+
     private var isSelectMode: Bool { toolMode == .select }
 
     /// 撤销最后一笔。ready / drawing 都可用；无标注提示音。只撤销不重做。
@@ -397,8 +414,11 @@ final class OverlayView: NSView {
             NSSound.beep()
             return
         }
-        clearSelection()
-        canvas.annotations.removeLast()
+        let removed = canvas.annotations.removeLast()
+        // 只清掉指向被删条目的选中；选中其他条目时撤销仍保持选中。
+        if canvas.selectedID == removed.id {
+            clearSelection()
+        }
     }
 
     /// 工具快捷键：无修饰键时匹配 ShapeCatalog 的 shortcut 字符。
