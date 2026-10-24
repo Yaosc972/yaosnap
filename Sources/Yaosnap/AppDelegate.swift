@@ -20,7 +20,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         print("Yaosnap launched")
         let ok = hotkeyManager.register(.f1) { [snipController] in
             MainActor.assumeIsolated {
+                let t0 = CFAbsoluteTimeGetCurrent()
                 snipController.start()
+                let elapsed = (CFAbsoluteTimeGetCurrent() - t0) * 1000
+                print(String(format: "[perf] hotkey→overlay: %.1f ms", elapsed))
             }
         }
         if !ok {

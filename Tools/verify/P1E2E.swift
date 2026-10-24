@@ -1,0 +1,548 @@
+import AppKit
+import CoreGraphics
+import Foundation
+import ImageIO
+import UniformTypeIdentifiers
+import YaosnapCore
+
+/// P1 验收 harness。编译真实 SnipController / OverlayView 源码，
+/// 用真实通知链路驱动 start / 拖拽 / 按键 / 复制 / 保存，并截图留证。
+@MainActor
+final class ObserverWiring {
+    let controller = SnipController()
+
+    init() {
+        let center = NotificationCenter.default
+        center.addObserver(self, selector: #selector(escape(_:)), name: .snipEscapePressed, object: nil)
+        center.addObserver(self, selector: #selector(committed(_:)), name: .snipCommitted, object: nil)
+        center.addObserver(self, selector: #selector(copyRequested(_:)), name: .snipCopyRequested, object: nil)
+        center.addObserver(self, selector: #selector(saveRequested(_:)), name: .snipSaveRequested, object: nil)
+    }
+
+    @objc private func escape(_ notification: Notification) { controller.cancel() }
+    @objc private func committed(_ notification: Notification) { controller.commitSelection(notification) }
+    @objc private func copyRequested(_ notification: Notification) { controller.copyPendingImage(notification) }
+    @objc private func saveRequested(_ notification: Notification) { controller.savePendingImage(notification) }
+}
+
+@MainActor
+final class Harness {
+    private let wiring = ObserverWiring()
+    private var controller: SnipController { wiring.controller }
+    private let evidenceDir: URL
+    private var passes = 0
+    private var failures = 0
+
+    init(evidenceDir: URL) {
+        self.evidenceDir = evidenceDir
+    }
+
+    // MARK: - 记录
+
+    private func pass(_ id: String, _ detail: String) {
+        passes += 1
+        print("PASS \(id) \(detail)")
+    }
+
+    private func fail(_ id: String, _ detail: String) {
+        failures += 1
+        print("FAIL \(id) \(detail)")
+    }
+
+    private func info(_ id: String, _ detail: String) {
+        print("INFO \(id) \(detail)")
+    }
+
+    // MARK: - 基础工具
+
+    private func pump(_ seconds: TimeInterval = 0.3) {
+        RunLoop.current.run(until: Date().addingTimeInterval(seconds))
+    }
+
+    private var overlayWindows: [SnipOverlayWindow] {
+        NSApp.windows.compactMap { $0 as? SnipOverlayWindow }
+    }
+
+    private var visibleOverlayWindows: [SnipOverlayWindow] {
+        overlayWindows.filter(\.isVisible)
+    }
+
+    private func beginSession(_ id: String) -> (SnipOverlayWindow, OverlayView)? {
+        controller.start()
+        pump(0.4)
+        guard let window = visibleOverlayWindows.first,
+              let view = window.contentView as? OverlayView else {
+            fail(id, "start 后没有可见覆盖窗口")
+            return nil
+        }
+        return (window, view)
+    }
+
+    private func endSession() {
+        controller.cancel()
+        NSPasteboard.general.clearContents()
+        pump(0.15)
+    }
+
+    private func mouseEvent(
+        _ type: NSEvent.EventType,
+        at point: CGPoint,
+        in window: NSWindow,
+        clickCount: Int = 1
+    ) -> NSEvent? {
+        NSEvent.mouseEvent(
+            with: type,
+            location: point,
+            modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 0,
+            clickCount: clickCount,
+            pressure: type == .leftMouseUp ? 0 : 1
+        )
+    }
+
+    private func drag(_ view: OverlayView, window: NSWindow, from: CGPoint, to: CGPoint) {
+        guard let down = mouseEvent(.leftMouseDown, at: from, in: window),
+              let dragged = mouseEvent(.leftMouseDragged, at: to, in: window),
+              let up = mouseEvent(.leftMouseUp, at: to, in: window) else {
+            fail("DRAG", "无法构造鼠标事件")
+            return
+        }
+        view.mouseDown(with: down)
+        view.mouseDragged(with: dragged)
+        view.mouseUp(with: up)
+        pump(0.2)
+    }
+
+    private func keyDown(
+        _ keyCode: UInt16,
+        characters: String,
+        flags: NSEvent.ModifierFlags = [],
+        in window: NSWindow,
+        view: OverlayView
+    ) {
+        guard let event = NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: flags,
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber,
+            context: nil,
+            characters: characters,
+            charactersIgnoringModifiers: characters,
+            isARepeat: false,
+            keyCode: keyCode
+        ) else {
+            fail("KEY", "无法构造键盘事件 keyCode=\(keyCode)")
+            return
+        }
+        view.keyDown(with: event)
+        pump(0.25)
+    }
+
+    private func pasteboardPixelSize() -> (width: Int, height: Int)? {
+        guard let tiff = NSPasteboard.general.data(forType: .tiff),
+              let rep = NSBitmapImageRep(data: tiff) else { return nil }
+        return (rep.pixelsWide, rep.pixelsHigh)
+    }
+
+    private func capture(_ name: String) -> CGImage? {
+        guard let image = CGDisplayCreateImage(CGMainDisplayID()) else {
+            info("CAPTURE", "CGDisplayCreateImage 返回 nil: \(name)")
+            return nil
+        }
+        let url = evidenceDir.appendingPathComponent(name)
+        let data = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(
+            data, UTType.png.identifier as CFString, 1, nil
+        ) else { return image }
+        CGImageDestinationAddImage(destination, image, nil)
+        if CGImageDestinationFinalize(destination) {
+            try? (data as Data).write(to: url)
+            info("CAPTURE", "\(name) -> \(url.path) \(image.width)x\(image.height)")
+        }
+        return image
+    }
+
+    /// 全屏平均亮度（0...1）。用于证明覆盖层消失：遮罩会把画面压暗。
+    private func averageLuminance(_ image: CGImage) -> Double {
+        let rep = NSBitmapImageRep(cgImage: image)
+        let steps = 24
+        var total = 0.0
+        var count = 0.0
+        for i in 0..<steps {
+            for j in 0..<steps {
+                let x = rep.pixelsWide * (i * 2 + 1) / (steps * 2)
+                let y = rep.pixelsHigh * (j * 2 + 1) / (steps * 2)
+                guard let color = rep.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
+                total += 0.2126 * Double(color.redComponent)
+                    + 0.7152 * Double(color.greenComponent)
+                    + 0.0722 * Double(color.blueComponent)
+                count += 1
+            }
+        }
+        return count > 0 ? total / count : 0
+    }
+
+    // MARK: - 性能基准
+
+    func runPerformance() {
+        var samples: [Double] = []
+        for run in 1...5 {
+            let t0 = CFAbsoluteTimeGetCurrent()
+            controller.start()
+            let elapsed = (CFAbsoluteTimeGetCurrent() - t0) * 1000
+            samples.append(elapsed)
+            print(String(format: "[perf] hotkey→overlay: %.1f ms (run %d)", elapsed, run))
+            pump(0.25)
+            if run == 1 {
+                _ = capture("01-overlay-fullscreen.png")
+            }
+            if visibleOverlayWindows.count != 1 {
+                fail("PERF", "第 \(run) 次 start 后可见覆盖窗口数=\(visibleOverlayWindows.count)，期望 1")
+            }
+            controller.cancel()
+            pump(0.12)
+            if !visibleOverlayWindows.isEmpty {
+                fail("PERF", "第 \(run) 次 cancel 后仍有可见覆盖窗口")
+            }
+        }
+        let mean = samples.reduce(0, +) / Double(samples.count)
+        let minValue = samples.min() ?? 0
+        let maxValue = samples.max() ?? 0
+        let detail = String(
+            format: "runs=[%@] mean=%.1fms min=%.1fms max=%.1fms 目标<100ms",
+            samples.map { String(format: "%.1f", $0) }.joined(separator: ", "),
+            mean, minValue, maxValue
+        )
+        if mean < 100 {
+            pass("PERF", detail)
+        } else {
+            fail("PERF", detail)
+        }
+    }
+
+    // MARK: - 覆盖层全屏
+
+    func runOverlayCoverage() {
+        guard let (window, view) = beginSession("OVERLAY") else { return }
+        let screenFrame = NSScreen.screens.first?.frame ?? .zero
+        if window.frame == screenFrame, view.bounds.size == screenFrame.size {
+            pass("OVERLAY", "覆盖窗口 frame=\(window.frame) 与屏幕一致，冻结图 \(view.shot.image.width)x\(view.shot.image.height)")
+        } else {
+            fail("OVERLAY", "窗口 frame=\(window.frame) 屏幕=\(screenFrame) 视图=\(view.bounds)")
+        }
+        _ = capture("02-overlay-session.png")
+        keyDown(53, characters: "\u{1b}", in: window, view: view)
+        if visibleOverlayWindows.isEmpty {
+            pass("OVERLAY-ESC", "Esc 后可见覆盖窗口为 0")
+        } else {
+            fail("OVERLAY-ESC", "Esc 后仍有 \(visibleOverlayWindows.count) 个可见覆盖窗口")
+        }
+    }
+
+    // MARK: - 拖拽选区 + Enter 复制
+
+    func runForwardDragCopy() {
+        guard let (window, view) = beginSession("DRAG-FWD") else { return }
+        drag(view, window: window, from: CGPoint(x: 100, y: 100), to: CGPoint(x: 400, y: 300))
+        let rect = view.selectionRect
+        if abs(rect.origin.x - 100) <= 1, abs(rect.origin.y - 100) <= 1,
+           abs(rect.width - 300) <= 1, abs(rect.height - 200) <= 1 {
+            pass("DRAG-FWD", "selectionRect=\(rect) 符合 100,100 300x200")
+        } else {
+            fail("DRAG-FWD", "selectionRect=\(rect) 期望 100,100 300x200")
+        }
+        _ = capture("03-drag-forward-label.png")
+
+        let imageRect = RectMath.imageRect(
+            fromViewRect: rect, viewHeight: view.bounds.height, scale: view.shot.scale
+        )
+        NSPasteboard.general.clearContents()
+        keyDown(36, characters: "\r", in: window, view: view)
+
+        if let size = pasteboardPixelSize() {
+            if size.width == Int(imageRect.width), size.height == Int(imageRect.height) {
+                pass("COPY-ENTER", "剪贴板 \(size.width)x\(size.height) 与裁剪 \(Int(imageRect.width))x\(Int(imageRect.height)) 一致")
+            } else {
+                fail("COPY-ENTER", "剪贴板 \(size.width)x\(size.height) 期望 \(Int(imageRect.width))x\(Int(imageRect.height))")
+            }
+        } else {
+            fail("COPY-ENTER", "剪贴板没有可读取的图像")
+        }
+        if visibleOverlayWindows.isEmpty {
+            pass("COPY-ENTER-CLOSE", "复制后覆盖层全部消失")
+        } else {
+            fail("COPY-ENTER-CLOSE", "复制后仍有 \(visibleOverlayWindows.count) 个可见覆盖窗口")
+        }
+        endSession()
+    }
+
+    // MARK: - 反向拖拽 + 双击复制
+
+    func runReverseDragDoubleClickCopy() {
+        guard let (window, view) = beginSession("DRAG-REV") else { return }
+        drag(view, window: window, from: CGPoint(x: 400, y: 300), to: CGPoint(x: 100, y: 100))
+        let rect = view.selectionRect
+        if abs(rect.origin.x - 100) <= 1, abs(rect.origin.y - 100) <= 1,
+           abs(rect.width - 300) <= 1, abs(rect.height - 200) <= 1 {
+            pass("DRAG-REV", "反向拖拽归一化 selectionRect=\(rect)")
+        } else {
+            fail("DRAG-REV", "反向拖拽 selectionRect=\(rect) 期望 100,100 300x200")
+        }
+
+        let imageRect = RectMath.imageRect(
+            fromViewRect: rect, viewHeight: view.bounds.height, scale: view.shot.scale
+        )
+        NSPasteboard.general.clearContents()
+        if let doubleClick = mouseEvent(.leftMouseDown, at: CGPoint(x: 200, y: 200), in: window, clickCount: 2) {
+            view.mouseDown(with: doubleClick)
+            pump(0.25)
+        } else {
+            fail("COPY-DBLCLICK", "无法构造双击事件")
+        }
+
+        if let size = pasteboardPixelSize() {
+            if size.width == Int(imageRect.width), size.height == Int(imageRect.height) {
+                pass("COPY-DBLCLICK", "剪贴板 \(size.width)x\(size.height) 与裁剪一致")
+            } else {
+                fail("COPY-DBLCLICK", "剪贴板 \(size.width)x\(size.height) 期望 \(Int(imageRect.width))x\(Int(imageRect.height))")
+            }
+        } else {
+            fail("COPY-DBLCLICK", "双击后剪贴板没有图像")
+        }
+        if visibleOverlayWindows.isEmpty {
+            pass("COPY-DBLCLICK-CLOSE", "双击复制后覆盖层全部消失")
+        } else {
+            fail("COPY-DBLCLICK-CLOSE", "双击复制后仍有可见覆盖窗口")
+        }
+        endSession()
+    }
+
+    // MARK: - 窗口悬停与吸附
+
+    func runWindowSnap() {
+        let all = WindowDetector.onScreenWindows(ownPID: getpid())
+        let candidates = WindowDetector.snapCandidates(from: all, ownPID: getpid())
+        guard let target = candidates.first else {
+            fail("SNAP", "屏幕上没有可吸附窗口")
+            return
+        }
+        // 选一个只被最顶层窗口覆盖的点，确保 hover 命中预期窗口。
+        let probe = CGPoint(x: target.bounds.minX + 200, y: target.bounds.minY + 700)
+        guard let hit = WindowDetector.window(at: probe, in: candidates), hit == target else {
+            fail("SNAP", "探测点 \(probe) 命中的窗口不是预期窗口 \(target.ownerName)")
+            return
+        }
+
+        guard let (window, view) = beginSession("SNAP") else { return }
+        let viewPoint = CGPoint(
+            x: probe.x - view.shot.bounds.minX,
+            y: view.bounds.height - (probe.y - view.shot.bounds.minY)
+        )
+        if let move = mouseEvent(.mouseMoved, at: viewPoint, in: window) {
+            view.mouseMoved(with: move)
+            pump(0.3)
+        }
+        _ = capture("04-window-hover.png")
+
+        let expectedViewRect = RectMath.clamp(
+            RectMath.toViewRect(
+                globalRect: target.bounds,
+                displayBounds: view.shot.bounds,
+                viewHeight: view.bounds.height
+            ),
+            to: view.bounds
+        )
+        if let down = mouseEvent(.leftMouseDown, at: viewPoint, in: window) {
+            view.mouseDown(with: down)
+            pump(0.25)
+        }
+        let snapped = view.selectionRect
+        if abs(snapped.minX - expectedViewRect.minX) <= 1,
+           abs(snapped.minY - expectedViewRect.minY) <= 1,
+           abs(snapped.width - expectedViewRect.width) <= 1,
+           abs(snapped.height - expectedViewRect.height) <= 1 {
+            pass("SNAP", "点击窗口后吸附 selectionRect=\(snapped) 与窗口 \(target.ownerName) \(target.bounds) 一致")
+        } else {
+            fail("SNAP", "吸附 selectionRect=\(snapped) 期望 \(expectedViewRect)（\(target.ownerName)）")
+        }
+        _ = capture("05-window-snap-label.png")
+
+        if let up = mouseEvent(.leftMouseUp, at: viewPoint, in: window) {
+            view.mouseUp(with: up)
+            pump(0.15)
+        }
+        let imageRect = RectMath.imageRect(
+            fromViewRect: snapped, viewHeight: view.bounds.height, scale: view.shot.scale
+        )
+        NSPasteboard.general.clearContents()
+        keyDown(36, characters: "\r", in: window, view: view)
+        if let size = pasteboardPixelSize() {
+            if abs(size.width - Int(imageRect.width)) <= 1, abs(size.height - Int(imageRect.height)) <= 1 {
+                pass("SNAP-COPY", "吸附复制 \(size.width)x\(size.height) 与窗口裁剪一致")
+            } else {
+                fail("SNAP-COPY", "吸附复制 \(size.width)x\(size.height) 期望 \(Int(imageRect.width))x\(Int(imageRect.height))")
+            }
+        } else {
+            fail("SNAP-COPY", "吸附复制后剪贴板没有图像")
+        }
+        endSession()
+    }
+
+    // MARK: - ⌘S 保存
+
+    func runSave() {
+        guard let (window, view) = beginSession("SAVE") else { return }
+        drag(view, window: window, from: CGPoint(x: 200, y: 150), to: CGPoint(x: 500, y: 350))
+
+        keyDown(1, characters: "s", flags: .command, in: window, view: view)
+        pump(0.8)
+
+        var panel = visibleOverlayWindows.compactMap { $0.attachedSheet as? NSSavePanel }.first
+        if panel == nil {
+            panel = NSApp.windows.compactMap { $0 as? NSSavePanel }.first
+        }
+        guard let panel else {
+            fail("SAVE", "⌘S 后没有出现保存面板")
+            endSession()
+            return
+        }
+        let defaultName = panel.nameFieldStringValue
+        let namePattern = try! NSRegularExpression(pattern: #"^Yaosnap_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.png$"#)
+        let nameRange = NSRange(defaultName.startIndex..., in: defaultName)
+        if namePattern.firstMatch(in: defaultName, range: nameRange) != nil {
+            pass("SAVE-DEFAULTNAME", "默认文件名 \(defaultName) 符合命名规则")
+        } else {
+            fail("SAVE-DEFAULTNAME", "默认文件名 \(defaultName) 不符合 Yaosnap_yyyy-MM-dd_HH-mm-ss.png")
+        }
+
+        // 面板显示后改 directoryURL / nameFieldStringValue 会被忽略（实测），
+        // 直接验证生产代码给的默认落点（桌面 + Yaosnap_时间戳.png）。
+        let predictedURL = panel.url
+        let existedBefore = predictedURL.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+        info("SAVE-PREDICTED", "panel.url=\(predictedURL?.path ?? "nil") existedBefore=\(existedBefore)")
+        if let parent = visibleOverlayWindows.first {
+            parent.endSheet(panel, returnCode: .OK)
+        } else {
+            fail("SAVE", "找不到保存面板的父窗口")
+        }
+        pump(1.0)
+
+        guard let savedURL = panel.url,
+              FileManager.default.fileExists(atPath: savedURL.path) else {
+            fail("SAVE", "endSheet 后文件不存在: \(panel.url?.path ?? "url=nil")")
+            endSession()
+            return
+        }
+        info("SAVE-URL-AFTER", "panel.url=\(savedURL.path)")
+        let imageRect = RectMath.imageRect(
+            fromViewRect: view.selectionRect, viewHeight: view.bounds.height, scale: view.shot.scale
+        )
+        if let source = CGImageSourceCreateWithURL(savedURL as CFURL, nil),
+           let image = CGImageSourceCreateImageAtIndex(source, 0, nil) {
+            if image.width == Int(imageRect.width), image.height == Int(imageRect.height) {
+                pass("SAVE", "\(savedURL.lastPathComponent) \(image.width)x\(image.height) 与选区裁剪一致，写入 \(savedURL.path)")
+            } else {
+                fail("SAVE", "文件 \(image.width)x\(image.height) 期望 \(Int(imageRect.width))x\(Int(imageRect.height))")
+            }
+        } else {
+            fail("SAVE", "无法读取保存的 PNG: \(savedURL.path)")
+        }
+        let evidenceCopy = evidenceDir.appendingPathComponent("P1-save-verify.png")
+        try? FileManager.default.removeItem(at: evidenceCopy)
+        try? FileManager.default.copyItem(at: savedURL, to: evidenceCopy)
+        if !existedBefore {
+            try? FileManager.default.removeItem(at: savedURL)
+        }
+        if visibleOverlayWindows.isEmpty {
+            pass("SAVE-CLOSE", "保存成功后覆盖层全部消失")
+        } else {
+            fail("SAVE-CLOSE", "保存成功后仍有可见覆盖窗口")
+        }
+        endSession()
+    }
+
+    // MARK: - Esc 取消 + 光标
+
+    func runEscape() {
+        guard let (window, view) = beginSession("ESC") else { return }
+        let duringCursor = NSCursor.current
+        info("CURSOR", "会话中 cursorIsCrosshair=\(duringCursor === NSCursor.crosshair)")
+        guard let during = capture("06-before-esc.png") else {
+            fail("ESC", "截图失败")
+            endSession()
+            return
+        }
+        let duringLuminance = averageLuminance(during)
+
+        keyDown(53, characters: "\u{1b}", in: window, view: view)
+        pump(0.3)
+        let afterCursor = NSCursor.current
+        info("CURSOR", "取消后 cursorIsArrow=\(afterCursor === NSCursor.arrow)")
+        guard let after = capture("07-after-esc.png") else {
+            fail("ESC", "取消后截图失败")
+            endSession()
+            return
+        }
+        let afterLuminance = averageLuminance(after)
+
+        if visibleOverlayWindows.isEmpty {
+            pass("ESC", "Esc 后可见覆盖窗口为 0")
+        } else {
+            fail("ESC", "Esc 后仍有 \(visibleOverlayWindows.count) 个可见覆盖窗口")
+        }
+        if afterLuminance - duringLuminance > 0.03 {
+            pass(
+                "ESC-VISUAL",
+                String(format: "取消后全屏亮度 %.3f > 取消中 %.3f，遮罩确已消失", afterLuminance, duringLuminance)
+            )
+        } else {
+            fail(
+                "ESC-VISUAL",
+                String(format: "亮度差不足: during=%.3f after=%.3f", duringLuminance, afterLuminance)
+            )
+        }
+        endSession()
+    }
+
+    // MARK: - 主流程
+
+    func runAll() {
+        if !ScreenCaptureService.hasPermission() {
+            print("FATAL 屏幕录制权限缺失，无法执行验收")
+            exit(2)
+        }
+        print("INFO ENV permission=true displays=\(NSScreen.screens.count) screen=\(NSScreen.screens.first?.frame ?? .zero)")
+
+        runPerformance()
+        runOverlayCoverage()
+        runForwardDragCopy()
+        runReverseDragDoubleClickCopy()
+        runWindowSnap()
+        runSave()
+        runEscape()
+
+        print("SUMMARY passes=\(passes) failures=\(failures)")
+        exit(failures == 0 ? 0 : 1)
+    }
+}
+
+@main
+struct P1E2EMain {
+    static func main() {
+        MainActor.assumeIsolated {
+            let app = NSApplication.shared
+            app.setActivationPolicy(.accessory)
+
+            let base = URL(fileURLWithPath: "/tmp/yaosnap-verify", isDirectory: true)
+            let evidence = base.appendingPathComponent("evidence", isDirectory: true)
+            try? FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
+
+            let harness = Harness(evidenceDir: evidence)
+            harness.runAll()
+        }
+    }
+}
