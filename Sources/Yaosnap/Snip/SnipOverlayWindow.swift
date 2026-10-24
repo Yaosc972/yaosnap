@@ -18,6 +18,8 @@ final class SnipOverlayWindow: NSWindow {
         ignoresMouseEvents = false
         acceptsMouseMovedEvents = true
         backgroundColor = .black
+        // 窗口由 SnipController 强引用并跨会话复用，关闭时不能由 AppKit 释放。
+        isReleasedWhenClosed = false
     }
 
     override var canBecomeKey: Bool { true }

@@ -32,6 +32,29 @@ public enum RectMath {
         return CGRect(x: localX, y: flippedY, width: globalRect.width, height: globalRect.height)
     }
 
+    /// 某屏覆盖窗口内的视图坐标 → CG 全局坐标（toViewRect 的逆变换）
+    public static func toGlobalRect(
+        viewRect: CGRect,
+        displayBounds: CGRect,
+        viewHeight: CGFloat
+    ) -> CGRect {
+        let globalX = viewRect.minX + displayBounds.minX
+        let globalY = displayBounds.minY + (viewHeight - (viewRect.minY + viewRect.height))
+        return CGRect(x: globalX, y: globalY, width: viewRect.width, height: viewRect.height)
+    }
+
+    /// 视图坐标点 → CG 全局坐标（toViewRect 的逆变换，按左下原点翻转 y）
+    public static func toGlobalPoint(
+        viewPoint: CGPoint,
+        displayBounds: CGRect,
+        viewHeight: CGFloat
+    ) -> CGPoint {
+        CGPoint(
+            x: displayBounds.minX + viewPoint.x,
+            y: displayBounds.minY + (viewHeight - viewPoint.y)
+        )
+    }
+
     /// 视图矩形 → 冻结图（物理像素）矩形。scale 为屏 backingScaleFactor。
     public static func imageRect(
         fromViewRect viewRect: CGRect,

@@ -39,4 +39,38 @@ struct RectMathTests {
         let image = RectMath.imageRect(fromViewRect: viewRect, viewHeight: 900, scale: 2)
         #expect(image == CGRect(x: 20, y: 1660, width: 200, height: 100))
     }
+
+    // 副屏在主屏下方：displayBounds.minY != 0 时全局 ↔ 视图往返一致
+    @Test func roundTripBelowPrimaryDisplay() {
+        let display = CGRect(x: 0, y: 982, width: 1512, height: 900)
+        let global = CGRect(x: 100, y: 1032, width: 200, height: 100)
+        let view = RectMath.toViewRect(globalRect: global, displayBounds: display, viewHeight: 900)
+        #expect(view == CGRect(x: 100, y: 750, width: 200, height: 100))
+
+        let back = RectMath.toGlobalRect(viewRect: view, displayBounds: display, viewHeight: 900)
+        #expect(back == global)
+    }
+
+    // 副屏在主屏左侧：displayBounds.minX < 0 时全局 ↔ 视图往返一致
+    @Test func roundTripLeftDisplayWithNegativeOrigin() {
+        let display = CGRect(x: -1512, y: 0, width: 1512, height: 900)
+        let global = CGRect(x: -1400, y: 100, width: 100, height: 50)
+        let view = RectMath.toViewRect(globalRect: global, displayBounds: display, viewHeight: 900)
+        #expect(view == CGRect(x: 112, y: 750, width: 100, height: 50))
+
+        let back = RectMath.toGlobalRect(viewRect: view, displayBounds: display, viewHeight: 900)
+        #expect(back == global)
+    }
+
+    // 视图点 → 全局点：副屏负原点下翻转 y 并加屏偏移
+    @Test func globalPointFromViewPointOnSecondaryDisplay() {
+        let display = CGRect(x: -1512, y: 0, width: 1512, height: 900)
+        let point = RectMath.toGlobalPoint(
+            viewPoint: CGPoint(x: 112, y: 750),
+            displayBounds: display,
+            viewHeight: 900
+        )
+        // 视图左下角 (112,750) 对应全局矩形 (-1400,100,100,50) 的左下角 (-1400,150)
+        #expect(point == CGPoint(x: -1400, y: 150))
+    }
 }

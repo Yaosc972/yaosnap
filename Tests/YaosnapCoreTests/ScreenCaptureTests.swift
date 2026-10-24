@@ -23,4 +23,24 @@ struct ScreenCaptureTests {
     func captureWithoutPermissionReturnsEmpty() {
         #expect(ScreenCaptureService.captureAllDisplays().isEmpty)
     }
+
+    // scale 由图像像素宽 / 屏幕点宽推导（Retina 3024px / 1512pt = 2）
+    @Test func deriveScaleFromImageWidth() {
+        let scale = ScreenCaptureService.deriveScale(
+            for: 999_999,
+            imageWidth: 3024,
+            bounds: CGRect(x: 0, y: 0, width: 1512, height: 900)
+        )
+        #expect(scale == 2)
+    }
+
+    // 屏幕宽度为 0 时不能除零，退回 1
+    @Test func deriveScaleFallsBackWhenBoundsWidthIsZero() {
+        let scale = ScreenCaptureService.deriveScale(
+            for: 999_999,
+            imageWidth: 100,
+            bounds: CGRect(x: 0, y: 0, width: 0, height: 0)
+        )
+        #expect(scale == 1)
+    }
 }

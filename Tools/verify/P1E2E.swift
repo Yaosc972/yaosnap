@@ -340,6 +340,12 @@ final class Harness {
         NSPasteboard.general.clearContents()
         keyDown(36, characters: "\r", in: window, view: view)
         verifyClipboardPixels("COPY-ENTER", expected: expected)
+        let pastedSize = NSImage(pasteboard: NSPasteboard.general)?.size
+        if let pastedSize, abs(pastedSize.width - rect.width) <= 1, abs(pastedSize.height - rect.height) <= 1 {
+            pass("COPY-POINT-SIZE", "剪贴板图像点尺寸 \(pastedSize) 与选区 \(rect.size) 一致")
+        } else {
+            fail("COPY-POINT-SIZE", "剪贴板图像点尺寸 \(String(describing: pastedSize)) 期望 \(rect.size)")
+        }
         if visibleOverlayWindows.isEmpty {
             pass("COPY-ENTER-CLOSE", "复制后覆盖层全部消失")
         } else {
@@ -523,7 +529,11 @@ final class Harness {
     func runEscape() {
         guard let (window, view) = beginSession("ESC") else { return }
         let duringCursor = NSCursor.current
-        info("CURSOR", "会话中 cursorIsCrosshair=\(duringCursor === NSCursor.crosshair)")
+        if duringCursor === NSCursor.crosshair, view.showsCrosshair {
+            pass("CURSOR", "会话中为十字光标且 cursor rect 生效（不再隐藏光标）")
+        } else {
+            fail("CURSOR", "会话中 cursor=\(duringCursor) showsCrosshair=\(view.showsCrosshair)")
+        }
         guard let during = capture("06-before-esc.png") else {
             fail("ESC", "截图失败")
             endSession()
@@ -534,7 +544,11 @@ final class Harness {
         keyDown(53, characters: "\u{1b}", in: window, view: view)
         pump(0.3)
         let afterCursor = NSCursor.current
-        info("CURSOR", "取消后 cursorIsArrow=\(afterCursor === NSCursor.arrow)")
+        if afterCursor === NSCursor.arrow, !view.showsCrosshair {
+            pass("CURSOR-RESTORE", "取消后恢复箭头光标")
+        } else {
+            fail("CURSOR-RESTORE", "取消后 cursor=\(afterCursor) showsCrosshair=\(view.showsCrosshair)")
+        }
         guard let after = capture("07-after-esc.png") else {
             fail("ESC", "取消后截图失败")
             endSession()
@@ -561,6 +575,144 @@ final class Harness {
         endSession()
     }
 
+    // MARK: - P2：选区操作工具条
+
+    func runActionBar() {
+        guard let (window, view) = beginSession("ACTIONBAR") else { return }
+        guard let bar = view.subviews.compactMap({ $0 as? ActionBarView }).first else {
+            fail("ACTIONBAR", "覆盖视图里没有 ActionBarView")
+            endSession()
+            return
+        }
+        if bar.isHidden {
+            pass("ACTIONBAR-IDLE", "未选区时工具条隐藏")
+        } else {
+            fail("ACTIONBAR-IDLE", "未选区时工具条应隐藏")
+        }
+
+        drag(view, window: window, from: CGPoint(x: 100, y: 100), to: CGPoint(x: 400, y: 300))
+        let rect = view.selectionRect
+        if !bar.isHidden {
+            pass("ACTIONBAR-SHOW", "选区确定后工具条显示 frame=\(bar.frame)")
+        } else {
+            fail("ACTIONBAR-SHOW", "选区确定后工具条仍隐藏")
+        }
+        let expectedY = rect.minY - bar.frame.height - 6
+        if abs(bar.frame.minY - expectedY) <= 1, abs(bar.frame.maxX - rect.maxX) <= 1 {
+            pass("ACTIONBAR-POS", "工具条贴在选区右下角外侧")
+        } else {
+            fail("ACTIONBAR-POS", "工具条 frame=\(bar.frame) 期望右下角外侧 y=\(expectedY) maxX=\(rect.maxX)")
+        }
+        _ = capture("09-actionbar.png")
+
+        let buttons = bar.subviews.compactMap { $0 as? NSButton }
+        guard buttons.count == 3 else {
+            fail("ACTIONBAR-BUTTONS", "工具条按钮数=\(buttons.count)，期望 3")
+            endSession()
+            return
+        }
+        let imageRect = RectMath.imageRect(
+            fromViewRect: rect, viewHeight: view.bounds.height, scale: view.shot.scale
+        )
+        let expected = expectedCrop(from: view.shot, imageRect: imageRect)
+        NSPasteboard.general.clearContents()
+        buttons[0].performClick(nil)
+        pump(0.3)
+        verifyClipboardPixels("ACTIONBAR-COPY", expected: expected)
+        if visibleOverlayWindows.isEmpty {
+            pass("ACTIONBAR-COPY-CLOSE", "点击复制按钮后覆盖层消失")
+        } else {
+            fail("ACTIONBAR-COPY-CLOSE", "点击复制按钮后仍有 \(visibleOverlayWindows.count) 个覆盖窗口")
+        }
+        endSession()
+
+        // 取消按钮：同一选区上点 ✕ 应直接结束会话
+        guard let (window2, view2) = beginSession("ACTIONBAR-X") else { return }
+        drag(view2, window: window2, from: CGPoint(x: 200, y: 200), to: CGPoint(x: 500, y: 400))
+        guard let bar2 = view2.subviews.compactMap({ $0 as? ActionBarView }).first,
+              let cancelButton = bar2.subviews.compactMap({ $0 as? NSButton }).last else {
+            fail("ACTIONBAR-X", "找不到取消按钮")
+            endSession()
+            return
+        }
+        cancelButton.performClick(nil)
+        pump(0.25)
+        if visibleOverlayWindows.isEmpty {
+            pass("ACTIONBAR-X", "点击取消按钮后覆盖层消失")
+        } else {
+            fail("ACTIONBAR-X", "点击取消按钮后仍有 \(visibleOverlayWindows.count) 个覆盖窗口")
+        }
+        endSession()
+    }
+
+    // MARK: - P2：遮罩强度与悬停提亮
+
+    /// 单点物理像素亮度（0...1）
+    private func luminance(_ image: CGImage, atPhysical point: CGPoint) -> Double? {
+        let rep = NSBitmapImageRep(cgImage: image)
+        let scaleX = CGFloat(rep.pixelsWide) / CGFloat(image.width)
+        let x = Int(point.x * scaleX)
+        let y = Int(point.y * scaleX)
+        guard x >= 0, y >= 0, x < rep.pixelsWide, y < rep.pixelsHigh,
+              let color = rep.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { return nil }
+        return 0.2126 * Double(color.redComponent)
+            + 0.7152 * Double(color.greenComponent)
+            + 0.0722 * Double(color.blueComponent)
+    }
+
+    func runMaskAndHover() {
+        guard let (window, view) = beginSession("MASK") else { return }
+        guard let live = capture("10-mask-alpha.png") else {
+            fail("MASK", "会话中截图失败")
+            endSession()
+            return
+        }
+        let frozenLuminance = averageLuminance(view.shot.image)
+        let ratio = averageLuminance(live) / max(frozenLuminance, 0.0001)
+        // 遮罩 alpha=0.32 → 亮度约为原图 0.68
+        if ratio > 0.58, ratio < 0.80 {
+            pass("MASK-ALPHA", String(format: "会话亮度比 %.3f，接近 1-0.32", ratio))
+        } else {
+            fail("MASK-ALPHA", String(format: "会话亮度比 %.3f，期望 0.58~0.80", ratio))
+        }
+
+        let all = WindowDetector.onScreenWindows(ownPID: getpid())
+        let candidates = WindowDetector.snapCandidates(from: all, ownPID: getpid())
+        if let target = candidates.first {
+            let probe = CGPoint(x: target.bounds.minX + 200, y: target.bounds.minY + 700)
+            if WindowDetector.window(at: probe, in: candidates) == target {
+                let viewPoint = CGPoint(
+                    x: probe.x - view.shot.bounds.minX,
+                    y: view.bounds.height - (probe.y - view.shot.bounds.minY)
+                )
+                if let move = mouseEvent(.mouseMoved, at: viewPoint, in: window) {
+                    view.mouseMoved(with: move)
+                    pump(0.25)
+                }
+                if let hovered = capture("11-window-hover-bright.png"),
+                   let hoverLuminance = luminance(hovered, atPhysical: probe),
+                   let originalLuminance = luminance(view.shot.image, atPhysical: probe),
+                   originalLuminance > 0.02 {
+                    let hoverRatio = hoverLuminance / originalLuminance
+                    if hoverRatio > 0.9 {
+                        pass("HOVER-BRIGHT", String(format: "悬停窗口亮度比 %.3f，遮罩已挖空", hoverRatio))
+                    } else {
+                        fail("HOVER-BRIGHT", String(format: "悬停窗口亮度比 %.3f，期望 >0.9", hoverRatio))
+                    }
+                } else {
+                    fail("HOVER-BRIGHT", "悬停区域亮度采样失败")
+                }
+            } else {
+                info("HOVER-BRIGHT", "探测点未命中候选窗口，跳过")
+            }
+        } else {
+            info("HOVER-BRIGHT", "屏幕上没有可吸附窗口，跳过")
+        }
+
+        keyDown(53, characters: "\u{1b}", in: window, view: view)
+        endSession()
+    }
+
     // MARK: - 主流程
 
     func runAll() {
@@ -577,6 +729,8 @@ final class Harness {
         runWindowSnap()
         runSave()
         runEscape()
+        runActionBar()
+        runMaskAndHover()
 
         print("SUMMARY passes=\(passes) failures=\(failures)")
         exit(failures == 0 ? 0 : 1)

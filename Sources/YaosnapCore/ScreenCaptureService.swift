@@ -37,19 +37,36 @@ public enum ScreenCaptureService {
 
         return ids.compactMap { id in
             guard let image = CGDisplayCreateImage(id) else { return nil }
+            let bounds = CGDisplayBounds(id)
             return DisplayShot(
                 displayID: id,
                 image: image,
-                bounds: CGDisplayBounds(id),
-                scale: scaleFactor(for: id)
+                bounds: bounds,
+                scale: deriveScale(for: id, imageWidth: image.width, bounds: bounds)
             )
         }
     }
 
-    private static func scaleFactor(for displayID: CGDirectDisplayID) -> CGFloat {
-        NSScreen.screens.first {
+    /// 以冻结帧实际像素宽度 / 屏幕点宽度推导 scale（裁剪必须与图像对齐）。
+    /// 与 NSScreen.backingScaleFactor 不一致时告警并采用推导值。
+    static func deriveScale(
+        for displayID: CGDirectDisplayID,
+        imageWidth: Int,
+        bounds: CGRect
+    ) -> CGFloat {
+        let reported = NSScreen.screens.first {
             ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?
                 .uint32Value == displayID
-        }?.backingScaleFactor ?? 1
+        }?.backingScaleFactor
+
+        guard bounds.width > 0 else {
+            print("[capture] warning: displayID=\(displayID) bounds 宽度为 0，scale 退回 \(reported ?? 1)")
+            return reported ?? 1
+        }
+        let derived = CGFloat(imageWidth) / bounds.width
+        if let reported, abs(reported - derived) > 0.001 {
+            print("[capture] warning: displayID=\(displayID) scale 不一致，NSScreen=\(reported) 图像推导=\(derived)，采用推导值")
+        }
+        return derived
     }
 }
