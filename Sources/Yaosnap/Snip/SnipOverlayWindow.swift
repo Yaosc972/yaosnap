@@ -16,6 +16,7 @@ final class SnipOverlayWindow: NSWindow {
         isOpaque = true
         hasShadow = false
         ignoresMouseEvents = false
+        acceptsMouseMovedEvents = true
         backgroundColor = .black
     }
 

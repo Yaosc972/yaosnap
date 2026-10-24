@@ -4,6 +4,7 @@ import YaosnapCore
 @MainActor
 final class SnipController {
     private var windows: [SnipOverlayWindow] = []
+    private var isCursorHidden = false
 
     func start() {
         guard windows.isEmpty else { return }
@@ -29,6 +30,8 @@ final class SnipController {
             window.makeKeyAndOrderFront(nil)
             windows.append(window)
         }
+        guard !windows.isEmpty else { return }
+        hideCursor()
         NSApp.activate(ignoringOtherApps: true)
         // 激活后确保首屏窗口成为 key window，接收键盘（Esc）。
         windows.first?.makeKey()
@@ -39,6 +42,23 @@ final class SnipController {
             window.orderOut(nil)
         }
         windows.removeAll()
+        restoreCursor()
+    }
+
+    // NSCursor.hide/unhide 是进程级计数，hide 与 unhide 必须严格成对，
+    // 否则光标会在会话结束后永久消失。
+    private func hideCursor() {
+        guard !isCursorHidden else { return }
+        isCursorHidden = true
+        NSCursor.crosshair.set()
+        NSCursor.hide()
+    }
+
+    private func restoreCursor() {
+        guard isCursorHidden else { return }
+        isCursorHidden = false
+        NSCursor.arrow.set()
+        NSCursor.unhide()
     }
 
     private func showPermissionAlert() {

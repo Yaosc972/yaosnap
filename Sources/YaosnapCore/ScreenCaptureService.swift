@@ -6,6 +6,13 @@ public struct DisplayShot {
     public let image: CGImage
     public let bounds: CGRect   // CG 全局坐标（左上原点）
     public let scale: CGFloat   // backingScaleFactor
+
+    public init(displayID: CGDirectDisplayID, image: CGImage, bounds: CGRect, scale: CGFloat) {
+        self.displayID = displayID
+        self.image = image
+        self.bounds = bounds
+        self.scale = scale
+    }
 }
 
 public enum ScreenCaptureService {
