@@ -172,7 +172,11 @@ final class OverlayView: NSView {
     }
 
     private func requestCopy() {
-        NotificationCenter.default.post(name: .snipCopyRequested, object: nil)
+        NotificationCenter.default.post(
+            name: .snipCopyRequested,
+            object: nil,
+            userInfo: ["displayID": shot.displayID]
+        )
     }
 
     private func requestSave() {

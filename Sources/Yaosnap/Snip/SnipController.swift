@@ -4,10 +4,15 @@ import YaosnapCore
 
 @MainActor
 final class SnipController {
+    private struct PendingOutput {
+        let displayID: UInt32
+        let image: CGImage
+    }
+
     private var windows: [SnipOverlayWindow] = []
     private var shots: [DisplayShot] = []
-    /// 当前已确定选区对应的裁剪结果。snipCommitted 时写入，会话结束时清空。
-    private var pendingImage: CGImage?
+    /// 当前待输出选区，绑定提交它的屏幕。输出请求必须带同一 displayID。
+    private var pendingOutput: PendingOutput?
     private var savePanel: NSSavePanel?
     private var isCursorHidden = false
 
@@ -25,7 +30,7 @@ final class SnipController {
         }
 
         shots = captures
-        pendingImage = nil
+        pendingOutput = nil
         for shot in captures {
             guard let screen = NSScreen.screens.first(where: {
                 ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?
@@ -53,7 +58,7 @@ final class SnipController {
         }
         windows.removeAll()
         shots.removeAll()
-        pendingImage = nil
+        pendingOutput = nil
         restoreCursor()
     }
 
@@ -61,7 +66,7 @@ final class SnipController {
 
     /// 选区确定：按 displayID 找到冻结帧并裁剪，结果留给 Enter / 双击 / ⌘S。
     func commitSelection(_ notification: Notification) {
-        pendingImage = nil
+        pendingOutput = nil
         guard let info = notification.userInfo,
               let viewRect = info["viewRect"] as? CGRect,
               let viewHeight = info["viewHeight"] as? CGFloat,
@@ -86,12 +91,17 @@ final class SnipController {
             abortWithError("裁剪失败 rect=\(imageRect) image=\(shot.image.width)x\(shot.image.height)")
             return
         }
-        pendingImage = cropped
+        pendingOutput = PendingOutput(displayID: displayID, image: cropped)
     }
 
-    func copyPendingImage() {
-        guard let image = pendingImage else { return }
-        guard ClipboardService.copyToPasteboard(image) else {
+    func copyPendingImage(_ notification: Notification) {
+        guard let pending = pendingOutput else { return }
+        guard let displayID = notification.userInfo?["displayID"] as? UInt32,
+              displayID == pending.displayID else {
+            rejectMismatch("复制", notification: notification, pending: pending)
+            return
+        }
+        guard ClipboardService.copyToPasteboard(pending.image) else {
             print("[snip] error: 写入剪贴板失败")
             NSSound.beep()
             return
@@ -101,8 +111,12 @@ final class SnipController {
     }
 
     func savePendingImage(_ notification: Notification) {
-        guard pendingImage != nil, savePanel == nil else { return }
-        let displayID = notification.userInfo?["displayID"] as? UInt32
+        guard let pending = pendingOutput, savePanel == nil else { return }
+        guard let displayID = notification.userInfo?["displayID"] as? UInt32,
+              displayID == pending.displayID else {
+            rejectMismatch("保存", notification: notification, pending: pending)
+            return
+        }
         let parent = overlayWindow(for: displayID) ?? NSApp.keyWindow ?? windows.first
         guard let parent else {
             abortWithError("没有可用的覆盖窗口")
@@ -138,7 +152,7 @@ final class SnipController {
             resumeSessionAfterSavePanel()
             return
         }
-        guard let image = pendingImage, let data = ImageOutput.pngData(from: image) else {
+        guard let image = pendingOutput?.image, let data = ImageOutput.pngData(from: image) else {
             print("[snip] error: PNG 编码失败")
             NSSound.beep()
             resumeSessionAfterSavePanel()
@@ -164,6 +178,17 @@ final class SnipController {
         print("[snip] error: \(message)")
         NSSound.beep()
         cancel()
+    }
+
+    /// 输出请求来自另一块屏的覆盖层。拒绝，避免输出错屏内容。
+    private func rejectMismatch(
+        _ action: String,
+        notification: Notification,
+        pending: PendingOutput
+    ) {
+        let requested = notification.userInfo?["displayID"] as? UInt32
+        print("[snip] error: \(action)请求 displayID=\(requested.map(String.init) ?? "缺失") 与待输出 displayID=\(pending.displayID) 不匹配")
+        NSSound.beep()
     }
 
     private func overlayWindow(for displayID: UInt32?) -> SnipOverlayWindow? {

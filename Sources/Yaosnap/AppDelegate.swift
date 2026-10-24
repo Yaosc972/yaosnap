@@ -40,7 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func handleSnipCopy(_ notification: Notification) {
-        snipController.copyPendingImage()
+        snipController.copyPendingImage(notification)
     }
 
     @objc private func handleSnipSave(_ notification: Notification) {
