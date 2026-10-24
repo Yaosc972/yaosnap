@@ -158,9 +158,33 @@ final class AnnotateHarness {
         pump(0.25)
     }
 
+    /// 发送修饰键变化。keyCode 只影响事件来源，行为由 modifierFlags 决定。
+    private func flagsChanged(
+        _ flags: NSEvent.ModifierFlags,
+        in window: NSWindow,
+        view: OverlayView
+    ) {
+        guard let event = NSEvent.keyEvent(
+            with: .flagsChanged,
+            location: .zero,
+            modifierFlags: flags,
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber,
+            context: nil,
+            characters: "",
+            charactersIgnoringModifiers: "",
+            isARepeat: false,
+            keyCode: flags.contains(.option) ? 58 : 56
+        ) else {
+            fail("MAGNIFIER-FLAGS", "无法构造修饰键事件")
+            return
+        }
+        view.flagsChanged(with: event)
+        pump(0.1)
+    }
+
     /// 直接驱动文字编辑器。编辑期间它是 first responder，按键不会经过 OverlayView.keyDown。
-    private func sendKey(
-        _ keyCode: UInt16,
+    private func sendKey(        _ keyCode: UInt16,
         characters: String,
         to editor: NSTextView,
         in window: NSWindow,
@@ -1617,6 +1641,76 @@ final class AnnotateHarness {
 
     // MARK: - 主流程
 
+    private func runMagnifierAndColorSampling() {
+        guard let (window, view) = beginSession("MAGNIFIER") else { return }
+        let probe = CGPoint(x: 300, y: 300)
+        if let moved = mouseEvent(.mouseMoved, at: probe, in: window) {
+            view.mouseMoved(with: moved)
+        }
+        flagsChanged([.option], in: window, view: view)
+        if view.isMagnifierVisible {
+            pass("MAGNIFIER-OPTION", "Option 按下后放大镜可见")
+        } else {
+            fail("MAGNIFIER-OPTION", "Option 按下后放大镜仍不可见")
+        }
+
+        // 拖选区自动召唤：松开 Option 后按压并拖动。
+        flagsChanged([], in: window, view: view)
+        let dragStart = CGPoint(x: 200, y: 200)
+        let dragEnd = CGPoint(x: 400, y: 360)
+        if let down = mouseEvent(.leftMouseDown, at: dragStart, in: window) {
+            view.mouseDown(with: down)
+        }
+        if let dragged = mouseEvent(.leftMouseDragged, at: dragEnd, in: window) {
+            view.mouseDragged(with: dragged)
+        }
+        if view.isMagnifierVisible {
+            pass("MAGNIFIER-DRAG", "拖动选区时放大镜自动出现")
+        } else {
+            fail("MAGNIFIER-DRAG", "拖动选区时放大镜没有出现")
+        }
+        if let up = mouseEvent(.leftMouseUp, at: dragEnd, in: window) {
+            view.mouseUp(with: up)
+        }
+        pump(0.15)
+        if view.isMagnifierVisible {
+            fail("MAGNIFIER-DRAG", "松开鼠标且未按 Option 时放大镜应隐藏")
+        } else {
+            pass("MAGNIFIER-DRAG", "松开鼠标后放大镜隐藏")
+        }
+
+        // Option 召唤后取色，默认 Hex。
+        if let moved = mouseEvent(.mouseMoved, at: probe, in: window) {
+            view.mouseMoved(with: moved)
+        }
+        flagsChanged([.option], in: window, view: view)
+        NSPasteboard.general.clearContents()
+        keyDown(8, characters: "c", in: window, view: view)
+        let hex = NSPasteboard.general.string(forType: .string)
+        if let hex, hex.range(of: "^#[0-9A-F]{6}$", options: .regularExpression) != nil {
+            pass("MAGNIFIER-COLOR-HEX", "剪贴板 \(hex) 符合 Hex 格式")
+        } else {
+            fail("MAGNIFIER-COLOR-HEX", "剪贴板内容 \(hex ?? "nil") 不是 Hex")
+        }
+
+        // Shift 切换格式后再按 C。
+        flagsChanged([.option, .shift], in: window, view: view)
+        NSPasteboard.general.clearContents()
+        keyDown(8, characters: "c", in: window, view: view, modifierFlags: [.option, .shift])
+        let rgb = NSPasteboard.general.string(forType: .string)
+        if let rgb, rgb.range(
+            of: "^rgb\\(\\d{1,3}, \\d{1,3}, \\d{1,3}\\)$",
+            options: .regularExpression
+        ) != nil {
+            pass("MAGNIFIER-COLOR-RGB", "剪贴板 \(rgb) 符合 rgb() 格式")
+        } else {
+            fail("MAGNIFIER-COLOR-RGB", "剪贴板内容 \(rgb ?? "nil") 不是 rgb()")
+        }
+
+        capture("p2-magnifier.png")
+        endSession()
+    }
+
     func runAll() {
         if !ScreenCaptureService.hasPermission() {
             print("FATAL 屏幕录制权限缺失，无法执行标注验收")
@@ -1647,6 +1741,7 @@ final class AnnotateHarness {
         runAlphaTransparency()
         runDigitPenSize()
         runColorWheelAlpha()
+        runMagnifierAndColorSampling()
 
         print("SUMMARY passes=\(passes) failures=\(failures)")
         exit(failures == 0 ? 0 : 1)

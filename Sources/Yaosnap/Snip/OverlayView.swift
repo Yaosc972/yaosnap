@@ -105,6 +105,16 @@ final class OverlayView: NSView {
     /// 两字符快捷键（RR）的首字符暂存。
     private var pendingShortcut: (key: String, at: TimeInterval)?
 
+    /// 放大镜可见性由 Option 按住或正在拖选区两种来源决定。
+    private(set) var isMagnifierVisible = false
+    private var isOptionDown = false
+    private var isShiftDown = false
+    private var magnifierCursor: CGPoint?
+    /// 取色格式。Shift 在 Hex 与 rgb() 之间切换，切换结果保留到本次截图结束。
+    private(set) var colorFormat: ColorFormat = .hex
+    private var colorFeedback: String?
+    private var colorFeedbackToken = 0
+
     /// 文字编辑控件与提交时需要的快照。origin 是画布坐标的基线起点。
     private var textEditor: AnnotatingTextView?
     private var textOrigin: CGPoint = .zero
@@ -152,12 +162,15 @@ final class OverlayView: NSView {
             drawSelectionBorder()
             drawSizeLabel()
         }
+        drawMagnifier()
     }
 
     // MARK: - 鼠标交互
 
     override func mouseMoved(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
+        magnifierCursor = point
+        refreshMagnifier()
         if case .polylineEditing(let points) = phase {
             updatePolylinePreview(points, cursor: canvasPoint(from: point))
             return
@@ -172,6 +185,8 @@ final class OverlayView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
+        magnifierCursor = point
+        defer { refreshMagnifier() }
         switch phase {
         case .idle:
             beginSelection(at: point)
@@ -236,6 +251,8 @@ final class OverlayView: NSView {
 
     override func mouseDragged(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
+        magnifierCursor = point
+        defer { refreshMagnifier() }
         switch phase {
         case .selecting(let origin, let freeDrag):
             guard freeDrag
@@ -319,6 +336,8 @@ final class OverlayView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
+        magnifierCursor = convert(event.locationInWindow, from: nil)
+        defer { refreshMagnifier() }
         switch phase {
         case .selecting:
             guard selectionRect.width >= Self.minimumSelectionSide,
@@ -486,6 +505,10 @@ final class OverlayView: NSView {
                 return
             }
             requestCopy()
+        // 放大镜可见时的 C 只取色，不与 ⌘⇧C（复制标注）混淆。
+        case 8 where isMagnifierVisible
+            && event.modifierFlags.intersection([.command, .control]).isEmpty:
+            copyMagnifierColor()
         case 48: // Tab：直线 / 箭头互换
             guard isReadyOrSelected,
                   case .draw(let kind) = toolMode,
@@ -512,6 +535,76 @@ final class OverlayView: NSView {
         default:
             if !handleToolShortcut(event) {
                 super.keyDown(with: event)
+            }
+        }
+    }
+
+    override func flagsChanged(with event: NSEvent) {
+        let flags = event.modifierFlags
+        let option = flags.contains(.option)
+        let shift = flags.contains(.shift)
+        // Shift 只在按下沿切换一次；长按不会连续翻转格式。
+        if shift, !isShiftDown, isMagnifierVisible {
+            colorFormat = colorFormat.toggled
+        }
+        isOptionDown = option
+        isShiftDown = shift
+        refreshMagnifier()
+    }
+
+    /// 拖选区脱离窗口吸附后自动召唤放大镜；松开鼠标后仅剩 Option 一种来源。
+    private var isDraggingSelection: Bool {
+        if case .selecting(_, let freeDrag) = phase { return freeDrag }
+        return false
+    }
+
+    /// Option 按下前还没收到过鼠标移动时，退回窗口记录的当前位置。
+    private var effectiveMagnifierCursor: CGPoint? {
+        if let magnifierCursor { return magnifierCursor }
+        guard let window else { return nil }
+        return convert(window.mouseLocationOutsideOfEventStream, from: nil)
+    }
+
+    private func refreshMagnifier() {
+        let visible = isOptionDown || isDraggingSelection
+        guard visible != isMagnifierVisible else {
+            if visible { needsDisplay = true }
+            return
+        }
+        isMagnifierVisible = visible
+        if !visible { colorFeedback = nil }
+        needsDisplay = true
+    }
+
+    private func copyMagnifierColor() {
+        guard let cursor = effectiveMagnifierCursor else { return }
+        let sampler = MagnifierSampler(
+            image: shot.image,
+            canvasSize: bounds.size,
+            scale: shot.scale
+        )
+        guard let color = sampler.color(at: cursor) else {
+            NSSound.beep()
+            return
+        }
+        let text = colorFormat.string(for: color)
+        guard ClipboardService.copyString(text) else {
+            NSSound.beep()
+            return
+        }
+        showColorFeedback(text)
+    }
+
+    private func showColorFeedback(_ text: String) {
+        colorFeedback = text
+        colorFeedbackToken &+= 1
+        let token = colorFeedbackToken
+        needsDisplay = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.colorFeedbackToken == token else { return }
+                self.colorFeedback = nil
+                self.needsDisplay = true
             }
         }
     }
@@ -1146,6 +1239,108 @@ final class OverlayView: NSView {
         ).fill()
         text.draw(
             at: NSPoint(x: labelRect.minX + padding.width, y: labelRect.minY + padding.height),
+            withAttributes: attributes
+        )
+    }
+
+    private func drawMagnifier() {
+        guard isMagnifierVisible, let cursor = effectiveMagnifierCursor else { return }
+        let frame = MagnifierGeometry.frame(cursor: cursor, in: bounds)
+        let interior = MagnifierGeometry.interiorRect(in: frame)
+        let sampler = MagnifierSampler(
+            image: shot.image,
+            canvasSize: bounds.size,
+            scale: shot.scale
+        )
+        guard let sample = sampler.magnified(
+            at: cursor,
+            sourcePixels: MagnifierGeometry.samplePixelCount(scale: shot.scale),
+            zoom: MagnifierGeometry.zoom
+        ) else { return }
+
+        let outer = NSBezierPath(
+            roundedRect: frame,
+            xRadius: MagnifierGeometry.cornerRadius,
+            yRadius: MagnifierGeometry.cornerRadius
+        )
+        NSColor(white: 0.1, alpha: 0.92).setFill()
+        outer.fill()
+
+        NSGraphicsContext.saveGraphicsState()
+        let radius = MagnifierGeometry.cornerRadius - MagnifierGeometry.borderWidth
+        NSBezierPath(roundedRect: interior, xRadius: radius, yRadius: radius).addClip()
+        NSImage(cgImage: sample.image, size: interior.size).draw(in: interior)
+        drawMagnifierCrosshair(in: interior, sample: sample)
+        NSGraphicsContext.restoreGraphicsState()
+
+        outer.lineWidth = MagnifierGeometry.borderWidth
+        NSColor.white.withAlphaComponent(0.85).setStroke()
+        outer.stroke()
+
+        if let colorFeedback {
+            drawColorFeedback(colorFeedback, in: frame)
+        }
+    }
+
+    private func drawMagnifierCrosshair(
+        in interior: CGRect,
+        sample: MagnifierSampler.Magnified
+    ) {
+        let outputSide = CGFloat(sample.outputSide)
+        let center = CGPoint(
+            x: interior.minX + sample.crosshair.x / outputSide * interior.width,
+            y: interior.maxY - sample.crosshair.y / outputSide * interior.height
+        )
+        let cross = NSBezierPath()
+        cross.move(to: CGPoint(x: interior.minX, y: center.y))
+        cross.line(to: CGPoint(x: interior.maxX, y: center.y))
+        cross.move(to: CGPoint(x: center.x, y: interior.minY))
+        cross.line(to: CGPoint(x: center.x, y: interior.maxY))
+        cross.lineWidth = 3
+        NSColor.black.withAlphaComponent(0.5).setStroke()
+        cross.stroke()
+        cross.lineWidth = 1
+        NSColor.white.setStroke()
+        cross.stroke()
+
+        // 光标像素本身圈出来，只看十字线分不清落在哪一格。
+        let cell = interior.width * CGFloat(sample.zoom) / outputSide
+        let box = NSBezierPath(rect: CGRect(
+            x: center.x - cell / 2,
+            y: center.y - cell / 2,
+            width: cell,
+            height: cell
+        ))
+        box.lineWidth = 2
+        NSColor.black.withAlphaComponent(0.6).setStroke()
+        box.stroke()
+        box.lineWidth = 1
+        NSColor.white.setStroke()
+        box.stroke()
+    }
+
+    private func drawColorFeedback(_ text: String, in frame: CGRect) {
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium),
+            .foregroundColor: NSColor.white,
+        ]
+        let string = text as NSString
+        let textSize = string.size(withAttributes: attributes)
+        let padding = NSSize(width: 5, height: 2)
+        let size = NSSize(
+            width: ceil(textSize.width) + padding.width * 2,
+            height: ceil(textSize.height) + padding.height * 2
+        )
+        let rect = CGRect(
+            x: frame.midX - size.width / 2,
+            y: frame.minY + MagnifierGeometry.borderWidth + 3,
+            width: size.width,
+            height: size.height
+        )
+        NSColor(white: 0, alpha: 0.75).setFill()
+        NSBezierPath(roundedRect: rect, xRadius: 3, yRadius: 3).fill()
+        string.draw(
+            at: CGPoint(x: rect.minX + padding.width, y: rect.minY + padding.height),
             withAttributes: attributes
         )
     }

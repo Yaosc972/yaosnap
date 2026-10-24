@@ -12,6 +12,13 @@ public enum ClipboardService {
     }
 
     @discardableResult
+    public static func copyString(_ string: String) -> Bool {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        return pasteboard.setString(string, forType: .string)
+    }
+
+    @discardableResult
     public static func copyToPasteboard(_ image: CGImage, scale: CGFloat) -> Bool {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
