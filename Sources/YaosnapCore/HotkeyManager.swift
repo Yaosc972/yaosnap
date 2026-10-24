@@ -13,13 +13,14 @@ public final class HotkeyManager {
     private var registrations: [UInt32: Registration] = [:]
     private var nextID: UInt32 = 1
     private var eventHandler: EventHandlerRef?
+    private var handlerInstalled = false
 
     public init() {
         var type = EventTypeSpec(
             eventClass: OSType(kEventClassKeyboard),
             eventKind: UInt32(kEventHotKeyPressed)
         )
-        InstallEventHandler(
+        let installStatus = InstallEventHandler(
             GetApplicationEventTarget(),
             { _, event, userData -> OSStatus in
                 guard let userData else { return OSStatus(eventNotHandledErr) }
@@ -43,6 +44,7 @@ public final class HotkeyManager {
             Unmanaged.passUnretained(self).toOpaque(),
             &eventHandler
         )
+        handlerInstalled = installStatus == noErr
     }
 
     deinit {
@@ -54,9 +56,10 @@ public final class HotkeyManager {
         }
     }
 
-    /// 注册全局热键；组合已被占用或系统拒绝时返回 false。
+    /// 注册全局热键；组合已被占用、系统拒绝或事件分发未装好时返回 false。
     @discardableResult
     public func register(_ hotkey: Hotkey, handler: @escaping Handler) -> Bool {
+        guard handlerInstalled else { return false }
         let id = nextID
         nextID += 1
         var ref: EventHotKeyRef?
