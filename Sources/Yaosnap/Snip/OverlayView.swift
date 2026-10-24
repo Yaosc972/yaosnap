@@ -8,16 +8,28 @@ final class OverlayView: NSView {
 
     /// 会话状态机。idling 无选区；selecting 在拖选区（origin 视图坐标，freeDrag 表示
     /// 已脱离窗口吸附）；ready 选区已确定；drawing 在拖标注（origin 画布坐标）；
-    /// editing 在输入文字。
+    /// editing 在输入文字；selected 选中了一条标注；moving 在拖动它（grab 是画布坐标的
+    /// 按下点，original 是按下时的形状，拖动全程按它平移）。
     private enum Phase {
         case idle
         case selecting(origin: CGPoint, freeDrag: Bool)
         case ready
         case drawing(origin: CGPoint)
         case editing
+        case selected(id: UUID)
+        /// pendingClone 非空表示这是 Control 按下起的克隆拖动：真正挪动时才把副本入列，
+        /// 只是点一下不会留下多余副本。
+        case moving(id: UUID, grab: CGPoint, original: Shape, pendingClone: Annotation?)
+    }
+
+    /// 工具模式。select 时鼠标只做选中与移动，不落新形状；draw 时行为与之前一致。
+    private enum ToolMode: Equatable {
+        case select
+        case draw(ShapeKind)
     }
 
     private var phase: Phase = .idle
+    private var toolMode: ToolMode = .draw(.rect)
     /// 光标下的可吸附窗口（全局坐标）。nil 表示光标不在任何窗口上。
     private var hoverWindow: WindowCandidate?
     /// 当前选区（视图坐标，左下原点）。空矩形表示尚未选中。
@@ -34,6 +46,8 @@ final class OverlayView: NSView {
     private static let minimumStrokeSide: CGFloat = 2
     /// 按下到拖动的位移小于该值不脱离窗口吸附；双击确认时手抖不应清掉已确定的选区。
     private static let dragThreshold: CGFloat = 3
+    /// 选择工具命中测试的容差：细线条点击偏几个点也能选中。
+    private static let hitTolerance: CGFloat = 4
     /// 文字编辑器的最小宽度。选区右侧不够宽时向右溢出，保证插入点始终可输入。
     private static let minimumTextWidth: CGFloat = 80
 
@@ -66,6 +80,7 @@ final class OverlayView: NSView {
             initialStyle: toolStore.currentStyle
         )
         bar.onSelectTool = { [weak self] kind in self?.selectTool(kind) }
+        bar.onSelectMode = { [weak self] in self?.enterSelectMode() }
         bar.onStyleChange = { [weak self] style in self?.applyStyle(style) }
         bar.onCopy = { [weak self] in self?.requestCopy() }
         bar.onSave = { [weak self] in self?.requestSave() }
@@ -76,6 +91,9 @@ final class OverlayView: NSView {
 
     /// 每形状独立记忆颜色与笔尖。
     private var toolStore = ToolStyleStore()
+
+    /// 应用内剪贴板。二次编辑的复制粘贴不碰系统剪贴板。
+    private var copiedAnnotation: Annotation?
 
     /// 两字符快捷键（RR）的首字符暂存。
     private var pendingShortcut: (key: String, at: TimeInterval)?
@@ -156,6 +174,10 @@ final class OverlayView: NSView {
                 beginSelection(at: point)
                 return
             }
+            if isSelectMode {
+                selectModeMouseDown(at: point, event: event)
+                return
+            }
             // 选区内按下：按当前工具起一笔 draft，单击不落形状（点序列除外，单击即圆点）
             guard let canvas else { return }
             let start = canvasPoint(from: point)
@@ -165,9 +187,18 @@ final class OverlayView: NSView {
             }
             canvas.draft = makeDraft(origin: start, current: start)
             phase = .drawing(origin: start)
+        case .selected:
+            guard selectionRect.contains(point) else {
+                removeCanvas()
+                beginSelection(at: point)
+                return
+            }
+            if isSelectMode {
+                selectModeMouseDown(at: point, event: event)
+            }
         case .editing:
             commitTextEditing()
-        case .selecting, .drawing:
+        case .selecting, .drawing, .moving:
             break // 已有按压，忽略重入
         }
     }
@@ -198,7 +229,23 @@ final class OverlayView: NSView {
             case .text:
                 break
             }
-        case .idle, .ready, .editing:
+        case .moving(let id, let grab, let original, let pendingClone):
+            guard let canvas else { return }
+            let current = canvasPoint(from: point)
+            var movingID = id
+            // 克隆副本在第一次真实拖动时才入列，平移基准仍是按下时的形状。
+            if let clone = pendingClone {
+                canvas.annotations.append(clone)
+                movingID = clone.id
+                phase = .moving(id: clone.id, grab: grab, original: original, pendingClone: nil)
+                canvas.selectedID = clone.id
+            }
+            guard let index = canvas.annotations.firstIndex(where: { $0.id == movingID }) else { return }
+            canvas.annotations[index].shape = original.translated(by: CGPoint(
+                x: current.x - grab.x,
+                y: current.y - grab.y
+            ))
+        case .idle, .ready, .editing, .selected:
             break
         }
     }
@@ -217,28 +264,114 @@ final class OverlayView: NSView {
             commitSelection()
         case .drawing:
             commitDraft()
-        case .idle, .ready, .editing:
+        case .moving(let id, _, _, _):
+            phase = .selected(id: id)
+            canvas?.selectedID = id
+        case .idle, .ready, .editing, .selected:
             break // ready 下单击保留选区，等待 Enter / 双击 / ⌘S
         }
+    }
+
+    // MARK: - 二次编辑
+
+    /// 选择模式按下：命中则选中或起拖；Control 按下复制一份再拖副本。
+    private func selectModeMouseDown(at viewPoint: CGPoint, event: NSEvent) {
+        guard let canvas else { return }
+        let start = canvasPoint(from: viewPoint)
+        guard let hit = hitAnnotation(at: start) else {
+            clearSelection()
+            return
+        }
+        if event.modifierFlags.contains(.control) {
+            let copy = Annotation(shape: hit.shape, style: hit.style)
+            canvas.selectedID = hit.id
+            phase = .moving(id: hit.id, grab: start, original: hit.shape, pendingClone: copy)
+            return
+        }
+        if case .selected(let id) = phase, id == hit.id {
+            phase = .moving(id: id, grab: start, original: hit.shape, pendingClone: nil)
+            return
+        }
+        phase = .selected(id: hit.id)
+        canvas.selectedID = hit.id
+    }
+
+    /// 自上而下取最上层命中。
+    private func hitAnnotation(at canvasPoint: CGPoint) -> Annotation? {
+        canvas?.annotations.reversed().first {
+            $0.shape.contains(canvasPoint, tolerance: Self.hitTolerance)
+        }
+    }
+
+    /// 清除选中。阶段退回 ready，选区与标注不动。
+    private func clearSelection() {
+        canvas?.selectedID = nil
+        if case .selected = phase {
+            phase = .ready
+        }
+    }
+
+    private func deleteSelected() {
+        guard case .selected(let id) = phase, let canvas else {
+            NSSound.beep()
+            return
+        }
+        canvas.annotations.removeAll { $0.id == id }
+        canvas.selectedID = nil
+        phase = .ready
+    }
+
+    private func copySelected() {
+        guard case .selected(let id) = phase, let canvas,
+              let annotation = canvas.annotations.first(where: { $0.id == id }) else {
+            NSSound.beep()
+            return
+        }
+        copiedAnnotation = annotation
+    }
+
+    private func pasteAnnotation() {
+        guard let source = copiedAnnotation, let canvas else {
+            NSSound.beep()
+            return
+        }
+        let pasted = Annotation(
+            shape: source.shape.translated(by: CGPoint(x: 12, y: 12)),
+            style: source.style
+        )
+        canvas.annotations.append(pasted)
+        canvas.selectedID = pasted.id
+        phase = .selected(id: pasted.id)
     }
 
     override func keyDown(with event: NSEvent) {
         switch event.keyCode {
         case 53: // Esc
+            // 有选中时 Esc 只清选中，不退出截图；选区与标注都保留。
+            if case .selected = phase {
+                clearSelection()
+                return
+            }
             NotificationCenter.default.post(name: .snipEscapePressed, object: nil)
         case 36: // Return
-            guard case .ready = phase, !selectionRect.isEmpty else {
+            guard isCommittedPhase, !selectionRect.isEmpty else {
                 NSSound.beep()
                 return
             }
             requestCopy()
         // ⌘S 只认 command，⌘⌃S / ⌘⌥S 不是保存快捷键
         case 1 where event.modifierFlags.intersection([.command, .control, .option]) == .command:
-            guard case .ready = phase, !selectionRect.isEmpty else {
+            guard isCommittedPhase, !selectionRect.isEmpty else {
                 NSSound.beep()
                 return
             }
             requestSave()
+        case 51, 117: // Delete / Forward Delete
+            deleteSelected()
+        case 8 where event.modifierFlags.intersection([.command, .control, .option, .shift]) == [.command, .shift]:
+            copySelected()
+        case 9 where event.modifierFlags.intersection([.command, .control, .option, .shift]) == [.command, .shift]:
+            pasteAnnotation()
         case 6 where event.modifierFlags.intersection([.command, .control, .option]) == .command: // ⌘Z
             undoLastAnnotation()
         default:
@@ -248,23 +381,39 @@ final class OverlayView: NSView {
         }
     }
 
+    /// ready 语义的阶段：选区已确定，复制 / 保存 / 切工具都可用。
+    private var isCommittedPhase: Bool {
+        switch phase {
+        case .ready, .selected, .moving: return true
+        case .idle, .selecting, .drawing, .editing: return false
+        }
+    }
+
+    private var isSelectMode: Bool { toolMode == .select }
+
     /// 撤销最后一笔。ready / drawing 都可用；无标注提示音。只撤销不重做。
     private func undoLastAnnotation() {
         guard let canvas, !canvas.annotations.isEmpty else {
             NSSound.beep()
             return
         }
+        clearSelection()
         canvas.annotations.removeLast()
     }
 
     /// 工具快捷键：无修饰键时匹配 ShapeCatalog 的 shortcut 字符。
     /// 两字符 shortcut（RR）靠短时间内连按两次首字符进入。
     private func handleToolShortcut(_ event: NSEvent) -> Bool {
-        guard case .ready = phase,
+        guard isCommittedPhase,
               event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty,
               let key = event.charactersIgnoringModifiers?.uppercased(), !key.isEmpty
         else { return false }
         let first = String(key.prefix(1))
+        if first == "V" {
+            pendingShortcut = nil
+            enterSelectMode()
+            return true
+        }
         let now = ProcessInfo.processInfo.systemUptime
         if let pending = pendingShortcut, now - pending.at < 0.5 {
             if let entry = ShapeCatalog.p2.first(where: { $0.shortcut == pending.key + first }) {
@@ -570,7 +719,7 @@ final class OverlayView: NSView {
     }
 
     private func updateActionBar() {
-        guard case .ready = phase, !selectionRect.isEmpty else {
+        guard isCommittedPhase, !selectionRect.isEmpty else {
             toolbar.isHidden = true
             return
         }
@@ -584,8 +733,17 @@ final class OverlayView: NSView {
 
     /// AnnotateToolbar.onSelectTool / 快捷键：切工具并读回该工具的记忆样式。
     private func selectTool(_ kind: ShapeKind) {
+        toolMode = .draw(kind)
+        clearSelection()
         canvas?.currentStyle = toolStore.select(kind)
         toolbar.select(kind)
+    }
+
+    /// AnnotateToolbar.onSelectMode / V：只切模式，不动 ToolStyleStore 记忆的 kind。
+    private func enterSelectMode() {
+        toolMode = .select
+        clearSelection()
+        toolbar.selectMode()
     }
 
     /// AnnotateToolbar.onStyleChange：样式写回当前工具的记忆。

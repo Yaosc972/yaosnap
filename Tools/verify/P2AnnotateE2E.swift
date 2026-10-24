@@ -82,12 +82,13 @@ final class AnnotateHarness {
         _ type: NSEvent.EventType,
         at point: CGPoint,
         in window: NSWindow,
-        clickCount: Int = 1
+        clickCount: Int = 1,
+        modifierFlags: NSEvent.ModifierFlags = []
     ) -> NSEvent? {
         NSEvent.mouseEvent(
             with: type,
             location: point,
-            modifierFlags: [],
+            modifierFlags: modifierFlags,
             timestamp: ProcessInfo.processInfo.systemUptime,
             windowNumber: window.windowNumber,
             context: nil,
@@ -98,18 +99,23 @@ final class AnnotateHarness {
     }
 
     /// 发送一次完整按压序列。
-    private func press(_ view: OverlayView, window: NSWindow, path: [CGPoint]) {
+    private func press(
+        _ view: OverlayView,
+        window: NSWindow,
+        path: [CGPoint],
+        modifierFlags: NSEvent.ModifierFlags = []
+    ) {
         guard let first = path.first else { return }
-        if let down = mouseEvent(.leftMouseDown, at: first, in: window) {
+        if let down = mouseEvent(.leftMouseDown, at: first, in: window, modifierFlags: modifierFlags) {
             view.mouseDown(with: down)
         }
         for point in path.dropFirst() {
-            if let dragged = mouseEvent(.leftMouseDragged, at: point, in: window) {
+            if let dragged = mouseEvent(.leftMouseDragged, at: point, in: window, modifierFlags: modifierFlags) {
                 view.mouseDragged(with: dragged)
             }
         }
         let last = path.last ?? first
-        if let up = mouseEvent(.leftMouseUp, at: last, in: window) {
+        if let up = mouseEvent(.leftMouseUp, at: last, in: window, modifierFlags: modifierFlags) {
             view.mouseUp(with: up)
         }
         pump(0.15)
@@ -179,6 +185,19 @@ final class AnnotateHarness {
         guard let bar = view.subviews.compactMap({ $0 as? AnnotateToolbar }).first,
               let button = bar.toolButtons[kind] else {
             fail(id, "工具条上找不到 \(kind.rawValue) 按钮")
+            return false
+        }
+        button.performClick(nil)
+        pump(0.1)
+        return true
+    }
+
+    /// 工具条选择按钮点击入口。
+    @discardableResult
+    private func tapSelect(_ view: OverlayView, id: String) -> Bool {
+        guard let bar = view.subviews.compactMap({ $0 as? AnnotateToolbar }).first,
+              let button = bar.selectButton else {
+            fail(id, "工具条上找不到选择按钮")
             return false
         }
         button.performClick(nil)
@@ -949,6 +968,143 @@ final class AnnotateHarness {
         endSession()
     }
 
+    // MARK: - P5 二次编辑
+
+    /// 选择工具点选矩形后拖动：数量不变，包围盒按拖动距离平移。
+    private func runSelectDrag() {
+        guard let (window, view) = beginSession("SELECT-DRAG") else { return }
+        drag(view, window: window, from: CGPoint(x: 200, y: 200), to: CGPoint(x: 700, y: 600))
+        let selection = view.selectionRect
+        press(view, window: window, path: [
+            CGPoint(x: selection.minX + 50, y: selection.minY + 50),
+            CGPoint(x: selection.minX + 250, y: selection.minY + 150),
+        ])
+        guard view.annotations.count == 1, tapSelect(view, id: "SELECT-DRAG") else {
+            fail("SELECT-DRAG", "前置画矩形或切选择工具失败 annotations=\(view.annotations.count)")
+            endSession()
+            return
+        }
+        press(view, window: window, path: [CGPoint(x: selection.minX + 100, y: selection.minY + 100)])
+        press(view, window: window, path: [
+            CGPoint(x: selection.minX + 100, y: selection.minY + 100),
+            CGPoint(x: selection.minX + 150, y: selection.minY + 120),
+        ])
+        let expected = CGRect(x: 100, y: 70, width: 200, height: 100)
+        guard view.annotations.count == 1,
+              case .rect(let rect) = view.annotations[0].shape,
+              rect == expected else {
+            fail("SELECT-DRAG", "拖动后 annotations=\(view.annotations) 期望 1 条 \(expected)")
+            endSession()
+            return
+        }
+        pass("SELECT-DRAG", "选中并拖动 (50,20)，矩形移到 \(rect)，数量保持 1")
+        endSession()
+    }
+
+    /// 选中后 Delete / Forward Delete 删除。
+    private func runDeleteSelection() {
+        guard let (window, view) = beginSession("DELETE") else { return }
+        drag(view, window: window, from: CGPoint(x: 150, y: 150), to: CGPoint(x: 700, y: 550))
+        let selection = view.selectionRect
+        press(view, window: window, path: [
+            CGPoint(x: selection.minX + 40, y: selection.minY + 40),
+            CGPoint(x: selection.minX + 140, y: selection.minY + 120),
+        ])
+        press(view, window: window, path: [
+            CGPoint(x: selection.minX + 180, y: selection.minY + 40),
+            CGPoint(x: selection.minX + 280, y: selection.minY + 120),
+        ])
+        guard view.annotations.count == 2, tapSelect(view, id: "DELETE") else {
+            fail("DELETE", "前置画两笔或切选择工具失败 annotations=\(view.annotations.count)")
+            endSession()
+            return
+        }
+        press(view, window: window, path: [CGPoint(x: selection.minX + 60, y: selection.minY + 60)])
+        let remainingID = view.annotations[1].id
+        keyDown(51, characters: "\u{7f}", in: window, view: view)
+        guard view.annotations.count == 1, view.annotations[0].id == remainingID else {
+            fail("DELETE", "Delete 后应只剩第二笔，实际 \(view.annotations)")
+            endSession()
+            return
+        }
+        press(view, window: window, path: [CGPoint(x: selection.minX + 200, y: selection.minY + 60)])
+        keyDown(117, characters: "\u{7f}", in: window, view: view)
+        guard view.annotations.isEmpty else {
+            fail("DELETE", "Forward Delete 后应清空，实际 \(view.annotations.count)")
+            endSession()
+            return
+        }
+        pass("DELETE", "Delete 与 Forward Delete 均删除选中，其余标注不受影响")
+        endSession()
+    }
+
+    /// ⌘⇧C / ⌘⇧V：应用内剪贴板粘贴出偏移 12pt 的新形状。
+    private func runCopyPasteSelection() {
+        guard let (window, view) = beginSession("COPY-PASTE") else { return }
+        drag(view, window: window, from: CGPoint(x: 200, y: 200), to: CGPoint(x: 700, y: 600))
+        let selection = view.selectionRect
+        press(view, window: window, path: [
+            CGPoint(x: selection.minX + 50, y: selection.minY + 50),
+            CGPoint(x: selection.minX + 250, y: selection.minY + 150),
+        ])
+        guard view.annotations.count == 1, tapSelect(view, id: "COPY-PASTE") else {
+            fail("COPY-PASTE", "前置画矩形或切选择工具失败 annotations=\(view.annotations.count)")
+            endSession()
+            return
+        }
+        press(view, window: window, path: [CGPoint(x: selection.minX + 100, y: selection.minY + 100)])
+        let originalID = view.annotations[0].id
+        keyDown(8, characters: "c", in: window, view: view, modifierFlags: [.command, .shift])
+        keyDown(9, characters: "v", in: window, view: view, modifierFlags: [.command, .shift])
+        let expected = CGRect(x: 62, y: 62, width: 200, height: 100)
+        guard view.annotations.count == 2,
+              view.annotations[0].id == originalID,
+              view.annotations[1].id != originalID,
+              case .rect(let pasted) = view.annotations[1].shape,
+              pasted == expected else {
+            fail("COPY-PASTE", "粘贴后 annotations=\(view.annotations) 期望新矩形 \(expected)")
+            endSession()
+            return
+        }
+        pass("COPY-PASTE", "⌘⇧C/⌘⇧V 粘贴出新 id 矩形 \(pasted)，原形状不动")
+        endSession()
+    }
+
+    /// Control 拖动：复制一份再移动副本，原形状留在原位。
+    private func runControlDragCopy() {
+        guard let (window, view) = beginSession("CTRL-DRAG") else { return }
+        drag(view, window: window, from: CGPoint(x: 200, y: 200), to: CGPoint(x: 700, y: 600))
+        let selection = view.selectionRect
+        press(view, window: window, path: [
+            CGPoint(x: selection.minX + 50, y: selection.minY + 50),
+            CGPoint(x: selection.minX + 250, y: selection.minY + 150),
+        ])
+        guard view.annotations.count == 1, tapSelect(view, id: "CTRL-DRAG") else {
+            fail("CTRL-DRAG", "前置画矩形或切选择工具失败 annotations=\(view.annotations.count)")
+            endSession()
+            return
+        }
+        let originalID = view.annotations[0].id
+        press(view, window: window, path: [
+            CGPoint(x: selection.minX + 100, y: selection.minY + 100),
+            CGPoint(x: selection.minX + 160, y: selection.minY + 130),
+        ], modifierFlags: .control)
+        let expectedOriginal = CGRect(x: 50, y: 50, width: 200, height: 100)
+        let expectedCopy = CGRect(x: 110, y: 80, width: 200, height: 100)
+        guard view.annotations.count == 2,
+              view.annotations[0].id == originalID,
+              case .rect(let original) = view.annotations[0].shape,
+              original == expectedOriginal,
+              case .rect(let copy) = view.annotations[1].shape,
+              copy == expectedCopy else {
+            fail("CTRL-DRAG", "Control 拖动后 annotations=\(view.annotations) 期望原 \(expectedOriginal) 副本 \(expectedCopy)")
+            endSession()
+            return
+        }
+        pass("CTRL-DRAG", "副本移到 \(copy)，原形状保持 \(original)")
+        endSession()
+    }
+
     // MARK: - 主流程
 
     func runAll() {
@@ -966,6 +1122,10 @@ final class AnnotateHarness {
         runUndo()
         runTextAnnotation()
         runMultilineText()
+        runSelectDrag()
+        runDeleteSelection()
+        runCopyPasteSelection()
+        runControlDragCopy()
 
         print("SUMMARY passes=\(passes) failures=\(failures)")
         exit(failures == 0 ? 0 : 1)

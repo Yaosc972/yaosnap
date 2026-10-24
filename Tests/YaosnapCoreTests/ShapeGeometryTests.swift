@@ -58,4 +58,95 @@ struct ShapeGeometryTests {
         #expect(ShapeCatalog.entry(for: .mosaic) != nil)
         #expect(ShapeCatalog.entry(for: .text)?.shortcut == "T")
     }
+
+    // MARK: - 命中测试
+
+    @Test func rectFamilyHitUsesInflatedBounds() {
+        let rect = CGRect(x: 10, y: 20, width: 30, height: 40)
+        let shapes: [Shape] = [
+            .rect(rect),
+            .roundedRect(rect, radius: 5),
+            .ellipse(rect),
+        ]
+        for shape in shapes {
+            #expect(shape.contains(CGPoint(x: 25, y: 40), tolerance: 0))
+            #expect(shape.contains(CGPoint(x: 5, y: 40), tolerance: 6), "左外侧 5pt 在容差 6 内")
+            #expect(!shape.contains(CGPoint(x: 5, y: 40), tolerance: 4), "左外侧 5pt 超出容差 4")
+            #expect(shape.contains(CGPoint(x: 43, y: 62), tolerance: 4), "右上角外扩 3pt 应在容差内")
+            #expect(!shape.contains(CGPoint(x: 0, y: 0), tolerance: 4))
+        }
+    }
+
+    @Test func textHitUsesInflatedBounds() {
+        let origin = CGPoint(x: 20, y: 30)
+        let shape = Shape.text("Hello", origin: origin, fontSize: 22)
+        let bounds = shape.bounds
+        #expect(shape.contains(CGPoint(x: bounds.midX, y: bounds.midY), tolerance: 0))
+        #expect(shape.contains(CGPoint(x: bounds.minX - 2, y: bounds.midY), tolerance: 3))
+        #expect(!shape.contains(CGPoint(x: bounds.minX - 5, y: bounds.midY), tolerance: 3))
+    }
+
+    @Test func lineAndArrowHitUsesPointToSegmentDistance() {
+        let shapes: [Shape] = [
+            .line(from: CGPoint(x: 0, y: 0), to: CGPoint(x: 10, y: 0)),
+            .arrow(from: CGPoint(x: 0, y: 0), to: CGPoint(x: 10, y: 0)),
+        ]
+        for shape in shapes {
+            #expect(shape.contains(CGPoint(x: 5, y: 2), tolerance: 3))
+            #expect(!shape.contains(CGPoint(x: 5, y: 4), tolerance: 3))
+            // 投影落在端点外，按端点距离算
+            #expect(shape.contains(CGPoint(x: 13, y: 0), tolerance: 3))
+            #expect(!shape.contains(CGPoint(x: 14, y: 0), tolerance: 3))
+        }
+    }
+
+    @Test func pointListHitUsesAnySegment() {
+        let points = [CGPoint(x: 0, y: 0), CGPoint(x: 10, y: 0), CGPoint(x: 10, y: 10)]
+        let shapes: [Shape] = [.brush(points), .marker(points), .mosaic(points)]
+        for shape in shapes {
+            #expect(shape.contains(CGPoint(x: 5, y: 2), tolerance: 3), "第一段附近")
+            #expect(shape.contains(CGPoint(x: 12, y: 5), tolerance: 3), "第二段附近")
+            #expect(!shape.contains(CGPoint(x: 5, y: 5), tolerance: 3), "折线外侧")
+        }
+        // 单点笔画退化成点距离
+        #expect(Shape.mosaic([CGPoint(x: 5, y: 5)]).contains(CGPoint(x: 6, y: 5), tolerance: 2))
+        #expect(!Shape.mosaic([CGPoint(x: 5, y: 5)]).contains(CGPoint(x: 10, y: 5), tolerance: 2))
+        #expect(!Shape.brush([]).contains(.zero, tolerance: 10), "空点列不命中任何点")
+    }
+
+    // MARK: - 平移
+
+    @Test func translatedMovesBoundsWithoutResizing() {
+        let delta = CGPoint(x: 12, y: -7)
+        let shapes: [Shape] = [
+            .rect(CGRect(x: 10, y: 20, width: 30, height: 40)),
+            .roundedRect(CGRect(x: 10, y: 20, width: 30, height: 40), radius: 5),
+            .ellipse(CGRect(x: 10, y: 20, width: 30, height: 40)),
+            .line(from: CGPoint(x: 0, y: 0), to: CGPoint(x: 10, y: 20)),
+            .arrow(from: CGPoint(x: 3, y: 4), to: CGPoint(x: -1, y: 9)),
+            .brush([CGPoint(x: 0, y: 0), CGPoint(x: 5, y: 5)]),
+            .marker([CGPoint(x: 2, y: 2), CGPoint(x: 8, y: 8)]),
+            .mosaic([CGPoint(x: 4, y: 4)]),
+            .text("Hi", origin: CGPoint(x: 6, y: 8), fontSize: 22),
+        ]
+        for shape in shapes {
+            let moved = shape.translated(by: delta)
+            #expect(moved.kind == shape.kind)
+            #expect(moved.bounds.size == shape.bounds.size, "\(shape) 尺寸不应变化")
+            #expect(moved.bounds.minX == shape.bounds.minX + delta.x)
+            #expect(moved.bounds.minY == shape.bounds.minY + delta.y)
+        }
+    }
+
+    @Test func translatedTextMovesOrigin() {
+        let origin = CGPoint(x: 6, y: 8)
+        let delta = CGPoint(x: 12, y: 12)
+        guard case .text(_, let movedOrigin, let fontSize) =
+            Shape.text("Hi", origin: origin, fontSize: 22).translated(by: delta) else {
+            Issue.record("平移后应仍是文本")
+            return
+        }
+        #expect(movedOrigin == CGPoint(x: origin.x + delta.x, y: origin.y + delta.y))
+        #expect(fontSize == 22)
+    }
 }

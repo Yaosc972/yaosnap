@@ -121,6 +121,66 @@ public enum Shape: Equatable, Codable {
             return TextMetrics.boundingRect(string, fontSize: fontSize, origin: origin)
         }
     }
+
+    /// 命中测试。面状形状按包围盒（外扩 tolerance）判断，线状按到路径的距离判断。
+    public func contains(_ point: CGPoint, tolerance: CGFloat) -> Bool {
+        switch self {
+        case .rect(let rect), .roundedRect(let rect, _), .ellipse(let rect):
+            return rect.insetBy(dx: -tolerance, dy: -tolerance).contains(point)
+        case .text:
+            return bounds.insetBy(dx: -tolerance, dy: -tolerance).contains(point)
+        case .line(let from, let to), .arrow(let from, let to):
+            return Self.distance(from: point, toSegmentFrom: from, to: to) <= tolerance
+        case .brush(let points), .marker(let points), .mosaic(let points):
+            guard let first = points.first else { return false }
+            guard points.count > 1 else {
+                return hypot(point.x - first.x, point.y - first.y) <= tolerance
+            }
+            // 单点笔画退化成点距离，多点是折线，任一相邻段命中即可。
+            return zip(points, points.dropFirst()).contains { segment in
+                Self.distance(from: point, toSegmentFrom: segment.0, to: segment.1) <= tolerance
+            }
+        }
+    }
+
+    /// 整体平移。文本的 origin 也要跟着走，否则包围盒会留在原位。
+    public func translated(by delta: CGPoint) -> Shape {
+        func moved(_ point: CGPoint) -> CGPoint {
+            CGPoint(x: point.x + delta.x, y: point.y + delta.y)
+        }
+        switch self {
+        case .rect(let rect):
+            return .rect(rect.offsetBy(dx: delta.x, dy: delta.y))
+        case .roundedRect(let rect, let radius):
+            return .roundedRect(rect.offsetBy(dx: delta.x, dy: delta.y), radius: radius)
+        case .ellipse(let rect):
+            return .ellipse(rect.offsetBy(dx: delta.x, dy: delta.y))
+        case .line(let from, let to):
+            return .line(from: moved(from), to: moved(to))
+        case .arrow(let from, let to):
+            return .arrow(from: moved(from), to: moved(to))
+        case .brush(let points):
+            return .brush(points.map(moved))
+        case .marker(let points):
+            return .marker(points.map(moved))
+        case .mosaic(let points):
+            return .mosaic(points.map(moved))
+        case .text(let string, let origin, let fontSize):
+            return .text(string, origin: moved(origin), fontSize: fontSize)
+        }
+    }
+
+    /// 点到线段的距离。零长线段退化为点到点距离。
+    private static func distance(from point: CGPoint, toSegmentFrom start: CGPoint, to end: CGPoint) -> CGFloat {
+        let dx = end.x - start.x
+        let dy = end.y - start.y
+        let lengthSquared = dx * dx + dy * dy
+        guard lengthSquared > 0 else {
+            return hypot(point.x - start.x, point.y - start.y)
+        }
+        let t = max(0, min(1, ((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared))
+        return hypot(point.x - (start.x + t * dx), point.y - (start.y + t * dy))
+    }
 }
 
 public struct Style: Equatable, Codable {

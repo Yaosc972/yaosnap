@@ -1,11 +1,12 @@
 import AppKit
 import YaosnapCore
 
-/// 选区标注工具条：形状选择、颜色/笔尖弹层、复制/保存/取消。
-/// 单行布局：[形状按钮][分隔][颜色][笔尖][分隔][复制][保存][取消]。
+/// 选区标注工具条：选择、形状选择、颜色/笔尖弹层、复制/保存/取消。
+/// 单行布局：[选择][分隔][形状按钮][分隔][颜色][笔尖][分隔][复制][保存][取消]。
 @MainActor
 final class AnnotateToolbar: NSView {
     var onSelectTool: ((ShapeKind) -> Void)?
+    var onSelectMode: (() -> Void)?
     var onStyleChange: ((Style) -> Void)?
     var onCopy: (() -> Void)?
     var onSave: (() -> Void)?
@@ -23,13 +24,15 @@ final class AnnotateToolbar: NSView {
             + CGFloat(ShapeCatalog.p2.count - 1) * spacing
         private static let styleRow: CGFloat = buttonSide * 2 + spacing
         private static let actionRow: CGFloat = buttonSide * 3 + spacing * 2
-        private static let separators: CGFloat = (separatorGap + separatorWidth + separatorGap) * 2
-        static let width: CGFloat = padding * 2 + toolRow + styleRow + actionRow + separators
+        private static let separators: CGFloat = (separatorGap + separatorWidth + separatorGap) * 3
+        static let width: CGFloat = padding * 2 + buttonSide + toolRow + styleRow + actionRow + separators
     }
 
     private(set) var selectedKind: ShapeKind = .rect
+    private(set) var isSelectMode = false
     private(set) var currentStyle: Style
     /// 暴露给验收 harness 程序化点击。
+    private(set) var selectButton: HoverButton!
     private(set) var toolButtons: [ShapeKind: HoverButton] = [:]
     private(set) var colorButton: HoverButton!
     private(set) var penButton: HoverButton!
@@ -56,6 +59,13 @@ final class AnnotateToolbar: NSView {
     /// 选中形状按钮。快捷键与点击共用，幂等。
     func select(_ kind: ShapeKind) {
         selectedKind = kind
+        isSelectMode = false
+        refreshSelection()
+    }
+
+    /// 切到选择工具。形状按钮全部取消高亮。
+    func selectMode() {
+        isSelectMode = true
         refreshSelection()
     }
 
@@ -81,6 +91,13 @@ final class AnnotateToolbar: NSView {
             x += Metrics.separatorWidth + Metrics.separatorGap
         }
 
+        selectButton = makeHoverButton(
+            symbol: "cursorarrow",
+            title: "选择",
+            action: #selector(selectModeTapped)
+        )
+        place(selectButton)
+        separator()
         for (index, entry) in ShapeCatalog.p2.enumerated() {
             let button = makeHoverButton(
                 symbol: entry.symbol,
@@ -165,10 +182,13 @@ final class AnnotateToolbar: NSView {
     /// 刷新形状按钮高亮：当前工具描白圈。
     private func refreshSelection() {
         for (kind, button) in toolButtons {
-            button.layer?.backgroundColor = kind == selectedKind
+            button.layer?.backgroundColor = !isSelectMode && kind == selectedKind
                 ? NSColor(white: 1, alpha: 0.22).cgColor
                 : NSColor.clear.cgColor
         }
+        selectButton.layer?.backgroundColor = isSelectMode
+            ? NSColor(white: 1, alpha: 0.22).cgColor
+            : NSColor.clear.cgColor
     }
 
     // MARK: - 弹层
@@ -226,6 +246,11 @@ final class AnnotateToolbar: NSView {
     }
 
     // MARK: - 动作
+
+    @objc private func selectModeTapped() {
+        selectMode()
+        onSelectMode?()
+    }
 
     @objc private func toolTapped(_ sender: NSButton) {
         let kind = ShapeCatalog.p2[sender.tag].kind
