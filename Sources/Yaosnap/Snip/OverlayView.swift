@@ -134,6 +134,17 @@ final class OverlayView: NSView {
     /// 标注画布。进入 ready 时创建，选区重画或清空时移除。
     private var canvas: AnnotationCanvas?
 
+    /// 标注层快照撤销栈。一次擦除可能删掉多条，快照比逐条命令更简单，也能原样恢复顺序。
+    private var undoStack: [AnnotationSnapshot] = []
+    private struct AnnotationSnapshot {
+        var annotations: [Annotation]
+        var nextSerial: Int
+    }
+
+    /// 橡皮擦拖动的上一落点与"本次拖动已压栈"标记。
+    private var eraserLastPoint: CGPoint?
+    private var eraserPushedUndo = false
+
     /// 待导出标注。控制器在复制 / 保存时按 displayID 来取。
     var annotations: [Annotation] { canvas?.annotations ?? [] }
 
@@ -286,12 +297,17 @@ final class OverlayView: NSView {
         case .drawing(let origin):
             guard let canvas else { return }
             let current = canvasPoint(from: point)
+            if toolStore.currentKind == .eraser {
+                eraseAnnotations(from: eraserLastPoint ?? origin, to: current)
+                eraserLastPoint = current
+                return
+            }
             switch toolStore.currentKind {
-            case .brush, .marker, .mosaic:
+            case .brush, .marker, .mosaic, .blur:
                 appendDraftPoint(current)
             case .rect, .roundedRect, .ellipse, .line, .arrow, .polyline:
                 canvas.draft = makeDraft(origin: origin, current: current)
-            case .text:
+            case .serial, .text, .eraser:
                 break
             }
         case .moving(let id, let grab, let original, let pendingClone):
@@ -300,6 +316,7 @@ final class OverlayView: NSView {
             var movingID = id
             // 克隆副本在第一次真实拖动时才入列，平移基准仍是按下时的形状。
             if let clone = pendingClone {
+                pushUndoSnapshot()
                 canvas.annotations.append(clone)
                 movingID = clone.id
                 phase = .moving(id: clone.id, grab: grab, original: original, pendingClone: nil)
@@ -367,6 +384,13 @@ final class OverlayView: NSView {
             }
             commitSelection()
         case .drawing(let origin):
+            if toolStore.currentKind == .eraser {
+                canvas?.draft = nil
+                eraserLastPoint = nil
+                eraserPushedUndo = false
+                phase = .ready
+                return
+            }
             let current = canvasPoint(from: convert(event.locationInWindow, from: nil))
             if toolStore.currentKind == .polyline,
                hypot(current.x - origin.x, current.y - origin.y) < Self.dragThreshold,
@@ -466,6 +490,11 @@ final class OverlayView: NSView {
             NSSound.beep()
             return
         }
+        guard canvas.annotations.contains(where: { $0.id == id }) else {
+            NSSound.beep()
+            return
+        }
+        pushUndoSnapshot()
         canvas.annotations.removeAll { $0.id == id }
         canvas.selectedID = nil
         phase = .ready
@@ -489,6 +518,7 @@ final class OverlayView: NSView {
             shape: source.shape.translated(by: CGPoint(x: 12, y: 12)),
             style: source.style
         )
+        pushUndoSnapshot()
         canvas.annotations.append(pasted)
         // 连续粘贴以新副本为源，否则每次偏移基准相同，多个副本会叠在同一处。
         copiedAnnotation = pasted
@@ -815,15 +845,16 @@ final class OverlayView: NSView {
         updateActionBar()
     }
 
-    /// 撤销最后一笔。ready / drawing 都可用；无标注提示音。只撤销不重做。
+    /// 撤销一步。快照恢复整组标注，橡皮擦一次拖动删掉的多条也在同一步回退。
     private func undoLastAnnotation() {
-        guard let canvas, !canvas.annotations.isEmpty else {
+        guard let canvas, let snapshot = undoStack.popLast() else {
             NSSound.beep()
             return
         }
-        let removed = canvas.annotations.removeLast()
-        // 只清掉指向被删条目的选中；选中其他条目时撤销仍保持选中。
-        if canvas.selectedID == removed.id {
+        canvas.annotations = snapshot.annotations
+        canvas.nextSerial = snapshot.nextSerial
+        if let selected = canvas.selectedID,
+           !canvas.annotations.contains(where: { $0.id == selected }) {
             clearSelection()
         }
     }
@@ -983,6 +1014,15 @@ final class OverlayView: NSView {
             beginTextEditing(at: viewPoint)
             return
         }
+        if toolStore.currentKind == .eraser {
+            eraserLastPoint = start
+            eraserPushedUndo = false
+            canvas.draft = nil
+            phase = .drawing(origin: start)
+            // 单击也擦：路径退化成单点采样。
+            eraseAnnotations(from: start, to: start)
+            return
+        }
         canvas.draft = makeDraft(origin: start, current: start)
         phase = .drawing(origin: start)
     }
@@ -995,11 +1035,42 @@ final class OverlayView: NSView {
             phase = .ready
             return
         }
+        pushUndoSnapshot()
         canvas.annotations.append(draft)
+        if case .serial = draft.shape {
+            canvas.nextSerial += 1
+        }
         canvas.draft = nil
         // Snipaste 的 auto_select_on_creation：新标注立即选中，可直接拖动或缩放。
         canvas.selectedID = draft.id
         phase = .selected(id: draft.id)
+    }
+
+    /// 橡皮擦沿路径删除相交标注。一次拖动只压一次栈，撤销时整组恢复。
+    private func eraseAnnotations(from start: CGPoint, to end: CGPoint) {
+        guard let canvas else { return }
+        let tolerance = toolStore.currentStyle.pen.lineWidth
+        let hits = canvas.annotations.filter {
+            $0.shape.intersects(path: [start, end], tolerance: tolerance)
+        }
+        guard !hits.isEmpty else { return }
+        if !eraserPushedUndo {
+            pushUndoSnapshot()
+            eraserPushedUndo = true
+        }
+        let hitIDs = Set(hits.map(\.id))
+        canvas.annotations.removeAll { hitIDs.contains($0.id) }
+        if let selected = canvas.selectedID, hitIDs.contains(selected) {
+            clearSelection()
+        }
+    }
+
+    private func pushUndoSnapshot() {
+        guard let canvas else { return }
+        undoStack.append(AnnotationSnapshot(
+            annotations: canvas.annotations,
+            nextSerial: canvas.nextSerial
+        ))
     }
 
     private func isDraftValid(_ draft: Annotation) -> Bool {
@@ -1009,7 +1080,7 @@ final class OverlayView: NSView {
         case .line(let from, let to), .arrow(let from, let to):
             // 水平/垂直线的 bounds 有一边为 0，按位移判断
             return hypot(to.x - from.x, to.y - from.y) >= Self.minimumStrokeSide
-        case .brush, .marker, .mosaic:
+        case .brush, .marker, .mosaic, .blur, .serial:
             return true
         case .polyline(let points):
             guard points.count >= 2 else { return false }
@@ -1055,6 +1126,7 @@ final class OverlayView: NSView {
             phase = .ready
             return
         }
+        pushUndoSnapshot()
         canvas.annotations.append(finalized)
         canvas.draft = nil
         canvas.selectedID = finalized.id
@@ -1165,6 +1237,7 @@ final class OverlayView: NSView {
             ),
             style: style
         )
+        pushUndoSnapshot()
         canvas.annotations.append(annotation)
         canvas.selectedID = annotation.id
         phase = .selected(id: annotation.id)
@@ -1234,7 +1307,18 @@ final class OverlayView: NSView {
             return Annotation(shape: .marker([current]), style: style)
         case .mosaic:
             return Annotation(shape: .mosaic([current]), style: style)
-        case .text:
+        case .blur:
+            return Annotation(shape: .blur([current]), style: style)
+        case .serial:
+            return Annotation(
+                shape: .serial(
+                    value: canvas.nextSerial,
+                    center: current,
+                    radius: style.pen.serialRadius
+                ),
+                style: style
+            )
+        case .text, .eraser:
             return nil
         }
     }
@@ -1253,8 +1337,9 @@ final class OverlayView: NSView {
         case .brush(let points): updated = grown(points).map { .brush($0) }
         case .marker(let points): updated = grown(points).map { .marker($0) }
         case .mosaic(let points): updated = grown(points).map { .mosaic($0) }
+        case .blur(let points): updated = grown(points).map { .blur($0) }
         case .rect, .roundedRect, .ellipse, .line, .arrow, .polyline: updated = nil
-        case .text: updated = nil
+        case .text, .serial: updated = nil
         }
         if let updated {
             canvas.draft = Annotation(id: draft.id, shape: updated, style: draft.style)
@@ -1263,6 +1348,8 @@ final class OverlayView: NSView {
 
     /// 选区确定后创建标注画布，frame 与选区重合。
     private func setupCanvas() {
+        // 新标注层配新历史，序号也从 1 重新开始。
+        undoStack.removeAll()
         let newCanvas = AnnotationCanvas(
             base: activeSource,
             cropOriginPx: cropOriginPx(for: selectionRect),
@@ -1278,6 +1365,7 @@ final class OverlayView: NSView {
     private func removeCanvas() {
         canvas?.removeFromSuperview()
         canvas = nil
+        undoStack.removeAll()
     }
 
     private func updateActionBar() {

@@ -97,6 +97,10 @@ public enum AnnotationRenderer {
             drawInkStroke(points, color: markerColor, lineWidth: lineWidth, blend: .multiply, in: ctx)
         case .mosaic(let points):
             drawMosaic(points, style: annotation.style, input: input, in: ctx)
+        case .blur(let points):
+            drawBlur(points, style: annotation.style, input: input, in: ctx)
+        case .serial(let value, let center, let radius):
+            drawSerial(value: value, center: center, radius: radius, color: color, in: ctx)
         case .text(let string, let origin, let fontSize, let rotation):
             guard !string.isEmpty else { break }
             let layout = TextMetrics.multiline(
@@ -256,11 +260,7 @@ public enum AnnotationRenderer {
         in ctx: CGContext
     ) {
         guard !points.isEmpty else { return }
-        // 零长度笔画构不成 clip 区域，微移成短线段后圆头即为圆点。
-        var strokePoints = points
-        if strokePoints.count == 1, let only = strokePoints.first {
-            strokePoints.append(CGPoint(x: only.x + 0.5, y: only.y))
-        }
+        let strokePoints = coveragePoints(points)
         let coverageWidth = style.pen.lineWidth * 3
         let region = Shape.mosaic(strokePoints).bounds
             .insetBy(dx: -coverageWidth / 2, dy: -coverageWidth / 2)
@@ -272,15 +272,86 @@ public enum AnnotationRenderer {
         )
         guard let blocks = sampler.pixelated(region: region, blockPoints: style.pen.mosaicBlock) else { return }
         ctx.saveGState()
+        clipToStroke(strokePoints, width: coverageWidth, in: ctx)
+        // 块图的顶行对应 region 的画布 maxY，与 drawUpright 的摆放语义一致。
+        drawUpright(blocks, in: region, ctx: ctx)
+        ctx.restoreGState()
+    }
+
+    /// 模糊：与马赛克同构，采样源同为原始冻结帧，只把块化换成高斯模糊。
+    private static func drawBlur(
+        _ points: [CGPoint],
+        style: Style,
+        input: RenderInput,
+        in ctx: CGContext
+    ) {
+        guard !points.isEmpty else { return }
+        let strokePoints = coveragePoints(points)
+        let coverageWidth = style.pen.lineWidth * 3
+        let region = Shape.blur(strokePoints).bounds
+            .insetBy(dx: -coverageWidth / 2, dy: -coverageWidth / 2)
+        let sampler = BaseSampler(
+            base: input.base,
+            cropOriginPx: input.cropOriginPx,
+            canvasSize: input.canvasSize,
+            scale: input.scale
+        )
+        guard let blurred = sampler.blurred(region: region, radiusPoints: style.pen.blurRadius) else {
+            return
+        }
+        ctx.saveGState()
+        clipToStroke(strokePoints, width: coverageWidth, in: ctx)
+        drawUpright(blurred, in: region, ctx: ctx)
+        ctx.restoreGState()
+    }
+
+    /// 实心圆加居中白字。数字按位数缩字号，两位数也不会溢出圆外。
+    private static func drawSerial(
+        value: Int,
+        center: CGPoint,
+        radius: CGFloat,
+        color: RGBAColor,
+        in ctx: CGContext
+    ) {
+        guard radius > 0 else { return }
+        ctx.setBlendMode(.normal)
+        ctx.setFillColor(color.cgColor)
+        ctx.fillEllipse(in: CGRect(
+            x: center.x - radius, y: center.y - radius,
+            width: radius * 2, height: radius * 2
+        ))
+
+        let text = String(value)
+        let baseSize = radius * 1.3
+        let width = TextMetrics.boundingRect(text, fontSize: baseSize, origin: .zero).width
+        let fontSize = width > radius * 1.5 ? baseSize * radius * 1.5 / width : baseSize
+        let layout = TextMetrics.multiline(
+            text,
+            fontSize: fontSize,
+            origin: TextMetrics.origin(text: text, fontSize: fontSize, centeredAt: center),
+            foreground: RGBAColor(r: 1, g: 1, b: 1).cgColor
+        )
+        ctx.textMatrix = .identity
+        for row in layout.lines {
+            ctx.textPosition = row.baseline
+            CTLineDraw(row.line, ctx)
+        }
+    }
+
+    /// 零长度笔画构不成 clip 区域，微移成短线段后圆头即为圆点。
+    private static func coveragePoints(_ points: [CGPoint]) -> [CGPoint] {
+        guard points.count == 1, let only = points.first else { return points }
+        return [only, CGPoint(x: only.x + 0.5, y: only.y)]
+    }
+
+    /// 把当前裁剪区设为笔画路径的描边区域，采样效果只在笔迹内可见。
+    private static func clipToStroke(_ points: [CGPoint], width: CGFloat, in ctx: CGContext) {
         ctx.beginPath()
-        addSmoothedPath(strokePoints, into: ctx)
-        ctx.setLineWidth(coverageWidth)
+        addSmoothedPath(points, into: ctx)
+        ctx.setLineWidth(width)
         ctx.setLineCap(.round)
         ctx.setLineJoin(.round)
         ctx.replacePathWithStrokedPath()
         ctx.clip()
-        // 块图的顶行对应 region 的画布 maxY，与 drawUpright 的摆放语义一致。
-        drawUpright(blocks, in: region, ctx: ctx)
-        ctx.restoreGState()
     }
 }

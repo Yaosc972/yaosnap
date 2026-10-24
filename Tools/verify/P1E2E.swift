@@ -607,9 +607,10 @@ final class Harness {
         _ = capture("09-actionbar.png")
 
         let buttons = bar.subviews.compactMap { $0 as? NSButton }
-        // 选择 + 10 形状 + 颜色 + 笔尖 + 复制/保存/取消
-        guard buttons.count == 16 else {
-            fail("ACTIONBAR-BUTTONS", "工具条按钮数=\(buttons.count)，期望 16")
+        // 选择 + 形状 + 颜色 + 笔尖 + 复制/保存/取消
+        let expectedButtons = 1 + ShapeCatalog.p2.count + 2 + 3
+        guard buttons.count == expectedButtons else {
+            fail("ACTIONBAR-BUTTONS", "工具条按钮数=\(buttons.count)，期望 \(expectedButtons)")
             endSession()
             return
         }

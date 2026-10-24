@@ -109,10 +109,34 @@ public enum ShapeCatalog {
             phase: .p2
         ),
         ShapeEntry(
+            kind: .blur,
+            title: "模糊",
+            symbol: "cloud.fog",
+            shortcut: "G",
+            defaultStyle: Style(color: RGBAColor.palette[0], pen: .p3),
+            phase: .p2
+        ),
+        ShapeEntry(
             kind: .text,
             title: "文字",
             symbol: "textformat",
             shortcut: "T",
+            defaultStyle: Style(color: RGBAColor.palette[0], pen: .p3),
+            phase: .p2
+        ),
+        ShapeEntry(
+            kind: .serial,
+            title: "序号",
+            symbol: "1.circle",
+            shortcut: "N",
+            defaultStyle: Style(color: RGBAColor.palette[0], pen: .p3),
+            phase: .p2
+        ),
+        ShapeEntry(
+            kind: .eraser,
+            title: "橡皮擦",
+            symbol: "eraser",
+            shortcut: "E",
             defaultStyle: Style(color: RGBAColor.palette[0], pen: .p3),
             phase: .p2
         ),

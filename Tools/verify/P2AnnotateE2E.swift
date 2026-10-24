@@ -1799,6 +1799,230 @@ final class AnnotateHarness {
         endSession()
     }
 
+    /// 序号工具：连续放置自动递增；删除已放序号后新号不回收，撤销可恢复。
+    private func runSerialTool() {
+        guard let (window, view) = beginSession("SERIAL") else { return }
+        drag(view, window: window, from: CGPoint(x: 150, y: 150), to: CGPoint(x: 750, y: 600))
+        let selection = view.selectionRect
+        guard tapTool(view, .serial, id: "SERIAL") else {
+            endSession()
+            return
+        }
+        press(view, window: window, path: [CGPoint(x: selection.minX + 80, y: selection.minY + 100)])
+        press(view, window: window, path: [CGPoint(x: selection.minX + 240, y: selection.minY + 260)])
+        let values = view.annotations.compactMap { annotation -> Int? in
+            guard case .serial(let value, _, _) = annotation.shape else { return nil }
+            return value
+        }
+        guard view.annotations.count == 2, values == [1, 2] else {
+            fail("SERIAL-COUNT", "两个序号值 \(values)，标注数 \(view.annotations.count)")
+            endSession()
+            return
+        }
+        pass("SERIAL-COUNT", "连续放置两个序号，值为 1/2")
+
+        // 选中第一个序号并删除，再放新序号：编号应为 3 而不是复用 1。
+        guard tapSelect(view, id: "SERIAL-COUNTER") else { return }
+        let firstCenter = CGPoint(x: selection.minX + 80, y: selection.minY + 100)
+        press(view, window: window, path: [firstCenter])
+        keyDown(51, characters: "\u{7f}", in: window, view: view)
+        guard view.annotations.count == 1 else {
+            fail("SERIAL-COUNTER", "删除第一个序号后应剩 1 条，实际 \(view.annotations.count)")
+            endSession()
+            return
+        }
+        tapTool(view, .serial, id: "SERIAL-COUNTER")
+        press(view, window: window, path: [CGPoint(x: selection.minX + 400, y: selection.minY + 220)])
+        let afterDelete = view.annotations.compactMap { annotation -> Int? in
+            guard case .serial(let value, _, _) = annotation.shape else { return nil }
+            return value
+        }
+        guard afterDelete == [2, 3] else {
+            fail("SERIAL-COUNTER", "删除后新序号值 \(afterDelete)，期望 [2, 3]")
+            endSession()
+            return
+        }
+        keyDown(6, characters: "z", in: window, view: view, modifierFlags: .command)
+        guard view.annotations.count == 1 else {
+            fail("SERIAL-COUNTER", "撤销放置后应回到 1 条，实际 \(view.annotations.count)")
+            endSession()
+            return
+        }
+        keyDown(6, characters: "z", in: window, view: view, modifierFlags: .command)
+        let restored = view.annotations.compactMap { annotation -> Int? in
+            guard case .serial(let value, _, _) = annotation.shape else { return nil }
+            return value
+        }
+        guard restored == [1, 2] else {
+            fail("SERIAL-COUNTER", "第二次撤销应恢复被删序号，实际 \(restored)")
+            endSession()
+            return
+        }
+        pass("SERIAL-COUNTER", "删除不回收编号，撤销放置回退一步，再撤销恢复被删序号")
+        endSession()
+    }
+
+    /// 模糊工具：导出像素与底图不同、区域内更平滑、区域外完全一致。
+    private func runBlurTool() {
+        guard let (window, view) = beginSession("BLUR") else { return }
+        // 菜单栏是屏幕上固定的高纹理区域，模糊前后方差对比稳定。
+        let top = view.bounds.height
+        drag(view, window: window, from: CGPoint(x: 100, y: top - 360), to: CGPoint(x: 700, y: top))
+        let selection = view.selectionRect
+        guard selection.width >= 400, selection.height >= 300 else {
+            fail("BLUR", "选区异常 \(selection)")
+            endSession()
+            return
+        }
+        guard let before = exportedBytes(view) else {
+            fail("BLUR", "底图导出失败")
+            endSession()
+            return
+        }
+        guard tapTool(view, .blur, id: "BLUR") else {
+            endSession()
+            return
+        }
+        keyDown(23, characters: "5", in: window, view: view)
+        let canvasY = Int(selection.height) - 12
+        press(view, window: window, path: [
+            CGPoint(x: selection.minX + 40, y: selection.minY + CGFloat(canvasY)),
+            CGPoint(x: selection.minX + 520, y: selection.minY + CGFloat(canvasY)),
+        ])
+        guard view.annotations.count == 1, case .blur = view.annotations[0].shape else {
+            fail("BLUR", "模糊标注未入列 annotations=\(view.annotations.count)")
+            endSession()
+            return
+        }
+        guard let after = exportedBytes(view) else {
+            fail("BLUR", "模糊后导出失败")
+            endSession()
+            return
+        }
+
+        let scale = view.shot.scale
+        let imageWidth = Int(selection.width * scale)
+        let imageHeight = Int(selection.height * scale)
+        guard before.count == after.count, imageWidth > 0, imageHeight > 0 else {
+            fail("BLUR", "导出尺寸不一致 before=\(before.count) after=\(after.count)")
+            endSession()
+            return
+        }
+
+        func exportedPixel(
+            _ bytes: [UInt8], canvasX: Int, canvasY: Int
+        ) -> (r: Int, g: Int, b: Int) {
+            let x = min(imageWidth - 1, max(0, Int(CGFloat(canvasX) * scale)))
+            let y = min(imageHeight - 1, max(0, imageHeight - 1 - Int(CGFloat(canvasY) * scale)))
+            return pixelColor(bytes, x: x, y: y, width: imageWidth)
+        }
+
+        func luminanceVariance(
+            _ bytes: [UInt8], xRange: ClosedRange<Int>, yRange: ClosedRange<Int>
+        ) -> Double {
+            var values: [Double] = []
+            for canvasY in yRange {
+                for canvasX in xRange {
+                    let p = exportedPixel(bytes, canvasX: canvasX, canvasY: canvasY)
+                    values.append(Double(p.r + p.g + p.b) / 3)
+                }
+            }
+            let mean = values.reduce(0, +) / Double(values.count)
+            return values.reduce(0) { $0 + ($1 - mean) * ($1 - mean) } / Double(values.count)
+        }
+
+        var changed = 0
+        for canvasY in (canvasY - 6)...(canvasY + 6) {
+            for canvasX in 60...500 where
+                exportedPixel(before, canvasX: canvasX, canvasY: canvasY)
+                    != exportedPixel(after, canvasX: canvasX, canvasY: canvasY)
+            {
+                changed += 1
+            }
+        }
+
+        // 沿笔迹取方差最高的窗口，模糊后应明显下降。
+        let yRange = (canvasY - 8)...(canvasY + 8)
+        var bestBefore = 0.0
+        var bestAfter = 0.0
+        for start in stride(from: 60, through: 460, by: 100) {
+            let candidateBefore = luminanceVariance(before, xRange: start...(start + 40), yRange: yRange)
+            if candidateBefore > bestBefore {
+                bestBefore = candidateBefore
+                bestAfter = luminanceVariance(after, xRange: start...(start + 40), yRange: yRange)
+            }
+        }
+
+        // 区域外抽三条横带逐像素比对。
+        var outsideMismatch = 0
+        for sampleY in [canvasY - 40, canvasY - 30, canvasY - 20] {
+            for canvasX in stride(from: 0, to: Int(selection.width), by: 2) where
+                exportedPixel(before, canvasX: canvasX, canvasY: sampleY)
+                    != exportedPixel(after, canvasX: canvasX, canvasY: sampleY)
+            {
+                outsideMismatch += 1
+            }
+        }
+
+        guard changed > 0, bestBefore > 4, bestAfter < bestBefore * 0.8, outsideMismatch == 0 else {
+            fail(
+                "BLUR",
+                "changed=\(changed) variance \(Int(bestBefore))→\(Int(bestAfter)) outsideMismatch=\(outsideMismatch)"
+            )
+            endSession()
+            return
+        }
+        pass(
+            "BLUR",
+            "区域内 \(changed) 像素变化，方差 \(Int(bestBefore))→\(Int(bestAfter))，区域外一致"
+        )
+        endSession()
+    }
+
+    /// 橡皮擦：划过两个矩形之一，标注数 2→1；一次撤销恢复被删标注。
+    private func runEraserTool() {
+        guard let (window, view) = beginSession("ERASER") else { return }
+        drag(view, window: window, from: CGPoint(x: 150, y: 150), to: CGPoint(x: 750, y: 600))
+        let selection = view.selectionRect
+        func point(_ canvas: CGPoint) -> CGPoint {
+            CGPoint(x: selection.minX + canvas.x, y: selection.minY + canvas.y)
+        }
+        press(view, window: window, path: [
+            point(CGPoint(x: 40, y: 60)), point(CGPoint(x: 220, y: 180)),
+        ])
+        press(view, window: window, path: [
+            point(CGPoint(x: 280, y: 60)), point(CGPoint(x: 480, y: 180)),
+        ])
+        guard view.annotations.count == 2 else {
+            fail("ERASER", "前置画两个矩形失败 annotations=\(view.annotations.count)")
+            endSession()
+            return
+        }
+        let originalIDs = view.annotations.map(\.id)
+
+        guard tapTool(view, .eraser, id: "ERASER") else {
+            endSession()
+            return
+        }
+        press(view, window: window, path: [
+            point(CGPoint(x: 10, y: 120)), point(CGPoint(x: 250, y: 120)),
+        ])
+        guard view.annotations.count == 1, view.annotations[0].id == originalIDs[1] else {
+            fail("ERASER", "擦除后应只剩第二个矩形 annotations=\(view.annotations.map(\.id))")
+            endSession()
+            return
+        }
+
+        keyDown(6, characters: "z", in: window, view: view, modifierFlags: .command)
+        guard view.annotations.map(\.id) == originalIDs else {
+            fail("ERASER", "撤销后应恢复两条 annotations=\(view.annotations.map(\.id))")
+            endSession()
+            return
+        }
+        pass("ERASER", "擦除命中矩形 2→1，一次撤销整组恢复为 2")
+        endSession()
+    }
+
     func runAll() {
         if !ScreenCaptureService.hasPermission() {
             print("FATAL 屏幕录制权限缺失，无法执行标注验收")
@@ -1813,6 +2037,9 @@ final class AnnotateHarness {
         runShapeCopies()
         runToolStyleMemory()
         runUndo()
+        runSerialTool()
+        runBlurTool()
+        runEraserTool()
         runTextAnnotation()
         runMultilineText()
         runTextTransform()

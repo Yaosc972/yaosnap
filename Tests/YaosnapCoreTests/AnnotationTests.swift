@@ -22,7 +22,9 @@ struct AnnotationTests {
             .brush([CGPoint(x: 0, y: 0), CGPoint(x: 5, y: 5), CGPoint(x: 9, y: 1)]),
             .marker([CGPoint(x: 2, y: 2), CGPoint(x: 8, y: 8)]),
             .mosaic([CGPoint(x: 4, y: 4)]),
+            .blur([CGPoint(x: 4, y: 4), CGPoint(x: 9, y: 6)]),
             .text("Hi", origin: CGPoint(x: 6, y: 8), fontSize: 22, rotation: 0.5),
+            .serial(value: 3, center: CGPoint(x: 20, y: 30), radius: 14),
         ]
         for shape in shapes {
             let decoded = try roundTrip(shape)
@@ -49,7 +51,9 @@ struct AnnotationTests {
             (.brush([]), .brush),
             (.marker([]), .marker),
             (.mosaic([]), .mosaic),
+            (.blur([]), .blur),
             (.text("", origin: .zero, fontSize: 14, rotation: 0), .text),
+            (.serial(value: 1, center: .zero, radius: 10), .serial),
         ]
         for (shape, kind) in cases {
             #expect(shape.kind == kind)

@@ -13,6 +13,8 @@ final class AnnotationCanvas: NSView {
     var annotations: [Annotation] = [] {
         didSet { needsDisplay = true }
     }
+    /// 下一个序号。删除已放置的序号不回收编号，撤销放置时由快照回退。
+    var nextSerial: Int = 1
     /// 正在拖拽、尚未提交的形状。
     var draft: Annotation? {
         didSet { needsDisplay = true }

@@ -55,9 +55,16 @@ public enum PenSize: Int, CaseIterable, Codable {
     /// 文字工具字号，单位点。
     public var textFontSize: CGFloat { Self.textFontSizes[rawValue - 1] }
 
+    /// 序号标记半径，单位点。数字要留在圆内，不能直接跟线条宽度走。
+    public var serialRadius: CGFloat { Self.serialRadii[rawValue - 1] }
+
+    /// 模糊半径，单位点。与马赛克共用一档强度，只是效果从块化换成平滑。
+    public var blurRadius: CGFloat { mosaicBlock }
+
     private static let lineWidths: [CGFloat] = [2, 3.5, 5, 7, 10]
     private static let mosaicBlocks: [CGFloat] = [8, 12, 16, 24, 32]
     private static let textFontSizes: [CGFloat] = [14, 18, 22, 28, 36]
+    private static let serialRadii: [CGFloat] = [10, 12, 14, 18, 22]
 }
 
 /// 形状种类。从 Shape 派生，同时是"每形状记忆颜色与笔尖"的键。
@@ -71,7 +78,10 @@ public enum ShapeKind: String, Codable, CaseIterable {
     case brush
     case marker
     case mosaic
+    case blur
     case text
+    case serial
+    case eraser
 }
 
 /// 标注形状。坐标一律是画布点坐标：原点在选区左下角，y 向上。
@@ -85,9 +95,12 @@ public enum Shape: Equatable, Codable {
     case brush([CGPoint])
     case marker([CGPoint])
     case mosaic([CGPoint])
+    case blur([CGPoint])
     /// origin 为文本基线起点，画布点坐标。字号独立于 PenSize 的线条宽度。
     /// rotation 是绕未旋转包围盒中心的弧度，0 表示水平。
     case text(String, origin: CGPoint, fontSize: CGFloat, rotation: CGFloat)
+    /// 序号标记：实心圆加居中数字。value 由创建顺序决定，radius 由笔尖档位决定。
+    case serial(value: Int, center: CGPoint, radius: CGFloat)
 
     public var kind: ShapeKind {
         switch self {
@@ -100,7 +113,9 @@ public enum Shape: Equatable, Codable {
         case .brush: return .brush
         case .marker: return .marker
         case .mosaic: return .mosaic
+        case .blur: return .blur
         case .text: return .text
+        case .serial: return .serial
         }
     }
 
@@ -111,7 +126,8 @@ public enum Shape: Equatable, Codable {
             return rect
         case .line(let from, let to), .arrow(let from, let to):
             return RectMath.normalizedRect(from: from, to: to)
-        case .brush(let points), .marker(let points), .mosaic(let points), .polyline(let points):
+        case .brush(let points), .marker(let points), .mosaic(let points), .blur(let points),
+             .polyline(let points):
             guard let first = points.first else { return .zero }
             var minX = first.x, maxX = first.x, minY = first.y, maxY = first.y
             for point in points.dropFirst() {
@@ -126,6 +142,13 @@ public enum Shape: Equatable, Codable {
                 rect: TextMetrics.boundingRect(string, fontSize: fontSize, origin: origin),
                 rotation: rotation
             ).rotatedBounds
+        case .serial(_, let center, let radius):
+            return CGRect(
+                x: center.x - radius,
+                y: center.y - radius,
+                width: radius * 2,
+                height: radius * 2
+            )
         }
     }
 
@@ -149,7 +172,8 @@ public enum Shape: Equatable, Codable {
             return rect.insetBy(dx: -tolerance, dy: -tolerance).contains(local)
         case .line(let from, let to), .arrow(let from, let to):
             return Self.distance(from: point, toSegmentFrom: from, to: to) <= tolerance
-        case .brush(let points), .marker(let points), .mosaic(let points), .polyline(let points):
+        case .brush(let points), .marker(let points), .mosaic(let points), .blur(let points),
+             .polyline(let points):
             guard let first = points.first else { return false }
             guard points.count > 1 else {
                 return hypot(point.x - first.x, point.y - first.y) <= tolerance
@@ -158,6 +182,8 @@ public enum Shape: Equatable, Codable {
             return zip(points, points.dropFirst()).contains { segment in
                 Self.distance(from: point, toSegmentFrom: segment.0, to: segment.1) <= tolerance
             }
+        case .serial(_, let center, let radius):
+            return hypot(point.x - center.x, point.y - center.y) <= radius + tolerance
         }
     }
 
@@ -185,9 +211,44 @@ public enum Shape: Equatable, Codable {
             return .marker(points.map(moved))
         case .mosaic(let points):
             return .mosaic(points.map(moved))
+        case .blur(let points):
+            return .blur(points.map(moved))
         case .text(let string, let origin, let fontSize, let rotation):
             return .text(string, origin: moved(origin), fontSize: fontSize, rotation: rotation)
+        case .serial(let value, let center, let radius):
+            return .serial(value: value, center: moved(center), radius: radius)
         }
+    }
+
+    /// 橡皮擦笔迹是否穿过本形状。先按包围盒排除，再沿路径按容差采样命中。
+    /// tolerance 同时是橡皮擦笔宽，决定采样步长。
+    public func intersects(path: [CGPoint], tolerance: CGFloat) -> Bool {
+        guard let first = path.first else { return false }
+        var minX = first.x, maxX = first.x, minY = first.y, maxY = first.y
+        for point in path.dropFirst() {
+            minX = min(minX, point.x)
+            maxX = max(maxX, point.x)
+            minY = min(minY, point.y)
+            maxY = max(maxY, point.y)
+        }
+        let box = bounds.insetBy(dx: -tolerance, dy: -tolerance)
+        guard box.maxX >= minX, box.minX <= maxX, box.maxY >= minY, box.minY <= maxY else {
+            return false
+        }
+        let step = max(1, tolerance / 2)
+        for (start, end) in zip(path, path.dropFirst()) {
+            let length = hypot(end.x - start.x, end.y - start.y)
+            let divisions = max(1, Int(ceil(length / step)))
+            for index in 0...divisions {
+                let t = CGFloat(index) / CGFloat(divisions)
+                let sample = CGPoint(
+                    x: start.x + (end.x - start.x) * t,
+                    y: start.y + (end.y - start.y) * t
+                )
+                if contains(sample, tolerance: tolerance) { return true }
+            }
+        }
+        return contains(first, tolerance: tolerance)
     }
 
     /// 文字的未旋转包围盒与控制点几何。非文字形状为 nil。
