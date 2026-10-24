@@ -63,11 +63,16 @@ final class PinHarness {
         allPinWindows().filter(\.isVisible)
     }
 
-    private func keyEvent(keyCode: UInt16, characters: String, window: NSWindow) -> NSEvent? {
+    private func keyEvent(
+        keyCode: UInt16,
+        characters: String,
+        modifiers: NSEvent.ModifierFlags = [],
+        window: NSWindow
+    ) -> NSEvent? {
         NSEvent.keyEvent(
             with: .keyDown,
             location: .zero,
-            modifierFlags: [],
+            modifierFlags: modifiers,
             timestamp: ProcessInfo.processInfo.systemUptime,
             windowNumber: window.windowNumber,
             context: nil,
@@ -292,6 +297,129 @@ final class PinHarness {
         pump()
     }
 
+    /// 记下已有窗口号再贴一张 40x30，返回新增的窗口。每个用例只碰自己新建的窗口。
+    private func pinFreshWindow() -> PinWindow? {
+        let before = Set(allPinWindows().map(\.windowNumber))
+        putImage(width: 40, height: 30)
+        guard controller.pinFromPasteboard() else { return nil }
+        pump()
+        return allPinWindows().first { !before.contains($0.windowNumber) }
+    }
+
+    private func runZoom() {
+        guard let window = pinFreshWindow() else {
+            fail("PIN-ZOOM", "没有新建贴图窗口")
+            return
+        }
+        window.setScale(2)
+        pump(0.1)
+        let size = window.frame.size
+        if size == NSSize(width: 80, height: 60) {
+            pass("PIN-ZOOM", "scale 2 后窗口 80x60")
+        } else {
+            fail("PIN-ZOOM", "窗口 \(Int(size.width))x\(Int(size.height))，期望 80x60")
+        }
+        window.close()
+        pump()
+    }
+
+    private func runRotate() {
+        guard let window = pinFreshWindow() else {
+            fail("PIN-ROTATE", "没有新建贴图窗口")
+            return
+        }
+        window.rotate(byQuarterTurns: 1)
+        pump(0.1)
+        let size = window.frame.size
+        if size == NSSize(width: 30, height: 40) {
+            pass("PIN-ROTATE", "顺时针 90 度后窗口 30x40")
+        } else {
+            fail("PIN-ROTATE", "窗口 \(Int(size.width))x\(Int(size.height))，期望 30x40")
+        }
+        window.close()
+        pump()
+    }
+
+    private func runOpacity() {
+        guard let window = pinFreshWindow() else {
+            fail("PIN-OPACITY", "没有新建贴图窗口")
+            return
+        }
+        window.setOpacity(0.5)
+        pump(0.1)
+        if window.alphaValue == 0.5 {
+            pass("PIN-OPACITY", "透明度 0.5 生效")
+        } else {
+            fail("PIN-OPACITY", "alphaValue 为 \(window.alphaValue)，期望 0.5")
+        }
+        window.close()
+        pump()
+    }
+
+    private func runMiddleReset() {
+        guard let window = pinFreshWindow(), let view = window.contentView else {
+            fail("PIN-MIDDLE-RESET", "没有新建贴图窗口")
+            return
+        }
+        window.setScale(2)
+        window.rotate(byQuarterTurns: 1)
+        window.setOpacity(0.5)
+        window.toggleFlipHorizontal()
+        pump(0.1)
+
+        guard let cgEvent = CGEvent(
+            mouseEventSource: nil,
+            mouseType: .otherMouseDown,
+            mouseCursorPosition: .zero,
+            mouseButton: .center
+        ), let event = NSEvent(cgEvent: cgEvent) else {
+            fail("PIN-MIDDLE-RESET", "构造中键事件失败")
+            window.close()
+            return
+        }
+        view.otherMouseDown(with: event)
+        pump(0.1)
+
+        let size = window.frame.size
+        if size == NSSize(width: 40, height: 30),
+           window.alphaValue == 1,
+           window.transform == .identity {
+            pass("PIN-MIDDLE-RESET", "中键恢复到 40x30、不透明、identity")
+        } else {
+            fail("PIN-MIDDLE-RESET", "尺寸 \(size) alpha \(window.alphaValue)")
+        }
+        window.close()
+        pump()
+    }
+
+    private func runControlW() {
+        guard let window = pinFreshWindow(), let view = window.contentView else {
+            fail("PIN-CTRL-W", "没有新建贴图窗口")
+            return
+        }
+        let before = visiblePinWindows().count
+        guard let event = keyEvent(
+            keyCode: 13,
+            characters: "w",
+            modifiers: .control,
+            window: window
+        ) else {
+            fail("PIN-CTRL-W", "构造 Ctrl+W 事件失败")
+            window.close()
+            return
+        }
+        view.keyDown(with: event)
+        pump()
+        let after = visiblePinWindows().count
+        if after == before - 1 {
+            pass("PIN-CTRL-W", "Ctrl+W 关闭当前贴图")
+        } else {
+            fail("PIN-CTRL-W", "关闭后可见 \(after) 个，期望 \(before - 1)")
+        }
+        window.close()
+        pump()
+    }
+
     func runAll() {
         runFirstPin()
         runSecondPin()
@@ -303,6 +431,11 @@ final class PinHarness {
         runTextPin()
         runHTMLPin()
         runFilePathPin()
+        runZoom()
+        runRotate()
+        runOpacity()
+        runMiddleReset()
+        runControlW()
         controller.closeAll()
         print("SUMMARY passes=\(passes) failures=\(failures)")
         exit(failures == 0 ? 0 : 1)

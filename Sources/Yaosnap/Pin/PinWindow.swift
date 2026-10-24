@@ -1,10 +1,13 @@
 import AppKit
 import YaosnapCore
 
-/// 无边框置顶贴图窗口。内容按图像点尺寸显示，超大图在初始化时缩到屏幕的 80%。
+/// 无边框置顶贴图窗口。窗口尺寸、旋转、翻转与透明度都只由 transform 派生。
 @MainActor
 final class PinWindow: NSWindow {
     private let pinView = PinContentView(frame: .zero)
+    private(set) var transform: PinTransform = .identity
+    /// 初始适配到屏幕 80% 后的尺寸。transform.scale 从 1 起，首次变换才不会跳回原图尺寸。
+    let basePointSize: CGSize
 
     init(pasteImage: PasteImage, screen: NSScreen, cascadeIndex: Int) {
         let visible = screen.visibleFrame
@@ -18,6 +21,7 @@ final class PinWindow: NSWindow {
             width: max(1, floor(source.width * fit)),
             height: max(1, floor(source.height * fit))
         )
+        basePointSize = size
         // 后续贴图错开叠放，否则多张完全重合看不出有几张。
         let offset = CGFloat(cascadeIndex % 6) * 24
         var origin = CGPoint(
@@ -42,6 +46,7 @@ final class PinWindow: NSWindow {
         hasShadow = true
         isReleasedWhenClosed = false
 
+        pinView.baseSize = size
         pinView.image = NSImage(cgImage: pasteImage.image, size: pasteImage.pointSize)
         contentView = pinView
         makeFirstResponder(pinView)
@@ -49,36 +54,191 @@ final class PinWindow: NSWindow {
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+
+    func setScale(_ value: CGFloat) {
+        transform.setScale(value)
+        applyTransform()
+    }
+
+    func adjustScale(by delta: CGFloat) {
+        transform.adjustScale(by: delta)
+        applyTransform()
+    }
+
+    func rotate(byQuarterTurns turns: Int) {
+        transform.rotate(byQuarterTurns: turns)
+        applyTransform()
+    }
+
+    func toggleFlipHorizontal() {
+        transform.toggleFlipHorizontal()
+        applyTransform()
+    }
+
+    func toggleFlipVertical() {
+        transform.toggleFlipVertical()
+        applyTransform()
+    }
+
+    func setOpacity(_ value: CGFloat) {
+        transform.setOpacity(value)
+        applyTransform()
+    }
+
+    func adjustOpacity(by delta: CGFloat) {
+        transform.adjustOpacity(by: delta)
+        applyTransform()
+    }
+
+    func toggleThumbnail() {
+        transform.toggleThumbnail()
+        applyTransform()
+    }
+
+    func resetTransform() {
+        transform.reset()
+        applyTransform()
+    }
+
+    /// 以当前中心为锚重设尺寸，再保证窗口留在屏幕可见区域。
+    private func applyTransform() {
+        pinView.transform = transform
+        let size = transform.windowSize(base: basePointSize)
+        let center = CGPoint(x: frame.midX, y: frame.midY)
+        alphaValue = transform.opacity
+        setFrame(
+            CGRect(
+                x: floor(center.x - size.width / 2),
+                y: floor(center.y - size.height / 2),
+                width: size.width,
+                height: size.height
+            ),
+            display: true
+        )
+        pinView.needsDisplay = true
+        clampToVisibleFrame()
+        invalidateCursorRects(for: pinView)
+    }
+
+    func clampToVisibleFrame() {
+        guard let screen = screen ?? NSScreen.main else { return }
+        let visible = screen.visibleFrame
+        let current = frame
+        let x = min(max(current.minX, visible.minX), max(visible.minX, visible.maxX - current.width))
+        let y = min(max(current.minY, visible.minY), max(visible.minY, visible.maxY - current.height))
+        guard x != current.minX || y != current.minY else { return }
+        setFrameOrigin(CGPoint(x: x, y: y))
+    }
 }
 
-/// 双击关闭、Esc 关闭，单击拖动窗口。
+/// 键盘变换、双击关闭、边缘缩放、滚轮缩放与拖动移动。
 @MainActor
 private final class PinContentView: NSView {
     var image: NSImage?
+    var baseSize: CGSize = .zero
+    var transform: PinTransform = .identity
+
     private var dragStart: NSPoint?
     private var windowStart: NSPoint?
+    private var resizeState: ResizeState?
+
+    private let hotZone: CGFloat = 8
+
+    private struct ResizeState {
+        let edge: PinEdge
+        let anchorFraction: CGPoint
+        let anchorGlobal: CGPoint
+        let startMouse: CGPoint
+        let baseSize: CGSize
+        let quarterTurnsOdd: Bool
+    }
+
+    private enum PinEdge {
+        case left, right, top, bottom, topLeft, topRight, bottomLeft, bottomRight
+
+        var anchorFraction: CGPoint {
+            switch self {
+            case .left: return CGPoint(x: 1, y: 0.5)
+            case .right: return CGPoint(x: 0, y: 0.5)
+            case .top: return CGPoint(x: 0.5, y: 0)
+            case .bottom: return CGPoint(x: 0.5, y: 1)
+            case .topLeft: return CGPoint(x: 1, y: 0)
+            case .topRight: return CGPoint(x: 0, y: 0)
+            case .bottomLeft: return CGPoint(x: 1, y: 1)
+            case .bottomRight: return CGPoint(x: 0, y: 1)
+            }
+        }
+
+        var isHorizontal: Bool {
+            switch self {
+            case .left, .right, .topLeft, .topRight, .bottomLeft, .bottomRight: return true
+            case .top, .bottom: return false
+            }
+        }
+
+        var isVertical: Bool {
+            switch self {
+            case .top, .bottom, .topLeft, .topRight, .bottomLeft, .bottomRight: return true
+            case .left, .right: return false
+            }
+        }
+    }
 
     override var acceptsFirstResponder: Bool { true }
     override var isOpaque: Bool { false }
 
     override func draw(_ dirtyRect: NSRect) {
-        image?.draw(in: bounds)
+        guard let image, baseSize.width > 0, baseSize.height > 0,
+              let context = NSGraphicsContext.current?.cgContext else { return }
+        let size = transform.unrotatedSize(base: baseSize)
+        context.saveGState()
+        context.translateBy(x: bounds.midX, y: bounds.midY)
+        // 先镜像再旋转，翻转才是按屏幕轴生效，而不是跟着图一起转。
+        context.scaleBy(
+            x: transform.flipHorizontal ? -1 : 1,
+            y: transform.flipVertical ? -1 : 1
+        )
+        // AppKit 的 y 轴向上，负角表示顺时针。
+        context.rotate(by: -CGFloat(transform.quarterTurns) * .pi / 2)
+        image.draw(in: CGRect(
+            x: -size.width / 2,
+            y: -size.height / 2,
+            width: size.width,
+            height: size.height
+        ))
+        context.restoreGState()
     }
 
     override func mouseDown(with event: NSEvent) {
+        guard let pinWindow = window as? PinWindow else { return }
         if event.clickCount == 2 {
-            window?.close()
+            if event.modifierFlags.contains(.shift) {
+                pinWindow.toggleThumbnail()
+            } else {
+                pinWindow.close()
+            }
             return
         }
-        window?.makeKey()
+        pinWindow.makeKey()
+        let point = convert(event.locationInWindow, from: nil)
+        if let edge = edge(at: point) {
+            beginResize(edge, in: pinWindow)
+            return
+        }
+        resizeState = nil
         dragStart = NSEvent.mouseLocation
-        windowStart = window?.frame.origin
+        windowStart = pinWindow.frame.origin
     }
 
     override func mouseDragged(with event: NSEvent) {
+        guard let pinWindow = window as? PinWindow else { return }
+        if let resizeState {
+            updateResize(resizeState, in: pinWindow, mouse: NSEvent.mouseLocation)
+            return
+        }
         guard let dragStart, let windowStart else { return }
         let current = NSEvent.mouseLocation
-        window?.setFrameOrigin(CGPoint(
+        pinWindow.setFrameOrigin(CGPoint(
             x: windowStart.x + current.x - dragStart.x,
             y: windowStart.y + current.y - dragStart.y
         ))
@@ -87,17 +247,168 @@ private final class PinContentView: NSView {
     override func mouseUp(with event: NSEvent) {
         dragStart = nil
         windowStart = nil
+        resizeState = nil
+    }
+
+    override func otherMouseDown(with event: NSEvent) {
+        guard let pinWindow = window as? PinWindow, event.buttonNumber == 2 else {
+            super.otherMouseDown(with: event)
+            return
+        }
+        pinWindow.resetTransform()
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        guard let pinWindow = window as? PinWindow else { return }
+        let delta = event.scrollingDeltaY
+        guard delta != 0 else { return }
+        if event.modifierFlags.contains(.control) {
+            pinWindow.adjustOpacity(by: delta * 0.01)
+        } else {
+            pinWindow.setScale(pinWindow.transform.scale * exp(delta * 0.01))
+        }
     }
 
     override func keyDown(with event: NSEvent) {
-        if event.keyCode == 53 {
-            window?.close()
+        guard let pinWindow = window as? PinWindow else {
+            super.keyDown(with: event)
             return
         }
-        super.keyDown(with: event)
+        if event.keyCode == 53 {
+            // Shift+Esc 的销毁本批也走 close，windowWillClose 已把窗口移出控制器列表；恢复列表下一批再做。
+            pinWindow.close()
+            return
+        }
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let characters = event.charactersIgnoringModifiers ?? ""
+        if flags.contains(.control) {
+            // Ctrl+W 的 characters 可能是控制字符，keyCode 更可靠。
+            if event.keyCode == 13 || characters.lowercased() == "w" {
+                pinWindow.close()
+                return
+            }
+            switch characters {
+            case "+", "=":
+                pinWindow.adjustOpacity(by: 0.1)
+            case "-", "_":
+                pinWindow.adjustOpacity(by: -0.1)
+            default:
+                break
+            }
+            return
+        }
+        switch characters {
+        case "1":
+            pinWindow.rotate(byQuarterTurns: -1)
+        case "2":
+            pinWindow.rotate(byQuarterTurns: 1)
+        case "3":
+            pinWindow.toggleFlipHorizontal()
+        case "4":
+            pinWindow.toggleFlipVertical()
+        case "+", "=":
+            pinWindow.adjustScale(by: 0.1)
+        case "-", "_":
+            pinWindow.adjustScale(by: -0.1)
+        default:
+            super.keyDown(with: event)
+        }
     }
 
     override func cancelOperation(_ sender: Any?) {
         window?.close()
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        guard !transform.isThumbnail else { return }
+        let bounds = self.bounds
+        let hot = min(hotZone, min(bounds.width, bounds.height) / 2)
+        guard hot > 0 else { return }
+        addCursorRect(NSRect(x: 0, y: 0, width: bounds.width, height: hot), cursor: .resizeUpDown)
+        addCursorRect(
+            NSRect(x: 0, y: bounds.height - hot, width: bounds.width, height: hot),
+            cursor: .resizeUpDown
+        )
+        addCursorRect(
+            NSRect(x: 0, y: hot, width: hot, height: max(0, bounds.height - hot * 2)),
+            cursor: .resizeLeftRight
+        )
+        addCursorRect(
+            NSRect(x: bounds.width - hot, y: hot, width: hot, height: max(0, bounds.height - hot * 2)),
+            cursor: .resizeLeftRight
+        )
+        // AppKit 没有公开的对角缩放光标，四角用十字。
+        addCursorRect(NSRect(x: 0, y: 0, width: hot, height: hot), cursor: .crosshair)
+        addCursorRect(NSRect(x: bounds.width - hot, y: 0, width: hot, height: hot), cursor: .crosshair)
+        addCursorRect(NSRect(x: 0, y: bounds.height - hot, width: hot, height: hot), cursor: .crosshair)
+        addCursorRect(
+            NSRect(x: bounds.width - hot, y: bounds.height - hot, width: hot, height: hot),
+            cursor: .crosshair
+        )
+    }
+
+    private func edge(at point: CGPoint) -> PinEdge? {
+        guard !transform.isThumbnail else { return nil }
+        let bounds = self.bounds
+        let hot = min(hotZone, min(bounds.width, bounds.height) / 2)
+        guard hot > 0 else { return nil }
+        let nearLeft = point.x <= hot
+        let nearRight = point.x >= bounds.maxX - hot
+        let nearBottom = point.y <= hot
+        let nearTop = point.y >= bounds.maxY - hot
+        if nearLeft && nearTop { return .topLeft }
+        if nearRight && nearTop { return .topRight }
+        if nearLeft && nearBottom { return .bottomLeft }
+        if nearRight && nearBottom { return .bottomRight }
+        if nearLeft { return .left }
+        if nearRight { return .right }
+        if nearTop { return .top }
+        if nearBottom { return .bottom }
+        return nil
+    }
+
+    private func beginResize(_ edge: PinEdge, in pinWindow: PinWindow) {
+        let frame = pinWindow.frame
+        let fraction = edge.anchorFraction
+        resizeState = ResizeState(
+            edge: edge,
+            anchorFraction: fraction,
+            anchorGlobal: CGPoint(
+                x: frame.minX + fraction.x * frame.width,
+                y: frame.minY + fraction.y * frame.height
+            ),
+            startMouse: NSEvent.mouseLocation,
+            baseSize: pinWindow.basePointSize,
+            quarterTurnsOdd: pinWindow.transform.quarterTurns % 2 == 1
+        )
+        dragStart = nil
+        windowStart = nil
+    }
+
+    private func updateResize(_ state: ResizeState, in pinWindow: PinWindow, mouse: CGPoint) {
+        let dx = abs(mouse.x - state.anchorGlobal.x)
+        let dy = abs(mouse.y - state.anchorGlobal.y)
+        // 窗口宽高相对未旋转基准轴的对应关系随四分之一圈互换。
+        let widthBase = state.quarterTurnsOdd ? state.baseSize.height : state.baseSize.width
+        let heightBase = state.quarterTurnsOdd ? state.baseSize.width : state.baseSize.height
+        guard widthBase > 0, heightBase > 0 else { return }
+        // 角上两个轴都参与，用位移更大的轴定尺度，否则纯纵向拖动会被没动过的横向距离锁死。
+        let useHorizontal: Bool
+        if state.edge.isHorizontal && state.edge.isVertical {
+            let moveX = abs(mouse.x - state.startMouse.x)
+            let moveY = abs(mouse.y - state.startMouse.y)
+            useHorizontal = moveX >= moveY
+        } else {
+            useHorizontal = state.edge.isHorizontal
+        }
+        let rawScale = useHorizontal ? dx / widthBase : dy / heightBase
+        pinWindow.setScale(rawScale)
+        let frame = pinWindow.frame
+        pinWindow.setFrameOrigin(CGPoint(
+            x: state.anchorGlobal.x - state.anchorFraction.x * frame.width,
+            y: state.anchorGlobal.y - state.anchorFraction.y * frame.height
+        ))
+        pinWindow.clampToVisibleFrame()
     }
 }
