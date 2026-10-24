@@ -67,6 +67,7 @@ public enum ShapeKind: String, Codable, CaseIterable {
     case ellipse
     case line
     case arrow
+    case polyline
     case brush
     case marker
     case mosaic
@@ -80,6 +81,7 @@ public enum Shape: Equatable, Codable {
     case ellipse(CGRect)
     case line(from: CGPoint, to: CGPoint)
     case arrow(from: CGPoint, to: CGPoint)
+    case polyline([CGPoint])
     case brush([CGPoint])
     case marker([CGPoint])
     case mosaic([CGPoint])
@@ -93,6 +95,7 @@ public enum Shape: Equatable, Codable {
         case .ellipse: return .ellipse
         case .line: return .line
         case .arrow: return .arrow
+        case .polyline: return .polyline
         case .brush: return .brush
         case .marker: return .marker
         case .mosaic: return .mosaic
@@ -107,7 +110,7 @@ public enum Shape: Equatable, Codable {
             return rect
         case .line(let from, let to), .arrow(let from, let to):
             return RectMath.normalizedRect(from: from, to: to)
-        case .brush(let points), .marker(let points), .mosaic(let points):
+        case .brush(let points), .marker(let points), .mosaic(let points), .polyline(let points):
             guard let first = points.first else { return .zero }
             var minX = first.x, maxX = first.x, minY = first.y, maxY = first.y
             for point in points.dropFirst() {
@@ -139,7 +142,7 @@ public enum Shape: Equatable, Codable {
             return bounds.insetBy(dx: -tolerance, dy: -tolerance).contains(point)
         case .line(let from, let to), .arrow(let from, let to):
             return Self.distance(from: point, toSegmentFrom: from, to: to) <= tolerance
-        case .brush(let points), .marker(let points), .mosaic(let points):
+        case .brush(let points), .marker(let points), .mosaic(let points), .polyline(let points):
             guard let first = points.first else { return false }
             guard points.count > 1 else {
                 return hypot(point.x - first.x, point.y - first.y) <= tolerance
@@ -167,6 +170,8 @@ public enum Shape: Equatable, Codable {
             return .line(from: moved(from), to: moved(to))
         case .arrow(let from, let to):
             return .arrow(from: moved(from), to: moved(to))
+        case .polyline(let points):
+            return .polyline(points.map(moved))
         case .brush(let points):
             return .brush(points.map(moved))
         case .marker(let points):

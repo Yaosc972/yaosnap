@@ -77,6 +77,14 @@ public enum ShapeCatalog {
             phase: .p2
         ),
         ShapeEntry(
+            kind: .polyline,
+            title: "折线",
+            symbol: "scribble",
+            shortcut: "P",
+            defaultStyle: Style(color: RGBAColor.palette[0], pen: .p3),
+            phase: .p2
+        ),
+        ShapeEntry(
             kind: .brush,
             title: "画笔",
             symbol: "pencil.tip",

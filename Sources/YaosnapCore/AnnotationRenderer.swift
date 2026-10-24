@@ -86,6 +86,8 @@ public enum AnnotationRenderer {
             }
         case .arrow(let from, let to):
             drawArrow(from: from, to: to, color: color, lineWidth: lineWidth, in: ctx)
+        case .polyline(let points):
+            drawPolyline(points, color: color, lineWidth: lineWidth, in: ctx)
         case .brush(let points):
             drawInkStroke(points, color: color, lineWidth: lineWidth, blend: .normal, in: ctx)
         case .marker(let points):
@@ -214,6 +216,26 @@ public enum AnnotationRenderer {
         ctx.addLine(to: CGPoint(x: base.x - perpX * halfBase, y: base.y - perpY * halfBase))
         ctx.closePath()
         ctx.fillPath()
+    }
+
+    /// 折线：顶点间直连，圆头圆角连接。单点用填充圆，否则首次点按看不见落点。
+    private static func drawPolyline(
+        _ points: [CGPoint],
+        color: RGBAColor,
+        lineWidth: CGFloat,
+        in ctx: CGContext
+    ) {
+        guard let first = points.first else { return }
+        if points.count == 1 {
+            fillDot(first, radius: lineWidth / 2, color: color, blend: .normal, in: ctx)
+            return
+        }
+        stroke(ctx, color: color, lineWidth: lineWidth) {
+            $0.move(to: first)
+            for point in points.dropFirst() {
+                $0.addLine(to: point)
+            }
+        }
     }
 
     /// 马赛克：采样源必须是 RenderInput.base（原始冻结帧），不是已画标注的合成结果。

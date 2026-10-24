@@ -247,6 +247,41 @@ final class AnnotateHarness {
         return true
     }
 
+    /// 打开颜色弹层并点选第 index 个透明度档位。
+    private func pickAlpha(_ view: OverlayView, _ index: Int, id: String) -> Bool {
+        guard let bar = view.subviews.compactMap({ $0 as? AnnotateToolbar }).first else {
+            fail(id, "找不到工具条")
+            return false
+        }
+        bar.colorButton.performClick(nil)
+        pump(0.2)
+        guard let palette = bar.colorPopover?.contentViewController?.view as? ColorPaletteView,
+              index < palette.alphaSwatches.count else {
+            fail(id, "颜色弹层未弹出或透明度档位不足")
+            return false
+        }
+        palette.alphaSwatches[index].performClick(nil)
+        pump(0.2)
+        return true
+    }
+
+    /// 发送一次滚轮事件。正 wheel1 表示向上滚。
+    private func scroll(_ view: NSView, wheel1: Int32) {
+        guard let cg = CGEvent(
+            scrollWheelEvent2Source: nil,
+            units: .pixel,
+            wheelCount: 1,
+            wheel1: wheel1,
+            wheel2: 0,
+            wheel3: 0
+        ), let event = NSEvent(cgEvent: cg) else {
+            fail("SCROLL", "无法构造滚轮事件")
+            return
+        }
+        view.scrollWheel(with: event)
+        pump(0.15)
+    }
+
     private func pasteboardImage() -> CGImage? {
         guard let tiff = NSPasteboard.general.data(forType: .tiff),
               let rep = NSBitmapImageRep(data: tiff) else { return nil }
@@ -1237,6 +1272,219 @@ final class AnnotateHarness {
         endSession()
     }
 
+    // MARK: - 折线 / Tab / 滚轮 / 透明度
+
+    private func runPolylineTool() {
+        guard let (window, view) = beginSession("POLYLINE") else { return }
+        drag(view, window: window, from: CGPoint(x: 150, y: 150), to: CGPoint(x: 750, y: 600))
+        let selection = view.selectionRect
+        guard tapTool(view, .polyline, id: "POLYLINE") else {
+            endSession()
+            return
+        }
+        guard let bar = view.subviews.compactMap({ $0 as? AnnotateToolbar }).first else {
+            fail("POLYLINE-ICON", "找不到工具条")
+            endSession()
+            return
+        }
+        if bar.toolButtons[.polyline]?.image != nil {
+            pass("POLYLINE-ICON", "折线按钮有 SF Symbol 图标")
+        } else {
+            fail("POLYLINE-ICON", "折线按钮 image 为 nil，符号名不存在")
+        }
+
+        for point in [CGPoint(x: 60, y: 80), CGPoint(x: 200, y: 220), CGPoint(x: 340, y: 90)] {
+            press(view, window: window, path: [
+                CGPoint(x: selection.minX + point.x, y: selection.minY + point.y),
+            ])
+        }
+        guard view.annotations.isEmpty else {
+            fail("POLYLINE", "点按阶段不应提交，已有 \(view.annotations.count) 条标注")
+            endSession()
+            return
+        }
+        keyDown(36, characters: "\r", in: window, view: view)
+        guard let last = view.annotations.last,
+              case .polyline(let points) = last.shape,
+              points.count == 3 else {
+            fail("POLYLINE", "提交后应为 3 点折线，实际 \(String(describing: view.annotations.last?.shape))")
+            endSession()
+            return
+        }
+        pass("POLYLINE", "三次点按加 Enter 提交为 3 点折线")
+
+        // 拖拽路径：与直线一致，松开即提交
+        press(view, window: window, path: [
+            CGPoint(x: selection.minX + 400, y: selection.minY + 300),
+            CGPoint(x: selection.minX + 520, y: selection.minY + 380),
+        ])
+        guard let dragged = view.annotations.last,
+              case .polyline(let dragPoints) = dragged.shape,
+              dragPoints.count >= 2 else {
+            fail("POLYLINE", "拖拽后应提交折线，实际 \(String(describing: view.annotations.last?.shape))")
+            endSession()
+            return
+        }
+        pass("POLYLINE", "拖拽松开后按折线提交 \(dragPoints.count) 点")
+        endSession()
+    }
+
+    private func runTabTogglesLineArrow() {
+        guard let (window, view) = beginSession("TAB") else { return }
+        drag(view, window: window, from: CGPoint(x: 150, y: 150), to: CGPoint(x: 750, y: 600))
+        guard tapTool(view, .line, id: "TAB"),
+              let bar = view.subviews.compactMap({ $0 as? AnnotateToolbar }).first else {
+            endSession()
+            return
+        }
+        keyDown(48, characters: "\t", in: window, view: view)
+        guard bar.selectedKind == .arrow else {
+            fail("TAB", "从直线按 Tab 应切到箭头，实际 \(bar.selectedKind.rawValue)")
+            endSession()
+            return
+        }
+        pass("TAB", "直线按 Tab 切到箭头，工具条高亮同步")
+
+        keyDown(48, characters: "\t", in: window, view: view)
+        guard bar.selectedKind == .line else {
+            fail("TAB", "再按 Tab 应切回直线，实际 \(bar.selectedKind.rawValue)")
+            endSession()
+            return
+        }
+        pass("TAB", "再按 Tab 切回直线")
+        endSession()
+    }
+
+    private func runWheelPenSize() {
+        guard let (window, view) = beginSession("WHEEL") else { return }
+        drag(view, window: window, from: CGPoint(x: 150, y: 150), to: CGPoint(x: 750, y: 600))
+        let selection = view.selectionRect
+        guard tapTool(view, .brush, id: "WHEEL"),
+              let bar = view.subviews.compactMap({ $0 as? AnnotateToolbar }).first else {
+            endSession()
+            return
+        }
+        let before = bar.currentStyle.pen
+        scroll(view, wheel1: 10)
+        let after = bar.currentStyle.pen
+        guard after.rawValue == before.rawValue + 1 else {
+            fail("WHEEL", "向上滚应加粗一档，\(before.rawValue) → \(after.rawValue)")
+            endSession()
+            return
+        }
+        pass("WHEEL", "滚轮一档 \(before.rawValue) → \(after.rawValue)")
+
+        press(view, window: window, path: [
+            CGPoint(x: selection.minX + 60, y: selection.minY + 60),
+            CGPoint(x: selection.minX + 240, y: selection.minY + 60),
+        ])
+        guard view.annotations.last?.style.pen == after else {
+            fail("WHEEL", "标注未使用滚轮后的笔宽 \(String(describing: view.annotations.last?.style.pen))")
+            endSession()
+            return
+        }
+        pass("WHEEL", "新标注写入滚轮后的笔宽")
+        endSession()
+    }
+
+    private func runAlphaTransparency() {
+        guard let (window, view) = beginSession("ALPHA") else { return }
+        drag(view, window: window, from: CGPoint(x: 150, y: 150), to: CGPoint(x: 750, y: 600))
+        let selection = view.selectionRect
+        guard tapTool(view, .line, id: "ALPHA") else {
+            endSession()
+            return
+        }
+        func drawLine(canvasY: CGFloat) {
+            press(view, window: window, path: [
+                CGPoint(x: selection.minX + 60, y: selection.minY + canvasY),
+                CGPoint(x: selection.minX + 380, y: selection.minY + canvasY),
+            ])
+        }
+        drawLine(canvasY: 200)
+        guard pickAlpha(view, 3, id: "ALPHA"),
+              let bar = view.subviews.compactMap({ $0 as? AnnotateToolbar }).first else {
+            endSession()
+            return
+        }
+        guard abs(bar.currentStyle.color.a - 0.4) < 0.001 else {
+            fail("ALPHA", "选 40% 后工具条 alpha 应为 0.4，实际 \(bar.currentStyle.color.a)")
+            endSession()
+            return
+        }
+        drawLine(canvasY: 300)
+
+        NSPasteboard.general.clearContents()
+        keyDown(36, characters: "\r", in: window, view: view)
+        guard let image = pasteboardImage(),
+              let bytes = srgbBytes(image, width: image.width, height: image.height) else {
+            fail("ALPHA", "剪贴板没有可读图像")
+            endSession()
+            return
+        }
+        let px = Int(view.shot.scale)
+        func pixel(canvasX: Int, canvasY: Int) -> (r: Int, g: Int, b: Int) {
+            let x = canvasX * px
+            let y = image.height - 1 - canvasY * px
+            let offset = (y * image.width + x) * 4
+            return (Int(bytes[offset]), Int(bytes[offset + 1]), Int(bytes[offset + 2]))
+        }
+        // 导出底图不透明，alpha 在这里表现为与底色的混色差；真实 alpha 通道由单测断言。
+        let opaque = pixel(canvasX: 220, canvasY: 200)
+        let faded = pixel(canvasX: 220, canvasY: 300)
+        let difference = abs(faded.r - opaque.r) + abs(faded.g - opaque.g) + abs(faded.b - opaque.b)
+        guard difference > 60 else {
+            fail("ALPHA", "40% 与不透明像素几乎一致，混色差 \(difference) opaque=\(opaque) faded=\(faded)")
+            endSession()
+            return
+        }
+        pass("ALPHA", "40% 导出像素明显混入底色，混色差 \(difference) opaque=\(opaque) faded=\(faded)")
+        endSession()
+    }
+
+    private func runDigitPenSize() {
+        guard let (window, view) = beginSession("DIGIT-PEN") else { return }
+        drag(view, window: window, from: CGPoint(x: 150, y: 150), to: CGPoint(x: 750, y: 600))
+        guard tapTool(view, .rect, id: "DIGIT-PEN"),
+              let bar = view.subviews.compactMap({ $0 as? AnnotateToolbar }).first else {
+            endSession()
+            return
+        }
+        keyDown(18, characters: "1", in: window, view: view)
+        guard bar.currentStyle.pen == .p1 else {
+            fail("DIGIT-PEN", "数字键 1 应选 p1，实际 \(bar.currentStyle.pen)")
+            endSession()
+            return
+        }
+        keyDown(23, characters: "5", in: window, view: view)
+        guard bar.currentStyle.pen == .p5 else {
+            fail("DIGIT-PEN", "数字键 5 应选 p5，实际 \(bar.currentStyle.pen)")
+            endSession()
+            return
+        }
+        pass("DIGIT-PEN", "数字键 1/5 切换笔尖档位")
+        endSession()
+    }
+
+    private func runColorWheelAlpha() {
+        guard let (window, view) = beginSession("COLOR-WHEEL") else { return }
+        drag(view, window: window, from: CGPoint(x: 150, y: 150), to: CGPoint(x: 750, y: 600))
+        guard tapTool(view, .line, id: "COLOR-WHEEL"),
+              let bar = view.subviews.compactMap({ $0 as? AnnotateToolbar }).first,
+              pickAlpha(view, 3, id: "COLOR-WHEEL") else {
+            endSession()
+            return
+        }
+        scroll(bar.colorButton, wheel1: 10)
+        guard abs(bar.currentStyle.color.a - 0.6) < 0.001 else {
+            fail("COLOR-WHEEL", "上滚应到 60%，实际 \(bar.currentStyle.color.a)")
+            endSession()
+            return
+        }
+        pass("COLOR-WHEEL", "颜色按钮上滚一档 40% → 60%")
+        endSession()
+    }
+
     // MARK: - 主流程
 
     func runAll() {
@@ -1262,6 +1510,12 @@ final class AnnotateHarness {
         runDrawAgainAfterAutoSelect()
         runRightClickCancels()
         runRightClickFinishesStroke()
+        runPolylineTool()
+        runTabTogglesLineArrow()
+        runWheelPenSize()
+        runAlphaTransparency()
+        runDigitPenSize()
+        runColorWheelAlpha()
 
         print("SUMMARY passes=\(passes) failures=\(failures)")
         exit(failures == 0 ? 0 : 1)

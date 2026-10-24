@@ -233,6 +233,27 @@ struct AnnotationRendererTests {
         PixelBuffer.pixel(bytes, x: x, y: canvasSide - 1 - cy, width: canvasSide)
     }
 
+    /// 不铺底图的透明画布，用来观察标注自身的 alpha。
+    private func renderedTransparent(
+        width: Int,
+        height: Int,
+        apply: (CGContext) -> Void
+    ) -> [UInt8] {
+        let ctx = CGContext(
+            data: nil, width: width, height: height,
+            bitsPerComponent: 8, bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )!
+        apply(ctx)
+        return PixelBuffer.srgbBytes(ctx.makeImage()!, width: width, height: height)!
+    }
+
+    private func alphaAt(_ bytes: [UInt8], x: Int, cy: Int, canvasSide: Int) -> Int {
+        let offset = ((canvasSide - 1 - cy) * canvasSide + x) * 4 + 3
+        return Int(bytes[offset])
+    }
+
     @Test func roundedRectClampsRadiusAndStrokesSides() {
         let side = 200
         // radius 40 超过内缩后短边一半，应被钳制而不是画出未定义形状
@@ -280,6 +301,46 @@ struct AnnotationRendererTests {
         // 中线外侧 7pt、端点外 8pt（圆头延伸仅 2.5pt）都应留白
         #expect(isWhite(at(bytes, x: 100, cy: 90, canvasSide: side)))
         #expect(isWhite(at(bytes, x: 168, cy: 168, canvasSide: side)))
+    }
+
+    @Test func polylineConnectsVerticesWithStraightSegments() {
+        let side = 200
+        let annotation = Annotation(
+            shape: .polyline([
+                CGPoint(x: 40, y: 40),
+                CGPoint(x: 100, y: 100),
+                CGPoint(x: 160, y: 40),
+            ]),
+            style: Style(color: red, pen: .p3)
+        )
+        let bytes = rendered(width: side, height: side) { ctx in
+            AnnotationRenderer.draw([annotation], draft: nil, input: input(canvasSize: CGSize(width: side, height: side)), into: ctx)
+        }
+        // 两段直连的中点都着色，未经过的顶点上方留白
+        #expect(isRed(at(bytes, x: 70, cy: 70, canvasSide: side)))
+        #expect(isRed(at(bytes, x: 130, cy: 70, canvasSide: side)))
+        #expect(isWhite(at(bytes, x: 100, cy: 40, canvasSide: side)))
+    }
+
+    @Test func translucentColorLowersDrawnAlpha() {
+        let side = 100
+        var translucentRed = red
+        translucentRed.a = 0.4
+        func alpha(for color: RGBAColor) -> Int {
+            let annotation = Annotation(
+                shape: .line(from: CGPoint(x: 20, y: 50), to: CGPoint(x: 80, y: 50)),
+                style: Style(color: color, pen: .p5)
+            )
+            let bytes = renderedTransparent(width: side, height: side) { ctx in
+                AnnotationRenderer.draw([annotation], draft: nil, input: input(canvasSize: CGSize(width: side, height: side)), into: ctx)
+            }
+            return alphaAt(bytes, x: 50, cy: 50, canvasSide: side)
+        }
+        let opaque = alpha(for: red)
+        let faded = alpha(for: translucentRed)
+        #expect(opaque > 250, "不透明颜色应画出不透明像素，实际 \(opaque)")
+        #expect(faded < 160, "40% 透明度应明显降低 alpha，实际 \(faded)")
+        #expect(faded > 40, "40% 透明度不应低到看不见，实际 \(faded)")
     }
 
     @Test func arrowHeadFillsTowardTip() {

@@ -36,6 +36,13 @@ struct ShapeGeometryTests {
         let marker = Shape.marker([CGPoint(x: 2, y: 2)]).bounds
         #expect(marker == CGRect(x: 2, y: 2, width: 0, height: 0))
 
+        let polyline = Shape.polyline([
+            CGPoint(x: 3, y: 8),
+            CGPoint(x: 11, y: 2),
+            CGPoint(x: 7, y: 13),
+        ]).bounds
+        #expect(polyline == CGRect(x: 3, y: 2, width: 8, height: 11))
+
         #expect(Shape.mosaic([]).bounds == .zero)
     }
 
@@ -51,10 +58,11 @@ struct ShapeGeometryTests {
     @Test func catalogShapeOrderAndFilter() {
         // 数组顺序即未来工具条顺序
         #expect(ShapeCatalog.entries.map(\.kind) == [
-            .rect, .roundedRect, .ellipse, .line, .arrow, .brush, .marker, .mosaic, .text,
+            .rect, .roundedRect, .ellipse, .line, .arrow, .polyline, .brush, .marker, .mosaic, .text,
         ])
-        #expect(ShapeCatalog.p2.count == 9)
+        #expect(ShapeCatalog.p2.count == 10)
         #expect(ShapeCatalog.entry(for: .rect)?.symbol == "rectangle")
+        #expect(ShapeCatalog.entry(for: .polyline)?.symbol == "scribble")
         #expect(ShapeCatalog.entry(for: .mosaic) != nil)
         #expect(ShapeCatalog.entry(for: .text)?.shortcut == "T")
     }
@@ -109,7 +117,7 @@ struct ShapeGeometryTests {
 
     @Test func pointListHitUsesAnySegment() {
         let points = [CGPoint(x: 0, y: 0), CGPoint(x: 10, y: 0), CGPoint(x: 10, y: 10)]
-        let shapes: [Shape] = [.brush(points), .marker(points), .mosaic(points)]
+        let shapes: [Shape] = [.brush(points), .marker(points), .mosaic(points), .polyline(points)]
         for shape in shapes {
             #expect(shape.contains(CGPoint(x: 5, y: 2), tolerance: 3), "第一段附近")
             #expect(shape.contains(CGPoint(x: 12, y: 5), tolerance: 3), "第二段附近")
@@ -131,6 +139,7 @@ struct ShapeGeometryTests {
             .ellipse(CGRect(x: 10, y: 20, width: 30, height: 40)),
             .line(from: CGPoint(x: 0, y: 0), to: CGPoint(x: 10, y: 20)),
             .arrow(from: CGPoint(x: 3, y: 4), to: CGPoint(x: -1, y: 9)),
+            .polyline([CGPoint(x: 0, y: 0), CGPoint(x: 6, y: 9)]),
             .brush([CGPoint(x: 0, y: 0), CGPoint(x: 5, y: 5)]),
             .marker([CGPoint(x: 2, y: 2), CGPoint(x: 8, y: 8)]),
             .mosaic([CGPoint(x: 4, y: 4)]),

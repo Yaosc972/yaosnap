@@ -8,6 +8,7 @@ final class OverlayView: NSView {
 
     /// 会话状态机。idling 无选区；selecting 在拖选区（origin 视图坐标，freeDrag 表示
     /// 已脱离窗口吸附）；ready 选区已确定；drawing 在拖标注（origin 画布坐标）；
+    /// polylineEditing 折线已落下首点、等待后续顶点（points 是已确认顶点）；
     /// editing 在输入文字；selected 选中了一条标注；moving 在拖动它（grab 是画布坐标的
     /// 按下点，original 是按下时的形状，拖动全程按它平移）。
     private enum Phase {
@@ -15,6 +16,7 @@ final class OverlayView: NSView {
         case selecting(origin: CGPoint, freeDrag: Bool)
         case ready
         case drawing(origin: CGPoint)
+        case polylineEditing(points: [CGPoint])
         case editing
         case selected(id: UUID)
         /// pendingClone 非空表示这是 Control 按下起的克隆拖动：真正挪动时才把副本入列，
@@ -150,9 +152,14 @@ final class OverlayView: NSView {
     // MARK: - 鼠标交互
 
     override func mouseMoved(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        if case .polylineEditing(let points) = phase {
+            updatePolylinePreview(points, cursor: canvasPoint(from: point))
+            return
+        }
         // 有按压或已有选区时不画 hover，跳过状态更新避免整屏重绘
         guard case .idle = phase, selectionRect.isEmpty else { return }
-        let hit = windowUnderMouse(at: convert(event.locationInWindow, from: nil))
+        let hit = windowUnderMouse(at: point)
         guard hit != hoverWindow else { return }
         hoverWindow = hit
         needsDisplay = true
@@ -179,6 +186,13 @@ final class OverlayView: NSView {
                 return
             }
             beginDraft(at: point)
+        case .polylineEditing(let points):
+            // 双击结束：第一次按下已追加顶点，第二次按下只提交。
+            if event.clickCount >= 2 {
+                commitPolyline()
+                return
+            }
+            appendPolylinePoint(canvasPoint(from: point), to: points)
         case .selected(let id):
             // 自动选中后仍要保留双击复制的既有节奏，否则双击会落到拖动分支。
             if event.clickCount == 2, selectionRect.contains(point) {
@@ -230,7 +244,7 @@ final class OverlayView: NSView {
             switch toolStore.currentKind {
             case .brush, .marker, .mosaic:
                 appendDraftPoint(current)
-            case .rect, .roundedRect, .ellipse, .line, .arrow:
+            case .rect, .roundedRect, .ellipse, .line, .arrow, .polyline:
                 canvas.draft = makeDraft(origin: origin, current: current)
             case .text:
                 break
@@ -251,7 +265,7 @@ final class OverlayView: NSView {
                 x: current.x - grab.x,
                 y: current.y - grab.y
             ))
-        case .idle, .ready, .editing, .selected:
+        case .idle, .ready, .polylineEditing, .editing, .selected:
             break
         }
     }
@@ -268,26 +282,53 @@ final class OverlayView: NSView {
                 return
             }
             commitSelection()
-        case .drawing:
+        case .drawing(let origin):
+            let current = canvasPoint(from: convert(event.locationInWindow, from: nil))
+            if toolStore.currentKind == .polyline,
+               hypot(current.x - origin.x, current.y - origin.y) < Self.dragThreshold,
+               let draft = canvas?.draft {
+                // 点按落下首点进入折线编辑；拖拽按直线规则提交。
+                canvas?.draft = Annotation(
+                    id: draft.id,
+                    shape: .polyline([origin]),
+                    style: draft.style
+                )
+                phase = .polylineEditing(points: [origin])
+                return
+            }
             commitDraft()
         case .moving(let id, _, _, _):
             phase = .selected(id: id)
             canvas?.selectedID = id
-        case .idle, .ready, .editing, .selected:
+        case .idle, .ready, .polylineEditing, .editing, .selected:
             break // ready 下单击保留选区，等待 Enter / 双击 / ⌘S
         }
     }
 
-    /// 右键：绘制中结束当前笔画，文字编辑中不打断输入，其余取消截图。
+    /// 右键：绘制中结束当前笔画，折线编辑中提交折线，文字编辑中不打断输入，其余取消截图。
     override func rightMouseDown(with event: NSEvent) {
         switch phase {
         case .editing:
             break
         case .drawing:
             commitDraft()
+        case .polylineEditing:
+            commitPolyline()
         default:
             requestCancel()
         }
+    }
+
+    /// 滚轮调笔宽。向上滚变粗，钳制在 5 档内。
+    override func scrollWheel(with event: NSEvent) {
+        guard isReadyOrSelected, event.scrollingDeltaY != 0 else {
+            super.scrollWheel(with: event)
+            return
+        }
+        let step = event.scrollingDeltaY > 0 ? 1 : -1
+        let raw = min(max(toolStore.currentStyle.pen.rawValue + step, 1), 5)
+        guard let pen = PenSize(rawValue: raw) else { return }
+        applyPen(pen)
     }
 
     // MARK: - 二次编辑
@@ -374,6 +415,10 @@ final class OverlayView: NSView {
     override func keyDown(with event: NSEvent) {
         switch event.keyCode {
         case 53: // Esc
+            if case .polylineEditing = phase {
+                cancelPolyline()
+                return
+            }
             // 有选中时 Esc 只清选中，不退出截图；选区与标注都保留。
             if case .selected = phase {
                 clearSelection()
@@ -381,11 +426,23 @@ final class OverlayView: NSView {
             }
             NotificationCenter.default.post(name: .snipEscapePressed, object: nil)
         case 36: // Return
+            if case .polylineEditing = phase {
+                commitPolyline()
+                return
+            }
             guard canOutput, !selectionRect.isEmpty else {
                 NSSound.beep()
                 return
             }
             requestCopy()
+        case 48: // Tab：直线 / 箭头互换
+            guard isReadyOrSelected,
+                  case .draw(let kind) = toolMode,
+                  kind == .line || kind == .arrow else {
+                super.keyDown(with: event)
+                return
+            }
+            selectTool(kind == .line ? .arrow : .line)
         // ⌘S 只认 command，⌘⌃S / ⌘⌥S 不是保存快捷键
         case 1 where event.modifierFlags.intersection([.command, .control, .option]) == .command:
             guard canOutput, !selectionRect.isEmpty else {
@@ -412,7 +469,15 @@ final class OverlayView: NSView {
     private var isCommittedPhase: Bool {
         switch phase {
         case .ready, .selected, .moving: return true
-        case .idle, .selecting, .drawing, .editing: return false
+        case .idle, .selecting, .drawing, .polylineEditing, .editing: return false
+        }
+    }
+
+    /// Tab 与滚轮只在选区已定、且没在拖动时生效。
+    private var isReadyOrSelected: Bool {
+        switch phase {
+        case .ready, .selected: return true
+        case .idle, .selecting, .drawing, .polylineEditing, .editing, .moving: return false
         }
     }
 
@@ -420,7 +485,7 @@ final class OverlayView: NSView {
     private var canOutput: Bool {
         switch phase {
         case .ready, .selected: return true
-        case .idle, .selecting, .drawing, .editing, .moving: return false
+        case .idle, .selecting, .drawing, .polylineEditing, .editing, .moving: return false
         }
     }
 
@@ -447,6 +512,10 @@ final class OverlayView: NSView {
               let key = event.charactersIgnoringModifiers?.uppercased(), !key.isEmpty
         else { return false }
         let first = String(key.prefix(1))
+        if let digit = Int(first), let pen = PenSize(rawValue: digit) {
+            applyPen(pen)
+            return true
+        }
         if first == "V" {
             pendingShortcut = nil
             enterSelectMode()
@@ -558,9 +627,59 @@ final class OverlayView: NSView {
             return hypot(to.x - from.x, to.y - from.y) >= Self.minimumStrokeSide
         case .brush, .marker, .mosaic:
             return true
+        case .polyline(let points):
+            guard points.count >= 2 else { return false }
+            // 反复点在同一点不算一笔。
+            return zip(points, points.dropFirst()).contains {
+                hypot($0.1.x - $0.0.x, $0.1.y - $0.0.y) >= Self.minimumStrokeSide
+            }
         case .text:
             return false
         }
+    }
+
+    // MARK: - 折线编辑
+
+    /// 点按追加一个已确认顶点，同时把 draft 更新为不含预览尾点的折线。
+    private func appendPolylinePoint(_ point: CGPoint, to points: [CGPoint]) {
+        guard let canvas, let draft = canvas.draft else { return }
+        let updated = points + [point]
+        phase = .polylineEditing(points: updated)
+        canvas.draft = Annotation(id: draft.id, shape: .polyline(updated), style: draft.style)
+    }
+
+    /// 鼠标移动时把光标点接在已确认顶点后做实时预览。
+    private func updatePolylinePreview(_ points: [CGPoint], cursor: CGPoint) {
+        guard let canvas, let draft = canvas.draft else { return }
+        var preview = points
+        if let last = preview.last, hypot(cursor.x - last.x, cursor.y - last.y) >= 1 {
+            preview.append(cursor)
+        }
+        canvas.draft = Annotation(id: draft.id, shape: .polyline(preview), style: draft.style)
+    }
+
+    /// 提交时只收已确认顶点，预览尾点不落库。
+    private func commitPolyline() {
+        guard case .polylineEditing(let points) = phase, let canvas else { return }
+        guard let draft = canvas.draft else {
+            phase = .ready
+            return
+        }
+        let finalized = Annotation(id: draft.id, shape: .polyline(points), style: draft.style)
+        guard isDraftValid(finalized) else {
+            canvas.draft = nil
+            phase = .ready
+            return
+        }
+        canvas.annotations.append(finalized)
+        canvas.draft = nil
+        canvas.selectedID = finalized.id
+        phase = .selected(id: finalized.id)
+    }
+
+    private func cancelPolyline() {
+        canvas?.draft = nil
+        phase = .ready
     }
 
     // MARK: - 文字编辑
@@ -718,6 +837,8 @@ final class OverlayView: NSView {
             return Annotation(shape: .line(from: origin, to: current), style: style)
         case .arrow:
             return Annotation(shape: .arrow(from: origin, to: current), style: style)
+        case .polyline:
+            return Annotation(shape: .polyline([origin, current]), style: style)
         case .brush:
             return Annotation(shape: .brush([current]), style: style)
         case .marker:
@@ -743,7 +864,7 @@ final class OverlayView: NSView {
         case .brush(let points): updated = grown(points).map { .brush($0) }
         case .marker(let points): updated = grown(points).map { .marker($0) }
         case .mosaic(let points): updated = grown(points).map { .mosaic($0) }
-        case .rect, .roundedRect, .ellipse, .line, .arrow: updated = nil
+        case .rect, .roundedRect, .ellipse, .line, .arrow, .polyline: updated = nil
         case .text: updated = nil
         }
         if let updated {
@@ -792,8 +913,19 @@ final class OverlayView: NSView {
     private func selectTool(_ kind: ShapeKind) {
         toolMode = .draw(kind)
         clearSelection()
-        canvas?.currentStyle = toolStore.select(kind)
-        toolbar.select(kind)
+        let style = toolStore.select(kind)
+        canvas?.currentStyle = style
+        toolbar.select(kind, style: style)
+    }
+
+    /// 数字键与滚轮共用：改当前工具笔尖，同步记忆与工具条圆点。
+    private func applyPen(_ pen: PenSize) {
+        var style = toolStore.currentStyle
+        guard style.pen != pen else { return }
+        style.pen = pen
+        toolStore.update(style)
+        canvas?.currentStyle = style
+        toolbar.updateStyle(style)
     }
 
     /// AnnotateToolbar.onSelectMode / V：只切模式，不动 ToolStyleStore 记忆的 kind。
@@ -805,6 +937,10 @@ final class OverlayView: NSView {
 
     /// AnnotateToolbar.onStyleChange：样式写回当前工具的记忆。
     private func applyStyle(_ style: Style) {
+        // 透明度是分组属性，先落组再写回工具，避免被 update 归一化掉。
+        if style.color.a != toolStore.alpha(for: toolStore.currentKind) {
+            toolStore.updateAlpha(style.color.a)
+        }
         toolStore.update(style)
         canvas?.currentStyle = style
     }
