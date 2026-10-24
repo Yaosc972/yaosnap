@@ -142,10 +142,86 @@ final class Harness {
         pump(0.25)
     }
 
-    private func pasteboardPixelSize() -> (width: Int, height: Int)? {
+    private func pasteboardImage() -> CGImage? {
         guard let tiff = NSPasteboard.general.data(forType: .tiff),
               let rep = NSBitmapImageRep(data: tiff) else { return nil }
-        return (rep.pixelsWide, rep.pixelsHigh)
+        return rep.cgImage
+    }
+
+    /// 期望裁剪：直接从冻结帧按像素矩形裁一块，不复用 ImageOutput，避免自证。
+    private func expectedCrop(from shot: DisplayShot, imageRect: CGRect) -> CGImage? {
+        let integral = imageRect.integral.intersection(
+            CGRect(x: 0, y: 0, width: shot.image.width, height: shot.image.height)
+        )
+        guard !integral.isNull, integral.width >= 1, integral.height >= 1 else { return nil }
+        return shot.image.cropping(to: integral)
+    }
+
+    /// 把图像画进 sRGB RGBA8 缓冲区，统一色彩空间后再比较。
+    private func srgbBytes(_ image: CGImage, width: Int, height: Int) -> [UInt8]? {
+        guard let context = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
+        ) else { return nil }
+        context.interpolationQuality = .none
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        guard let base = context.data else { return nil }
+        return Array(UnsafeBufferPointer(
+            start: base.assumingMemoryBound(to: UInt8.self),
+            count: width * height * 4
+        ))
+    }
+
+    /// 与冻结帧裁剪逐像素比对。阈值：通道均差 <= 2，单通道差 > 8 的像素占比 <= 0.5%。
+    private func verifyClipboardPixels(_ id: String, expected: CGImage?) {
+        guard let expected else {
+            fail(id, "无法从冻结帧生成期望裁剪")
+            return
+        }
+        guard let actual = pasteboardImage() else {
+            fail(id, "剪贴板没有可读取的图像")
+            return
+        }
+        guard actual.width == expected.width, actual.height == expected.height else {
+            fail(id, "剪贴板 \(actual.width)x\(actual.height) 期望 \(expected.width)x\(expected.height)")
+            return
+        }
+        guard let a = srgbBytes(actual, width: expected.width, height: expected.height),
+              let e = srgbBytes(expected, width: expected.width, height: expected.height) else {
+            fail(id, "像素读取失败")
+            return
+        }
+        let pixelCount = expected.width * expected.height
+        var totalDiff = 0
+        var maxDiff = 0
+        var mismatchedPixels = 0
+        for pixel in 0..<pixelCount {
+            let offset = pixel * 4
+            var mismatch = false
+            for channel in 0..<4 {
+                let diff = abs(Int(a[offset + channel]) - Int(e[offset + channel]))
+                totalDiff += diff
+                if diff > maxDiff { maxDiff = diff }
+                if diff > 8 { mismatch = true }
+            }
+            if mismatch { mismatchedPixels += 1 }
+        }
+        let mean = Double(totalDiff) / Double(pixelCount * 4)
+        let ratio = Double(mismatchedPixels) / Double(pixelCount)
+        let detail = String(
+            format: "尺寸 %dx%d，通道均差 %.2f，最大差 %d，超阈值像素 %.3f%%",
+            actual.width, actual.height, mean, maxDiff, ratio * 100
+        )
+        if mean <= 2.0, ratio <= 0.005 {
+            pass(id, "与冻结帧裁剪逐像素一致（\(detail)）")
+        } else {
+            fail(id, "像素不一致（\(detail)）")
+        }
     }
 
     private func capture(_ name: String) -> CGImage? {
@@ -260,18 +336,10 @@ final class Harness {
         let imageRect = RectMath.imageRect(
             fromViewRect: rect, viewHeight: view.bounds.height, scale: view.shot.scale
         )
+        let expected = expectedCrop(from: view.shot, imageRect: imageRect)
         NSPasteboard.general.clearContents()
         keyDown(36, characters: "\r", in: window, view: view)
-
-        if let size = pasteboardPixelSize() {
-            if size.width == Int(imageRect.width), size.height == Int(imageRect.height) {
-                pass("COPY-ENTER", "剪贴板 \(size.width)x\(size.height) 与裁剪 \(Int(imageRect.width))x\(Int(imageRect.height)) 一致")
-            } else {
-                fail("COPY-ENTER", "剪贴板 \(size.width)x\(size.height) 期望 \(Int(imageRect.width))x\(Int(imageRect.height))")
-            }
-        } else {
-            fail("COPY-ENTER", "剪贴板没有可读取的图像")
-        }
+        verifyClipboardPixels("COPY-ENTER", expected: expected)
         if visibleOverlayWindows.isEmpty {
             pass("COPY-ENTER-CLOSE", "复制后覆盖层全部消失")
         } else {
@@ -296,6 +364,7 @@ final class Harness {
         let imageRect = RectMath.imageRect(
             fromViewRect: rect, viewHeight: view.bounds.height, scale: view.shot.scale
         )
+        let expected = expectedCrop(from: view.shot, imageRect: imageRect)
         NSPasteboard.general.clearContents()
         if let doubleClick = mouseEvent(.leftMouseDown, at: CGPoint(x: 200, y: 200), in: window, clickCount: 2) {
             view.mouseDown(with: doubleClick)
@@ -303,16 +372,7 @@ final class Harness {
         } else {
             fail("COPY-DBLCLICK", "无法构造双击事件")
         }
-
-        if let size = pasteboardPixelSize() {
-            if size.width == Int(imageRect.width), size.height == Int(imageRect.height) {
-                pass("COPY-DBLCLICK", "剪贴板 \(size.width)x\(size.height) 与裁剪一致")
-            } else {
-                fail("COPY-DBLCLICK", "剪贴板 \(size.width)x\(size.height) 期望 \(Int(imageRect.width))x\(Int(imageRect.height))")
-            }
-        } else {
-            fail("COPY-DBLCLICK", "双击后剪贴板没有图像")
-        }
+        verifyClipboardPixels("COPY-DBLCLICK", expected: expected)
         if visibleOverlayWindows.isEmpty {
             pass("COPY-DBLCLICK-CLOSE", "双击复制后覆盖层全部消失")
         } else {
@@ -378,17 +438,10 @@ final class Harness {
         let imageRect = RectMath.imageRect(
             fromViewRect: snapped, viewHeight: view.bounds.height, scale: view.shot.scale
         )
+        let expected = expectedCrop(from: view.shot, imageRect: imageRect)
         NSPasteboard.general.clearContents()
         keyDown(36, characters: "\r", in: window, view: view)
-        if let size = pasteboardPixelSize() {
-            if abs(size.width - Int(imageRect.width)) <= 1, abs(size.height - Int(imageRect.height)) <= 1 {
-                pass("SNAP-COPY", "吸附复制 \(size.width)x\(size.height) 与窗口裁剪一致")
-            } else {
-                fail("SNAP-COPY", "吸附复制 \(size.width)x\(size.height) 期望 \(Int(imageRect.width))x\(Int(imageRect.height))")
-            }
-        } else {
-            fail("SNAP-COPY", "吸附复制后剪贴板没有图像")
-        }
+        verifyClipboardPixels("SNAP-COPY", expected: expected)
         endSession()
     }
 

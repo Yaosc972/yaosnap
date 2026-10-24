@@ -6,7 +6,7 @@ macOS 原生截图工具（自用），对标 Snipaste 2 Pro。P1 完成截图�
 
     ./build.sh
 
-产物在 `Build/Yaosnap.app`。构建脚本使用 ad-hoc 签名，适用于本机自用。
+产物在 `Build/Yaosnap.app`。构建脚本会自动探测本机的 `.env-tools/swiftc-manifest` 兼容层（存在时使用），并使用 ad-hoc 签名，适用于本机自用。
 
 ## 运行
 
@@ -38,7 +38,7 @@ macOS 原生截图工具（自用），对标 Snipaste 2 Pro。P1 完成截图�
     ./build.sh
     ./.env-tools/run-tests.sh
 
-本机 CommandLineTools 自带的 PackageDescription 较旧，直接运行 `swift build` 或 `swift test` 会因为 `swiftLanguageMode` 报错。两个脚本分别通过 manifest 兼容层和 swift-testing 插件参数绕开。`.env-tools/` 是本机私有目录，已 gitignore。
+本机 CommandLineTools 自带的 PackageDescription 较旧，直接运行 `swift build` 或 `swift test` 会因 `swiftLanguageMode` 报错。`build.sh` 会自动探测 `.env-tools/swiftc-manifest` 兼容层，`run-tests.sh` 另外补上 swift-testing 插件参数。`.env-tools/` 是本机私有目录，已 gitignore。
 
 P1 验收（性能基准 + E2E，含截图证据）：
 

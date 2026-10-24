@@ -5,10 +5,6 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
-if [ -x "$PWD/.env-tools/swiftc-manifest" ]; then
-    export SWIFT_EXEC_MANIFEST="$PWD/.env-tools/swiftc-manifest"
-fi
-
 ./build.sh
 
 mkdir -p /tmp/yaosnap-verify/build /tmp/yaosnap-verify/evidence
