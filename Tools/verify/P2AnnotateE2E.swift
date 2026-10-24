@@ -146,6 +146,33 @@ final class AnnotateHarness {
         pump(0.25)
     }
 
+    /// 直接驱动文字编辑器。编辑期间它是 first responder，按键不会经过 OverlayView.keyDown。
+    private func sendKey(
+        _ keyCode: UInt16,
+        characters: String,
+        to editor: NSTextView,
+        in window: NSWindow,
+        modifierFlags: NSEvent.ModifierFlags = []
+    ) {
+        guard let event = NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: modifierFlags,
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber,
+            context: nil,
+            characters: characters,
+            charactersIgnoringModifiers: characters,
+            isARepeat: false,
+            keyCode: keyCode
+        ) else {
+            fail("TEXT-KEY", "无法构造键盘事件 keyCode=\(keyCode)")
+            return
+        }
+        editor.keyDown(with: event)
+        pump(0.2)
+    }
+
     /// 工具条按钮点击入口。找不到按钮直接判失败。
     @discardableResult
     private func tapTool(_ view: OverlayView, _ kind: ShapeKind, id: String) -> Bool {
@@ -800,7 +827,7 @@ final class AnnotateHarness {
         endSession()
     }
 
-    /// 文字工具：选区内单击进入编辑 → Enter 提交 → 复制后剪贴板出现标注色文字像素。
+    /// 文字工具：选区内单击进入编辑 → Enter 只换行 → ⌘Enter 提交 → 复制后剪贴板出现标注色文字像素。
     private func runTextAnnotation() {
         guard let (window, view) = beginSession("TEXT") else { return }
         drag(view, window: window, from: CGPoint(x: 150, y: 150), to: CGPoint(x: 750, y: 600))
@@ -811,14 +838,32 @@ final class AnnotateHarness {
         }
         let click = CGPoint(x: selection.minX + 60, y: selection.minY + 220)
         press(view, window: window, path: [click])
-        guard let field = view.subviews.compactMap({ $0 as? NSTextField }).first else {
-            fail("TEXT-COMMIT", "单击后没有出现文本输入框")
+        guard let editor = view.subviews.compactMap({ $0 as? NSTextView }).first else {
+            fail("TEXT-COMMIT", "单击后没有出现文字编辑器")
             endSession()
             return
         }
-        field.stringValue = "Hello"
-        _ = field.sendAction(field.action, to: field.target)
-        pump(0.2)
+        editor.string = "Hello"
+        sendKey(36, characters: "\r", to: editor, in: window)
+        guard view.annotations.isEmpty, editor.superview != nil else {
+            fail("TEXT-COMMIT", "Enter 不应提交 annotations=\(view.annotations)")
+            endSession()
+            return
+        }
+        sendKey(53, characters: "\u{1b}", to: editor, in: window)
+        guard view.annotations.isEmpty, editor.superview == nil else {
+            fail("TEXT-COMMIT", "Esc 应取消编辑 annotations=\(view.annotations)")
+            endSession()
+            return
+        }
+        press(view, window: window, path: [click])
+        guard let reopened = view.subviews.compactMap({ $0 as? NSTextView }).first else {
+            fail("TEXT-COMMIT", "取消后无法重新进入编辑")
+            endSession()
+            return
+        }
+        reopened.string = "Hello"
+        sendKey(36, characters: "\r", to: reopened, in: window, modifierFlags: .command)
 
         guard view.annotations.count == 1,
               case .text(let text, let origin, let fontSize) = view.annotations[0].shape,
@@ -829,7 +874,7 @@ final class AnnotateHarness {
             endSession()
             return
         }
-        pass("TEXT-COMMIT", "文字已入列 origin=\(origin) fontSize=\(fontSize)")
+        pass("TEXT-COMMIT", "Enter 不提交、Esc 取消、⌘Enter 提交；文字已入列 origin=\(origin) fontSize=\(fontSize)")
 
         NSPasteboard.general.clearContents()
         keyDown(36, characters: "\r", in: window, view: view)
@@ -862,6 +907,48 @@ final class AnnotateHarness {
         endSession()
     }
 
+    /// 多行文字：两行中文，断言行数、换行保留与包围盒高度。
+    private func runMultilineText() {
+        guard let (window, view) = beginSession("TEXT-MULTILINE") else { return }
+        drag(view, window: window, from: CGPoint(x: 150, y: 150), to: CGPoint(x: 750, y: 640))
+        let selection = view.selectionRect
+        guard tapTool(view, .text, id: "TEXT-MULTILINE") else {
+            endSession()
+            return
+        }
+        let click = CGPoint(x: selection.minX + 60, y: selection.minY + 280)
+        press(view, window: window, path: [click])
+        guard let editor = view.subviews.compactMap({ $0 as? NSTextView }).first else {
+            fail("TEXT-MULTILINE", "单击后没有出现文字编辑器")
+            endSession()
+            return
+        }
+        editor.string = "测试文字\n测试文字"
+        sendKey(36, characters: "\r", to: editor, in: window, modifierFlags: .command)
+
+        guard view.annotations.count == 1,
+              case .text(let text, let origin, let fontSize) = view.annotations[0].shape,
+              text == "测试文字\n测试文字" else {
+            fail("TEXT-MULTILINE", "多行提交异常 annotations=\(view.annotations)")
+            endSession()
+            return
+        }
+        let layout = TextMetrics.multiline(text, fontSize: fontSize, origin: origin)
+        // 单行实测高度：行距不小于它才不重叠，包围盒要盖住两行叠起来的高度。
+        let lineHeight = TextMetrics.boundingRect("测试文字", fontSize: fontSize, origin: origin).height
+        let step = layout.lines[0].baseline.y - layout.lines[1].baseline.y
+        guard layout.lines.count == 2,
+              step >= lineHeight - 0.01,
+              layout.rect.height >= step + lineHeight - 0.5,
+              layout.lines[1].baseline.y < origin.y else {
+            fail("TEXT-MULTILINE", "行布局异常 lines=\(layout.lines.count) rect=\(layout.rect) 行距=\(step) 单行高=\(lineHeight)")
+            endSession()
+            return
+        }
+        pass("TEXT-MULTILINE", "两行已入列 lines=\(layout.lines.count) rect.height=\(layout.rect.height) 行距=\(step) 单行高=\(lineHeight)")
+        endSession()
+    }
+
     // MARK: - 主流程
 
     func runAll() {
@@ -878,6 +965,7 @@ final class AnnotateHarness {
         runToolStyleMemory()
         runUndo()
         runTextAnnotation()
+        runMultilineText()
 
         print("SUMMARY passes=\(passes) failures=\(failures)")
         exit(failures == 0 ? 0 : 1)

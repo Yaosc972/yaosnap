@@ -1,4 +1,5 @@
 import CoreGraphics
+import CoreText
 import Foundation
 import Testing
 @testable import YaosnapCore
@@ -31,6 +32,16 @@ struct AnnotationRendererTests {
 
     private func isRed(_ p: (r: Int, g: Int, b: Int)) -> Bool {
         p.r > 240 && p.g < 20 && p.b < 20
+    }
+
+    private func redCount(_ bytes: [UInt8], side: Int, canvasYRange: ClosedRange<Int>) -> Int {
+        var count = 0
+        for cy in canvasYRange where cy >= 0 && cy < side {
+            for x in 0..<side where isRed(at(bytes, x: x, cy: cy, canvasSide: side)) {
+                count += 1
+            }
+        }
+        return count
     }
 
     private func input(canvasSize: CGSize, scale: CGFloat = 1) -> RenderInput {
@@ -78,6 +89,61 @@ struct AnnotationRendererTests {
             }
         }
         #expect(redPixels > 0)
+    }
+
+    @Test func multilineSecondLineDrawsAtItsBaseline() {
+        let side = 200
+        let origin = CGPoint(x: 10, y: 150)
+        let text = "Hello\nWorld"
+        let bytes = rendered(width: side, height: side) { ctx in
+            AnnotationRenderer.draw(
+                [Annotation(shape: .text(text, origin: origin, fontSize: 24), style: Style(color: red, pen: .p3))],
+                draft: nil,
+                input: input(canvasSize: CGSize(width: side, height: side)),
+                into: ctx
+            )
+        }
+        let layout = TextMetrics.multiline(text, fontSize: 24, origin: origin)
+        let firstBaseline = Int(layout.lines[0].baseline.y)
+        let secondBaseline = Int(layout.lines[1].baseline.y)
+        // 两条基线附近都有字形像素；若两行叠画在 origin，第二行位置会是空白
+        #expect(redCount(bytes, side: side, canvasYRange: (firstBaseline + 2)...(firstBaseline + 10)) > 0)
+        #expect(redCount(bytes, side: side, canvasYRange: (secondBaseline + 2)...(secondBaseline + 10)) > 0)
+    }
+
+    /// 中文行高来自 fallback 字体；包围盒必须盖住实际墨迹，且两行文字带不重叠。
+    @Test func chineseMultilinePixelsStayInsideBounds() {
+        let side = 200
+        let text = "测试文字\n测试文字"
+        let origin = CGPoint(x: 10, y: 150)
+        let fontSize: CGFloat = 22
+        let bytes = rendered(width: side, height: side) { ctx in
+            AnnotationRenderer.draw(
+                [Annotation(shape: .text(text, origin: origin, fontSize: fontSize), style: Style(color: red, pen: .p3))],
+                draft: nil,
+                input: input(canvasSize: CGSize(width: side, height: side)),
+                into: ctx
+            )
+        }
+        let layout = TextMetrics.multiline(text, fontSize: fontSize, origin: origin)
+        var ascent0: CGFloat = 0
+        var descent0: CGFloat = 0
+        _ = CTLineGetTypographicBounds(layout.lines[0].line, &ascent0, &descent0, nil)
+        #expect(layout.lines[0].baseline.y - layout.lines[1].baseline.y >= ascent0 + descent0 - 0.01)
+
+        var minInk = side
+        var maxInk = -1
+        for cy in 0..<side {
+            for x in 0..<side where isRed(at(bytes, x: x, cy: cy, canvasSide: side)) {
+                minInk = min(minInk, cy)
+                maxInk = max(maxInk, cy)
+            }
+        }
+        #expect(maxInk >= 0)
+        #expect(CGFloat(minInk) >= layout.rect.minY - 1)
+        #expect(CGFloat(maxInk) <= layout.rect.maxY + 1)
+        #expect(minInk < Int(layout.lines[1].baseline.y))
+        #expect(maxInk > Int(layout.lines[0].baseline.y))
     }
 
     @Test func rectDrawnAtExpectedCanvasRegion() {

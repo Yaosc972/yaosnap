@@ -97,7 +97,7 @@ public enum AnnotationRenderer {
             drawMosaic(points, style: annotation.style, input: input, in: ctx)
         case .text(let string, let origin, let fontSize):
             guard !string.isEmpty else { break }
-            let layout = TextMetrics.layout(
+            let layout = TextMetrics.multiline(
                 string,
                 fontSize: fontSize,
                 origin: origin,
@@ -106,8 +106,10 @@ public enum AnnotationRenderer {
             ctx.setBlendMode(.normal)
             // CTLine 以文本矩阵定位基线；画布上下文 y 向上，与 CoreText 约定一致。
             ctx.textMatrix = .identity
-            ctx.textPosition = origin
-            CTLineDraw(layout.line, ctx)
+            for row in layout.lines {
+                ctx.textPosition = row.baseline
+                CTLineDraw(row.line, ctx)
+            }
         }
     }
 
