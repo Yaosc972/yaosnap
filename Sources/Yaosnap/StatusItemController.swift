@@ -4,8 +4,10 @@ import AppKit
 final class StatusItemController: NSObject {
     private let statusItem: NSStatusItem
     private let menu = NSMenu()
+    private let onSnip: @MainActor () -> Void
 
-    override init() {
+    init(onSnip: @escaping @MainActor () -> Void) {
+        self.onSnip = onSnip
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         super.init()
         if let button = statusItem.button {
@@ -24,7 +26,7 @@ final class StatusItemController: NSObject {
     }
 
     @objc private func snipTriggered() {
-        NSSound.beep() // Task 6 起替换为 SnipController.start()
+        onSnip()
     }
 
     @objc private func quit() {
