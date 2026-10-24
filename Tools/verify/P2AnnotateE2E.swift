@@ -2023,6 +2023,92 @@ final class AnnotateHarness {
         endSession()
     }
 
+    /// ⌘⇧Z 重做撤销过的一步；撤销后画新形状则重做栈作废。
+    private func runRedo() {
+        guard let (window, view) = beginSession("REDO") else { return }
+        drag(view, window: window, from: CGPoint(x: 150, y: 150), to: CGPoint(x: 750, y: 600))
+        let selection = view.selectionRect
+        press(view, window: window, path: [
+            CGPoint(x: selection.minX + 40, y: selection.minY + 40),
+            CGPoint(x: selection.minX + 200, y: selection.minY + 120),
+        ])
+        press(view, window: window, path: [
+            CGPoint(x: selection.minX + 240, y: selection.minY + 40),
+            CGPoint(x: selection.minX + 400, y: selection.minY + 120),
+        ])
+        guard view.annotations.count == 2 else {
+            fail("REDO", "前置画两笔失败：\(view.annotations.count)")
+            endSession()
+            return
+        }
+        let originalIDs = view.annotations.map(\.id)
+
+        keyDown(6, characters: "z", in: window, view: view, modifierFlags: .command)
+        guard view.annotations.count == 1 else {
+            fail("REDO", "⌘Z 后应剩 1 笔，实际 \(view.annotations.count)")
+            endSession()
+            return
+        }
+        keyDown(6, characters: "z", in: window, view: view, modifierFlags: [.command, .shift])
+        guard view.annotations.map(\.id) == originalIDs else {
+            fail("REDO", "⌘⇧Z 后应恢复两笔，实际 \(view.annotations.map(\.id))")
+            endSession()
+            return
+        }
+
+        keyDown(6, characters: "z", in: window, view: view, modifierFlags: .command)
+        press(view, window: window, path: [
+            CGPoint(x: selection.minX + 440, y: selection.minY + 40),
+            CGPoint(x: selection.minX + 600, y: selection.minY + 120),
+        ])
+        guard view.annotations.count == 2 else {
+            fail("REDO", "撤销后新画一笔应有 2 笔，实际 \(view.annotations.count)")
+            endSession()
+            return
+        }
+        let afterNewEdit = view.annotations.map(\.id)
+        keyDown(6, characters: "z", in: window, view: view, modifierFlags: [.command, .shift])
+        guard view.annotations.map(\.id) == afterNewEdit else {
+            fail("REDO", "新编辑后 ⌘⇧Z 不应改变标注，实际 \(view.annotations.map(\.id))")
+            endSession()
+            return
+        }
+        pass("REDO", "⌘⇧Z 恢复撤销的标注；新编辑后重做栈清空")
+        endSession()
+    }
+
+    /// ⌘ + 保存按钮：不弹面板，直接写注入的快捷保存目录。
+    private func runQuickSave() {
+        guard let (window, view) = beginSession("QUICKSAVE") else { return }
+        drag(view, window: window, from: CGPoint(x: 150, y: 150), to: CGPoint(x: 750, y: 600))
+        guard let bar = view.subviews.compactMap({ $0 as? AnnotateToolbar }).first,
+              let saveButton = bar.saveButton else {
+            fail("QUICKSAVE", "工具条上找不到保存按钮")
+            endSession()
+            return
+        }
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("yaosnap-quicksave-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            controller.quickSaveDirectory = nil
+            try? FileManager.default.removeItem(at: directory)
+        }
+        controller.quickSaveDirectory = directory
+        saveButton.currentModifiers = { [.command] }
+        saveButton.performClick(nil)
+        pump(0.4)
+
+        let files = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+        let pngs = files.filter { $0.hasSuffix(".png") }
+        guard pngs.count == 1 else {
+            fail("QUICKSAVE", "快捷保存目录应有 1 个 PNG，实际 \(files)")
+            endSession()
+            return
+        }
+        pass("QUICKSAVE", "⌘ 点击保存写入 \(pngs[0])，未弹面板")
+        endSession()
+    }
+
     func runAll() {
         if !ScreenCaptureService.hasPermission() {
             print("FATAL 屏幕录制权限缺失，无法执行标注验收")
@@ -2037,6 +2123,8 @@ final class AnnotateHarness {
         runShapeCopies()
         runToolStyleMemory()
         runUndo()
+        runRedo()
+        runQuickSave()
         runSerialTool()
         runBlurTool()
         runEraserTool()

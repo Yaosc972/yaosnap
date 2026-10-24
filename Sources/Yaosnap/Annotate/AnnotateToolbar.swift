@@ -10,6 +10,8 @@ final class AnnotateToolbar: NSView {
     var onStyleChange: ((Style) -> Void)?
     var onCopy: (() -> Void)?
     var onSave: (() -> Void)?
+    /// ⌘ + 保存按钮：写快捷保存目录。
+    var onQuickSave: (() -> Void)?
     var onCancel: (() -> Void)?
 
     private enum Metrics {
@@ -36,6 +38,7 @@ final class AnnotateToolbar: NSView {
     private(set) var toolButtons: [ShapeKind: HoverButton] = [:]
     private(set) var colorButton: HoverButton!
     private(set) var penButton: HoverButton!
+    private(set) var saveButton: HoverButton!
     private(set) var colorPopover: NSPopover?
     private(set) var penPopover: NSPopover?
 
@@ -124,7 +127,12 @@ final class AnnotateToolbar: NSView {
         place(penButton)
         separator()
         place(makeHoverButton(symbol: "doc.on.doc", title: "复制", action: #selector(copyTapped)))
-        place(makeHoverButton(symbol: "square.and.arrow.down", title: "保存", action: #selector(saveTapped)))
+        saveButton = makeHoverButton(
+            symbol: "square.and.arrow.down",
+            title: "保存",
+            action: #selector(saveTapped)
+        )
+        place(saveButton)
         place(makeHoverButton(symbol: "xmark", title: "取消", action: #selector(cancelTapped)))
     }
 
@@ -292,7 +300,13 @@ final class AnnotateToolbar: NSView {
     }
 
     @objc private func copyTapped() { onCopy?() }
-    @objc private func saveTapped() { onSave?() }
+    @objc private func saveTapped() {
+        if saveButton.currentModifiers().contains(.command) {
+            onQuickSave?()
+        } else {
+            onSave?()
+        }
+    }
     @objc private func cancelTapped() { onCancel?() }
 }
 
@@ -301,6 +315,8 @@ final class AnnotateToolbar: NSView {
 final class HoverButton: NSButton {
     /// 需要滚轮交互的按钮（颜色按钮调透明度）挂在这里，其余按钮滚轮照常向上传递。
     var onScroll: ((CGFloat) -> Void)?
+    /// 点击时的修饰键。生产读全局状态，验收 harness 注入 ⌘ 模拟快捷保存。
+    var currentModifiers: () -> NSEvent.ModifierFlags = { NSEvent.modifierFlags }
 
     override func scrollWheel(with event: NSEvent) {
         guard let onScroll else {

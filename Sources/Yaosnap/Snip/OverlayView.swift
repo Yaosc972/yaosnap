@@ -101,6 +101,7 @@ final class OverlayView: NSView {
         bar.onStyleChange = { [weak self] style in self?.applyStyle(style) }
         bar.onCopy = { [weak self] in self?.requestCopy() }
         bar.onSave = { [weak self] in self?.requestSave() }
+        bar.onQuickSave = { [weak self] in self?.requestSave(quick: true) }
         bar.onCancel = { [weak self] in self?.requestCancel() }
         bar.isHidden = true
         return bar
@@ -134,8 +135,8 @@ final class OverlayView: NSView {
     /// 标注画布。进入 ready 时创建，选区重画或清空时移除。
     private var canvas: AnnotationCanvas?
 
-    /// 标注层快照撤销栈。一次擦除可能删掉多条，快照比逐条命令更简单，也能原样恢复顺序。
-    private var undoStack: [AnnotationSnapshot] = []
+    /// 标注层快照撤销 / 重做。一次擦除可能删掉多条，快照比逐条命令更简单，也能原样恢复顺序。
+    private var annotationHistory = SnapshotHistory<AnnotationSnapshot>()
     private struct AnnotationSnapshot {
         var annotations: [Annotation]
         var nextSerial: Int
@@ -405,10 +406,12 @@ final class OverlayView: NSView {
                 return
             }
             commitDraft()
-        case .moving(let id, _, _, _):
+        case .moving(let id, _, let original, _):
+            discardRedoIfChanged(id, from: original)
             phase = .selected(id: id)
             canvas?.selectedID = id
-        case .resizingText(let id, _, _, _), .rotatingText(let id, _, _):
+        case .resizingText(let id, _, let original, _), .rotatingText(let id, let original, _):
+            discardRedoIfChanged(id, from: original)
             phase = .selected(id: id)
             canvas?.selectedID = id
         case .idle, .ready, .polylineEditing, .editing, .selected:
@@ -577,7 +580,10 @@ final class OverlayView: NSView {
             copySelected()
         case 9 where event.modifierFlags.intersection([.command, .control, .option, .shift]) == [.command, .shift]:
             pasteAnnotation()
-        case 6 where event.modifierFlags.intersection([.command, .control, .option]) == .command: // ⌘Z
+        // shift 必须从 ⌘Z 的掩码里排除，否则 ⌘⇧Z 会被撤销抢先匹配。
+        case 6 where event.modifierFlags.intersection([.command, .control, .option, .shift]) == [.command, .shift]:
+            redoLastAnnotation()
+        case 6 where event.modifierFlags.intersection([.command, .control, .option, .shift]) == .command:
             undoLastAnnotation()
         case 123, 124, 125, 126:
             guard handleArrowKey(event) else {
@@ -847,15 +853,46 @@ final class OverlayView: NSView {
 
     /// 撤销一步。快照恢复整组标注，橡皮擦一次拖动删掉的多条也在同一步回退。
     private func undoLastAnnotation() {
-        guard let canvas, let snapshot = undoStack.popLast() else {
+        guard let current = currentSnapshot(),
+              let previous = annotationHistory.undo(current: current) else {
             NSSound.beep()
             return
         }
+        restore(previous)
+    }
+
+    /// 重做一步：撤销时压入的快照原样恢复。
+    private func redoLastAnnotation() {
+        guard let current = currentSnapshot(),
+              let next = annotationHistory.redo(current: current) else {
+            NSSound.beep()
+            return
+        }
+        restore(next)
+    }
+
+    private func currentSnapshot() -> AnnotationSnapshot? {
+        guard let canvas else { return nil }
+        return AnnotationSnapshot(annotations: canvas.annotations, nextSerial: canvas.nextSerial)
+    }
+
+    private func restore(_ snapshot: AnnotationSnapshot) {
+        guard let canvas else { return }
         canvas.annotations = snapshot.annotations
         canvas.nextSerial = snapshot.nextSerial
         if let selected = canvas.selectedID,
            !canvas.annotations.contains(where: { $0.id == selected }) {
             clearSelection()
+        }
+        needsDisplay = true
+    }
+
+    /// 拖动 / 缩放 / 旋转不进撤销栈，但一旦真的改变形状，旧的重做分支就失效。
+    private func discardRedoIfChanged(_ id: UUID, from original: Shape) {
+        guard let canvas,
+              let current = canvas.annotations.first(where: { $0.id == id }) else { return }
+        if current.shape != original {
+            annotationHistory.discardRedo()
         }
     }
 
@@ -1066,11 +1103,8 @@ final class OverlayView: NSView {
     }
 
     private func pushUndoSnapshot() {
-        guard let canvas else { return }
-        undoStack.append(AnnotationSnapshot(
-            annotations: canvas.annotations,
-            nextSerial: canvas.nextSerial
-        ))
+        guard let snapshot = currentSnapshot() else { return }
+        annotationHistory.record(snapshot)
     }
 
     private func isDraftValid(_ draft: Annotation) -> Bool {
@@ -1349,7 +1383,7 @@ final class OverlayView: NSView {
     /// 选区确定后创建标注画布，frame 与选区重合。
     private func setupCanvas() {
         // 新标注层配新历史，序号也从 1 重新开始。
-        undoStack.removeAll()
+        annotationHistory.removeAll()
         let newCanvas = AnnotationCanvas(
             base: activeSource,
             cropOriginPx: cropOriginPx(for: selectionRect),
@@ -1365,7 +1399,7 @@ final class OverlayView: NSView {
     private func removeCanvas() {
         canvas?.removeFromSuperview()
         canvas = nil
-        undoStack.removeAll()
+        annotationHistory.removeAll()
     }
 
     private func updateActionBar() {
@@ -1425,11 +1459,13 @@ final class OverlayView: NSView {
         )
     }
 
-    private func requestSave() {
+    private func requestSave(quick: Bool = false) {
+        var info: [AnyHashable: Any] = [SnipNotificationKey.displayID: shot.displayID]
+        if quick { info[SnipNotificationKey.quickSave] = true }
         NotificationCenter.default.post(
             name: .snipSaveRequested,
             object: nil,
-            userInfo: [SnipNotificationKey.displayID: shot.displayID]
+            userInfo: info
         )
     }
 
@@ -1715,6 +1751,8 @@ enum SnipNotificationKey: Hashable {
     /// 实际输出源与像素裁剪矩形。历史回放时可能是历史截图。
     case sourceImage
     case cropRectPx
+    /// ⌘ + 保存按钮：直接写快捷保存目录，不弹面板。
+    case quickSave
 }
 
 extension Dictionary where Key == AnyHashable, Value == Any {

@@ -31,6 +31,8 @@ final class SnipController {
     /// 当前待输出选区，绑定提交它的屏幕。输出请求必须带同一 displayID。
     private var pendingRegion: PendingRegion?
     private var saveJob: SaveJob?
+    /// 快捷保存根目录。验收 harness 注入临时目录，生产用 ~/Pictures/Yaosnap。
+    var quickSaveDirectory: URL?
     /// 十字光标是否生效。保存面板等场景需要临时恢复箭头。
     private var isCrosshairActive = false
 
@@ -167,6 +169,10 @@ final class SnipController {
             abortWithError("合成标注图像失败")
             return
         }
+        if notification.userInfo?[.quickSave] as? Bool == true {
+            quickSave(image, displaySize: pending.viewRect.size)
+            return
+        }
         let parent = overlayWindow(for: displayID) ?? NSApp.keyWindow ?? windows.first
         guard let parent else {
             abortWithError("没有可用的覆盖窗口")
@@ -228,6 +234,28 @@ final class SnipController {
     private func resumeSessionAfterSavePanel() {
         guard !windows.isEmpty else { return }
         setCrosshair(true)
+    }
+
+    /// ⌘ + 保存按钮：直接写快捷保存目录，成功路径与面板保存一致，只是不弹面板。
+    private func quickSave(_ image: CGImage, displaySize: CGSize) {
+        guard let data = ImageOutput.pngData(from: image) else {
+            print("[snip] error: PNG 编码失败")
+            NSSound.beep()
+            resumeSessionAfterSavePanel()
+            return
+        }
+        let store = quickSaveDirectory.map { QuickSaveStore(directory: $0) } ?? QuickSaveStore()
+        do {
+            let url = try store.write(data)
+            print("[snip] quick saved to \(url.path)")
+            remember(image, displaySize: displaySize)
+            NSSound(named: "Glass")?.play()
+            cancel()
+        } catch {
+            print("[snip] error: 快捷保存失败: \(error.localizedDescription)")
+            NSSound.beep()
+            resumeSessionAfterSavePanel()
+        }
     }
 
     private func abortWithError(_ message: String) {
