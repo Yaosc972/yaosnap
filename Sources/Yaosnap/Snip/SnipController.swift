@@ -9,11 +9,17 @@ final class SnipController {
         let image: CGImage
     }
 
+    /// 打开保存面板时的快照。面板期间其他屏仍可提交，保存只能写这里的内容。
+    private struct SaveJob {
+        let panel: NSSavePanel
+        let output: PendingOutput
+    }
+
     private var windows: [SnipOverlayWindow] = []
     private var shots: [DisplayShot] = []
     /// 当前待输出选区，绑定提交它的屏幕。输出请求必须带同一 displayID。
     private var pendingOutput: PendingOutput?
-    private var savePanel: NSSavePanel?
+    private var saveJob: SaveJob?
     private var isCursorHidden = false
 
     func start() {
@@ -53,6 +59,10 @@ final class SnipController {
     }
 
     func cancel() {
+        if let job = saveJob {
+            saveJob = nil
+            job.panel.cancel(nil)
+        }
         for window in windows {
             window.orderOut(nil)
         }
@@ -111,7 +121,7 @@ final class SnipController {
     }
 
     func savePendingImage(_ notification: Notification) {
-        guard let pending = pendingOutput, savePanel == nil else { return }
+        guard let pending = pendingOutput, saveJob == nil else { return }
         guard let displayID = notification.userInfo?["displayID"] as? UInt32,
               displayID == pending.displayID else {
             rejectMismatch("保存", notification: notification, pending: pending)
@@ -128,7 +138,7 @@ final class SnipController {
         panel.nameFieldStringValue = ImageOutput.defaultFileName()
         panel.directoryURL = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first
 
-        savePanel = panel
+        saveJob = SaveJob(panel: panel, output: pending)
         // 保存面板里需要可见鼠标
         restoreCursor()
         panel.beginSheetModal(for: parent) { [weak self] response in
@@ -139,8 +149,9 @@ final class SnipController {
     }
 
     private func finishSave(_ response: NSApplication.ModalResponse) {
-        let url = savePanel?.url
-        savePanel = nil
+        guard let job = saveJob else { return }
+        saveJob = nil
+        let url = job.panel.url
         guard response == .OK else {
             print("[snip] save cancelled")
             resumeSessionAfterSavePanel()
@@ -152,7 +163,7 @@ final class SnipController {
             resumeSessionAfterSavePanel()
             return
         }
-        guard let image = pendingOutput?.image, let data = ImageOutput.pngData(from: image) else {
+        guard let data = ImageOutput.pngData(from: job.output.image) else {
             print("[snip] error: PNG 编码失败")
             NSSound.beep()
             resumeSessionAfterSavePanel()
