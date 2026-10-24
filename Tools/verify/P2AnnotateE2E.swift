@@ -1711,12 +1711,101 @@ final class AnnotateHarness {
         endSession()
     }
 
+    /// 方向键整体平移，Control 扩大，Shift 缩小。
+    private func runArrowNudge() {
+        guard let (window, view) = beginSession("ARROW-NUDGE") else { return }
+        drag(view, window: window, from: CGPoint(x: 200, y: 200), to: CGPoint(x: 700, y: 600))
+
+        let moved = view.selectionRect
+        keyDown(124, characters: "\u{F703}", in: window, view: view)
+        let afterMove = view.selectionRect
+        guard afterMove == CGRect(
+            x: moved.minX + 1, y: moved.minY, width: moved.width, height: moved.height
+        ) else {
+            fail("ARROW-NUDGE", "右方向键后 \(afterMove)，期望 \(moved) 平移 1pt")
+            endSession()
+            return
+        }
+
+        let beforeExpand = view.selectionRect
+        keyDown(126, characters: "\u{F700}", in: window, view: view, modifierFlags: .control)
+        let afterExpand = view.selectionRect
+        guard afterExpand == CGRect(
+            x: beforeExpand.minX,
+            y: beforeExpand.minY,
+            width: beforeExpand.width,
+            height: beforeExpand.height + 1
+        ) else {
+            fail("ARROW-EXPAND", "Ctrl+上后 \(afterExpand)，期望高度 +1")
+            endSession()
+            return
+        }
+
+        let beforeShrink = view.selectionRect
+        keyDown(124, characters: "\u{F703}", in: window, view: view, modifierFlags: .shift)
+        let afterShrink = view.selectionRect
+        guard afterShrink == CGRect(
+            x: beforeShrink.minX,
+            y: beforeShrink.minY,
+            width: beforeShrink.width - 1,
+            height: beforeShrink.height
+        ) else {
+            fail("ARROW-SHRINK", "Shift+右后 \(afterShrink)，期望宽度 -1")
+            endSession()
+            return
+        }
+
+        pass("ARROW-NUDGE", "方向键平移、Ctrl 扩大、Shift 缩小均按 1pt 生效")
+        endSession()
+    }
+
+    /// 成功复制写入历史；新会话按 . 切到历史，按 , 翻回当前。
+    private func runHistoryReplay() {
+        guard let (window, view) = beginSession("HISTORY") else { return }
+        drag(view, window: window, from: CGPoint(x: 200, y: 200), to: CGPoint(x: 700, y: 600))
+        keyDown(36, characters: "\r", in: window, view: view)
+        pump(0.4)
+        guard controller.historyCount == 1 else {
+            fail("HISTORY-RECORD", "复制后历史数 \(controller.historyCount)，期望 1")
+            endSession()
+            return
+        }
+
+        guard let (replayWindow, replayView) = beginSession("HISTORY-REPLAY") else { return }
+        guard replayView.historyIndex == 0 else {
+            fail("HISTORY-REPLAY", "新会话直接处于历史 \(replayView.historyIndex)")
+            endSession()
+            return
+        }
+        keyDown(47, characters: ".", in: replayWindow, view: replayView)
+        guard replayView.historyIndex == 1, replayView.selectionRect.isEmpty else {
+            fail(
+                "HISTORY-REPLAY",
+                "按 . 后 index=\(replayView.historyIndex) selection=\(replayView.selectionRect)"
+            )
+            endSession()
+            return
+        }
+        capture("p2-history-replay.png")
+
+        keyDown(43, characters: ",", in: replayWindow, view: replayView)
+        guard replayView.historyIndex == 0 else {
+            fail("HISTORY-BACK", "按 , 后 index=\(replayView.historyIndex)，期望回到 0")
+            endSession()
+            return
+        }
+
+        pass("HISTORY-REPLAY", "复制后历史数 1，. 切到历史并重置选区，, 翻回当前")
+        endSession()
+    }
+
     func runAll() {
         if !ScreenCaptureService.hasPermission() {
             print("FATAL 屏幕录制权限缺失，无法执行标注验收")
             exit(2)
         }
 
+        runHistoryReplay()
         runPlainCopyUnchanged()
         runDrawAndCopy()
         runClickAndTinyStroke()
@@ -1742,6 +1831,7 @@ final class AnnotateHarness {
         runDigitPenSize()
         runColorWheelAlpha()
         runMagnifierAndColorSampling()
+        runArrowNudge()
 
         print("SUMMARY passes=\(passes) failures=\(failures)")
         exit(failures == 0 ? 0 : 1)

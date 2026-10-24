@@ -94,20 +94,27 @@ public struct MagnifierSampler {
 
     private let image: CGImage
     private let canvasSize: CGSize
-    private let scale: CGFloat
+    private let scaleX: CGFloat
+    private let scaleY: CGFloat
 
     public init(image: CGImage, canvasSize: CGSize, scale: CGFloat) {
+        self.init(image: image, canvasSize: canvasSize, scaleX: scale, scaleY: scale)
+    }
+
+    /// 宽高缩放不一致时使用，例如历史截图被拉伸到当前屏显示。
+    public init(image: CGImage, canvasSize: CGSize, scaleX: CGFloat, scaleY: CGFloat) {
         self.image = image
         self.canvasSize = canvasSize
-        self.scale = scale > 0 ? scale : 1
+        self.scaleX = scaleX > 0 ? scaleX : 1
+        self.scaleY = scaleY > 0 ? scaleY : 1
     }
 
     /// 画布点 → 帧像素下标。落在画布外时钳到最近的边缘像素。
     public func pixelIndex(at canvasPoint: CGPoint) -> (x: Int, y: Int)? {
         guard image.width > 0, image.height > 0,
               canvasSize.width > 0, canvasSize.height > 0 else { return nil }
-        let px = Int((canvasPoint.x * scale).rounded(.down))
-        let py = Int(((canvasSize.height - canvasPoint.y) * scale).rounded(.down))
+        let px = Int((canvasPoint.x * scaleX).rounded(.down))
+        let py = Int(((canvasSize.height - canvasPoint.y) * scaleY).rounded(.down))
         return (
             min(max(px, 0), image.width - 1),
             min(max(py, 0), image.height - 1)

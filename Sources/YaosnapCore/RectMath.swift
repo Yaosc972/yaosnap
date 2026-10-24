@@ -1,5 +1,15 @@
 import CoreGraphics
 
+/// 方向键微调选区的方向（视图坐标，y 向上）。
+public enum NudgeDirection {
+    case up, down, left, right
+}
+
+/// 方向键微调选区的方式：整体平移 / 向该方向扩大 / 向该方向缩小。
+public enum NudgeMode {
+    case move, expand, shrink
+}
+
 /// 坐标转换与选区数学。约定：
 /// - CG 全局坐标：主屏左上原点，y 向下（CGDisplayBounds / CGWindowList 返回值）
 /// - AppKit 视图坐标：左下原点，y 向上
@@ -61,12 +71,95 @@ public enum RectMath {
         viewHeight: CGFloat,
         scale: CGFloat
     ) -> CGRect {
+        imageRect(fromViewRect: viewRect, viewHeight: viewHeight, scaleX: scale, scaleY: scale)
+    }
+
+    /// 宽高缩放不同的情形（回放历史截图时，图像尺寸与原屏显示尺寸未必等比）。
+    public static func imageRect(
+        fromViewRect viewRect: CGRect,
+        viewHeight: CGFloat,
+        scaleX: CGFloat,
+        scaleY: CGFloat
+    ) -> CGRect {
         let flippedY = viewHeight - (viewRect.minY + viewRect.height)
         return CGRect(
-            x: viewRect.minX * scale,
-            y: flippedY * scale,
-            width: viewRect.width * scale,
-            height: viewRect.height * scale
+            x: viewRect.minX * scaleX,
+            y: flippedY * scaleY,
+            width: viewRect.width * scaleX,
+            height: viewRect.height * scaleY
         )
+    }
+
+    /// 方向键微调：平移 1pt，或向指定方向扩 / 缩 1pt。
+    /// 结果始终落在 bounds 内，缩小时两边都不小于 minimumSide。
+    public static func nudge(
+        _ rect: CGRect,
+        direction: NudgeDirection,
+        mode: NudgeMode,
+        within bounds: CGRect,
+        minimumSide: CGFloat = 1
+    ) -> CGRect {
+        guard !rect.isEmpty else { return rect }
+        var result = rect
+        switch mode {
+        case .move:
+            switch direction {
+            case .up: result.origin.y += 1
+            case .down: result.origin.y -= 1
+            case .left: result.origin.x -= 1
+            case .right: result.origin.x += 1
+            }
+            result.origin.x = clampedOrigin(
+                result.minX, side: result.width, lower: bounds.minX, upper: bounds.maxX
+            )
+            result.origin.y = clampedOrigin(
+                result.minY, side: result.height, lower: bounds.minY, upper: bounds.maxY
+            )
+        case .expand:
+            switch direction {
+            case .up:
+                result.size.height = min(bounds.maxY, result.maxY + 1) - result.minY
+            case .down:
+                let minY = max(bounds.minY, result.minY - 1)
+                result.size.height = result.maxY - minY
+                result.origin.y = minY
+            case .left:
+                let minX = max(bounds.minX, result.minX - 1)
+                result.size.width = result.maxX - minX
+                result.origin.x = minX
+            case .right:
+                result.size.width = min(bounds.maxX, result.maxX + 1) - result.minX
+            }
+        case .shrink:
+            let minSide = max(0, minimumSide)
+            switch direction {
+            case .up:
+                result.size.height = max(minSide, result.height - 1)
+            case .down:
+                let maxY = result.maxY
+                let minY = min(result.minY + 1, maxY - minSide)
+                result.origin.y = minY
+                result.size.height = maxY - minY
+            case .left:
+                let maxX = result.maxX
+                let minX = min(result.minX + 1, maxX - minSide)
+                result.origin.x = minX
+                result.size.width = maxX - minX
+            case .right:
+                result.size.width = max(minSide, result.width - 1)
+            }
+        }
+        return result
+    }
+
+    private static func clampedOrigin(
+        _ value: CGFloat,
+        side: CGFloat,
+        lower: CGFloat,
+        upper: CGFloat
+    ) -> CGFloat {
+        let maxOrigin = upper - side
+        guard maxOrigin >= lower else { return lower }
+        return min(max(value, lower), maxOrigin)
     }
 }

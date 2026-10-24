@@ -71,6 +71,16 @@ final class OverlayView: NSView {
 
     /// 冻结帧的 NSImage 包装。draw 每帧都会调用，重建 NSImage 在大屏拖拽时会掉帧。
     private let frozenImage: NSImage
+    /// 当前显示的图像。回放历史时换成历史截图，翻回 index 0 恢复实时冻结帧。
+    private var activeImage: NSImage
+    private var activeSource: CGImage
+    private var activeScaleX: CGFloat
+    private var activeScaleY: CGFloat
+    /// 最近成功输出的截图。0 表示本次实时冻结帧，1 是最新历史。
+    private let history: [CaptureHistoryEntry]
+    private(set) var historyIndex = 0
+    /// warp 不生效只提示一次，避免每次按键刷日志。
+    private var didWarnCursorWarp = false
 
     /// 本屏可吸附候选。冻结帧存续期间窗口布局视为不变，只取一次。
     private lazy var candidates: [WindowCandidate] = {
@@ -127,12 +137,18 @@ final class OverlayView: NSView {
     /// 待导出标注。控制器在复制 / 保存时按 displayID 来取。
     var annotations: [Annotation] { canvas?.annotations ?? [] }
 
-    init(shot: DisplayShot) {
+    init(shot: DisplayShot, history: [CaptureHistoryEntry] = []) {
         self.shot = shot
-        frozenImage = NSImage(
+        self.history = history
+        let frozen = NSImage(
             cgImage: shot.image,
             size: NSSize(width: shot.bounds.width, height: shot.bounds.height)
         )
+        frozenImage = frozen
+        activeImage = frozen
+        activeSource = shot.image
+        activeScaleX = shot.scale
+        activeScaleY = shot.scale
         super.init(frame: NSRect(
             x: 0, y: 0,
             width: shot.bounds.width,
@@ -154,7 +170,7 @@ final class OverlayView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         // 用 NSImage 绘制，避免 CGImage 直接进 CGContext 时的上下翻转。
-        frozenImage.draw(in: bounds)
+        activeImage.draw(in: bounds)
         drawMask()
         if selectionRect.isEmpty {
             drawHoverHighlight()
@@ -163,6 +179,7 @@ final class OverlayView: NSView {
             drawSizeLabel()
         }
         drawMagnifier()
+        drawHistoryLabel()
     }
 
     // MARK: - 鼠标交互
@@ -532,10 +549,21 @@ final class OverlayView: NSView {
             pasteAnnotation()
         case 6 where event.modifierFlags.intersection([.command, .control, .option]) == .command: // ⌘Z
             undoLastAnnotation()
-        default:
-            if !handleToolShortcut(event) {
+        case 123, 124, 125, 126:
+            guard handleArrowKey(event) else {
                 super.keyDown(with: event)
+                return
             }
+        // 只有存在历史时才接管 , / .，否则让事件照常向上传递。
+        case 43 where canStepHistory(event):
+            stepHistory(-1)
+        case 47 where canStepHistory(event):
+            stepHistory(1)
+        default:
+            if handleCursorKey(event) || handleToolShortcut(event) {
+                return
+            }
+            super.keyDown(with: event)
         }
     }
 
@@ -579,9 +607,10 @@ final class OverlayView: NSView {
     private func copyMagnifierColor() {
         guard let cursor = effectiveMagnifierCursor else { return }
         let sampler = MagnifierSampler(
-            image: shot.image,
+            image: activeSource,
             canvasSize: bounds.size,
-            scale: shot.scale
+            scaleX: activeScaleX,
+            scaleY: activeScaleY
         )
         guard let color = sampler.color(at: cursor) else {
             NSSound.beep()
@@ -637,6 +666,154 @@ final class OverlayView: NSView {
     }
 
     private var isSelectMode: Bool { toolMode == .select }
+
+    // MARK: - 方向键与光标
+
+    /// 方向键：裸键平移，Control 扩大，Shift 缩小。其他修饰组合不拦截。
+    private func handleArrowKey(_ event: NSEvent) -> Bool {
+        guard isReadyOrSelected,
+              let direction = Self.arrowDirection(for: event.keyCode) else { return false }
+        switch event.modifierFlags.intersection([.command, .control, .option, .shift]) {
+        case []: applyNudge(direction, mode: .move)
+        case .control: applyNudge(direction, mode: .expand)
+        case .shift: applyNudge(direction, mode: .shrink)
+        default: return false
+        }
+        return true
+    }
+
+    private static func arrowDirection(for keyCode: UInt16) -> NudgeDirection? {
+        switch keyCode {
+        case 126: return .up
+        case 125: return .down
+        case 123: return .left
+        case 124: return .right
+        default: return nil
+        }
+    }
+
+    private func applyNudge(_ direction: NudgeDirection, mode: NudgeMode) {
+        let updated = RectMath.nudge(
+            selectionRect,
+            direction: direction,
+            mode: mode,
+            within: bounds,
+            minimumSide: Self.minimumSelectionSide
+        )
+        guard updated != selectionRect else { return }
+        updateSelection(updated, annotationsFollowSelection: mode == .move)
+    }
+
+    /// 方向键调整后的统一落点：画布、标注、工具条与控制器里的待输出选区。
+    private func updateSelection(_ rect: CGRect, annotationsFollowSelection: Bool) {
+        let previousOrigin = selectionRect.origin
+        selectionRect = rect
+        if let canvas {
+            // 平移时框与标注一起走；边界伸缩时补偿标注坐标，让它继续贴住原截图内容。
+            if !annotationsFollowSelection {
+                let delta = CGPoint(
+                    x: previousOrigin.x - rect.minX,
+                    y: previousOrigin.y - rect.minY
+                )
+                if delta != .zero {
+                    canvas.translateAnnotations(by: delta)
+                }
+            }
+            canvas.frame = rect
+            canvas.updateCropOrigin(cropOriginPx(for: rect))
+        }
+        updateActionBar()
+        needsDisplay = true
+        publishSelection()
+    }
+
+    /// W A S D 逐像素移动系统光标。文字编辑时事件由编辑器接收，不会走到这里。
+    private func handleCursorKey(_ event: NSEvent) -> Bool {
+        if case .editing = phase { return false }
+        guard event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty,
+              let key = event.charactersIgnoringModifiers?.lowercased() else { return false }
+        let directions: [String: NudgeDirection] = [
+            "w": .up, "a": .left, "s": .down, "d": .right,
+        ]
+        guard let direction = directions[key] else { return false }
+        moveSystemCursor(direction)
+        return true
+    }
+
+    private func moveSystemCursor(_ direction: NudgeDirection) {
+        guard let current = effectiveMagnifierCursor else { return }
+        var next = current
+        switch direction {
+        case .up: next.y += 1
+        case .down: next.y -= 1
+        case .left: next.x -= 1
+        case .right: next.x += 1
+        }
+        next.x = min(max(next.x, bounds.minX), max(bounds.minX, bounds.maxX - 1))
+        next.y = min(max(next.y, bounds.minY), max(bounds.minY, bounds.maxY - 1))
+        magnifierCursor = next
+        refreshMagnifier()
+        needsDisplay = true
+
+        let global = RectMath.toGlobalPoint(
+            viewPoint: next,
+            displayBounds: shot.bounds,
+            viewHeight: bounds.height
+        )
+        let beforeWarp = CGEvent(source: nil)?.location
+        CGWarpMouseCursorPosition(global)
+        CGAssociateMouseAndMouseCursorPosition(1)
+        // warp 返回 void，读回系统光标判断是否真的移动。系统会把光标贴到整数像素，
+        // 所以只看位置是否变化；目标与当前位置相同（贴边）时不做判断。
+        if !didWarnCursorWarp, let beforeWarp,
+           hypot(beforeWarp.x - global.x, beforeWarp.y - global.y) >= 0.5,
+           let actual = CGEvent(source: nil)?.location,
+           abs(actual.x - beforeWarp.x) < 0.01, abs(actual.y - beforeWarp.y) < 0.01 {
+            didWarnCursorWarp = true
+            print("[snip] warning: 光标 warp 未生效，仅更新内部光标状态")
+        }
+    }
+
+    // MARK: - 历史回放
+
+    private func canStepHistory(_ event: NSEvent) -> Bool {
+        !history.isEmpty
+            && event.modifierFlags.intersection([.command, .control, .option]).isEmpty
+    }
+
+    /// index 0 是本次实时冻结帧，1... 是历史（1 为最新）。
+    private func stepHistory(_ delta: Int) {
+        let next = min(max(historyIndex + delta, 0), history.count)
+        guard next != historyIndex else { return }
+        historyIndex = next
+        applyHistoryImage()
+        resetSelection()
+        needsDisplay = true
+    }
+
+    private func applyHistoryImage() {
+        guard historyIndex > 0 else {
+            activeImage = frozenImage
+            activeSource = shot.image
+            activeScaleX = shot.scale
+            activeScaleY = shot.scale
+            return
+        }
+        let entry = history[historyIndex - 1]
+        activeImage = NSImage(cgImage: entry.image, size: bounds.size)
+        activeSource = entry.image
+        activeScaleX = bounds.width > 0 ? CGFloat(entry.image.width) / bounds.width : 1
+        activeScaleY = bounds.height > 0 ? CGFloat(entry.image.height) / bounds.height : 1
+    }
+
+    private func resetSelection() {
+        removeCanvas()
+        selectionRect = .zero
+        phase = .idle
+        hoverWindow = nil
+        pendingShortcut = nil
+        updateActionBar()
+    }
 
     /// 撤销最后一笔。ready / drawing 都可用；无标注提示音。只撤销不重做。
     private func undoLastAnnotation() {
@@ -763,6 +940,12 @@ final class OverlayView: NSView {
         selectionRect = selectionRect.integral
         phase = .ready
         setupCanvas()
+        publishSelection()
+        updateActionBar()
+    }
+
+    /// 把当前选区连同实际输出源交给控制器。方向键调整后也会重新发布。
+    private func publishSelection() {
         NotificationCenter.default.post(
             name: .snipCommitted,
             object: nil,
@@ -771,9 +954,25 @@ final class OverlayView: NSView {
                 SnipNotificationKey.viewHeight: bounds.height,
                 SnipNotificationKey.scale: shot.scale,
                 SnipNotificationKey.displayID: shot.displayID,
+                SnipNotificationKey.sourceImage: activeSource,
+                SnipNotificationKey.cropRectPx: RectMath.imageRect(
+                    fromViewRect: selectionRect,
+                    viewHeight: bounds.height,
+                    scaleX: activeScaleX,
+                    scaleY: activeScaleY
+                ),
             ]
         )
-        updateActionBar()
+    }
+
+    private func cropOriginPx(for rect: CGRect) -> CGPoint {
+        let imageRect = RectMath.imageRect(
+            fromViewRect: rect,
+            viewHeight: bounds.height,
+            scaleX: activeScaleX,
+            scaleY: activeScaleY
+        )
+        return CGPoint(x: imageRect.minX, y: imageRect.minY)
     }
 
     /// 选区内按当前工具起一笔 draft。单击不落形状（点序列除外，单击即圆点）。
@@ -1064,15 +1263,10 @@ final class OverlayView: NSView {
 
     /// 选区确定后创建标注画布，frame 与选区重合。
     private func setupCanvas() {
-        let imageRect = RectMath.imageRect(
-            fromViewRect: selectionRect,
-            viewHeight: bounds.height,
-            scale: shot.scale
-        )
         let newCanvas = AnnotationCanvas(
-            base: shot.image,
-            cropOriginPx: CGPoint(x: imageRect.minX, y: imageRect.minY),
-            scale: shot.scale,
+            base: activeSource,
+            cropOriginPx: cropOriginPx(for: selectionRect),
+            scale: activeScaleX,
             initialStyle: toolStore.currentStyle
         )
         // 画布压在工具条下面；hitTest 返回 nil，鼠标事件不受它遮挡。
@@ -1243,18 +1437,51 @@ final class OverlayView: NSView {
         )
     }
 
+    /// 底部居中的历史位置标签。只在实际回放时出现。
+    private func drawHistoryLabel() {
+        guard historyIndex > 0 else { return }
+        let text = "历史 \(historyIndex)/\(history.count)" as NSString
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: SizeLabel.font,
+            .foregroundColor: SizeLabel.textColor,
+        ]
+        let padding = SizeLabel.padding
+        let textSize = text.size(withAttributes: attributes)
+        let labelSize = NSSize(
+            width: ceil(textSize.width) + padding.width * 2,
+            height: ceil(textSize.height) + padding.height * 2
+        )
+        let labelRect = NSRect(
+            x: (bounds.width - labelSize.width) / 2,
+            y: bounds.minY + 16,
+            width: labelSize.width,
+            height: labelSize.height
+        )
+        SizeLabel.background.setFill()
+        NSBezierPath(
+            roundedRect: labelRect,
+            xRadius: SizeLabel.cornerRadius,
+            yRadius: SizeLabel.cornerRadius
+        ).fill()
+        text.draw(
+            at: NSPoint(x: labelRect.minX + padding.width, y: labelRect.minY + padding.height),
+            withAttributes: attributes
+        )
+    }
+
     private func drawMagnifier() {
         guard isMagnifierVisible, let cursor = effectiveMagnifierCursor else { return }
         let frame = MagnifierGeometry.frame(cursor: cursor, in: bounds)
         let interior = MagnifierGeometry.interiorRect(in: frame)
         let sampler = MagnifierSampler(
-            image: shot.image,
+            image: activeSource,
             canvasSize: bounds.size,
-            scale: shot.scale
+            scaleX: activeScaleX,
+            scaleY: activeScaleY
         )
         guard let sample = sampler.magnified(
             at: cursor,
-            sourcePixels: MagnifierGeometry.samplePixelCount(scale: shot.scale),
+            sourcePixels: MagnifierGeometry.samplePixelCount(scale: min(activeScaleX, activeScaleY)),
             zoom: MagnifierGeometry.zoom
         ) else { return }
 
@@ -1397,6 +1624,9 @@ enum SnipNotificationKey: Hashable {
     case viewHeight
     case scale
     case displayID
+    /// 实际输出源与像素裁剪矩形。历史回放时可能是历史截图。
+    case sourceImage
+    case cropRectPx
 }
 
 extension Dictionary where Key == AnyHashable, Value == Any {

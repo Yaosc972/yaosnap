@@ -7,7 +7,7 @@ import YaosnapCore
 @MainActor
 final class AnnotationCanvas: NSView {
     private let base: CGImage
-    private let cropOriginPx: CGPoint
+    private var cropOriginPx: CGPoint
     private let scale: CGFloat
 
     var annotations: [Annotation] = [] {
@@ -34,6 +34,21 @@ final class AnnotationCanvas: NSView {
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    /// 选区被方向键调整后，画布左上的基础图原点随之移动。
+    func updateCropOrigin(_ origin: CGPoint) {
+        guard origin != cropOriginPx else { return }
+        cropOriginPx = origin
+        needsDisplay = true
+    }
+
+    /// 选区边界伸缩时保持标注贴在原截图内容上：坐标补偿选区左下角的位移。
+    func translateAnnotations(by delta: CGPoint) {
+        guard !annotations.isEmpty else { return }
+        annotations = annotations.map {
+            Annotation(id: $0.id, shape: $0.shape.translated(by: delta), style: $0.style)
+        }
+    }
 
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 

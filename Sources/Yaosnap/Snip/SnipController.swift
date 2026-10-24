@@ -8,9 +8,10 @@ final class SnipController {
     /// 让标注改动无需重新提交选区。
     private struct PendingRegion {
         let displayID: CGDirectDisplayID
-        let shot: DisplayShot
         let viewRect: CGRect
-        let viewHeight: CGFloat
+        /// 输出源可以是当前屏冻结帧，也可以是回放中的历史截图。
+        let sourceImage: CGImage
+        let cropRectPx: CGRect
         let scale: CGFloat
     }
 
@@ -18,10 +19,15 @@ final class SnipController {
     private struct SaveJob {
         let panel: NSSavePanel
         let image: CGImage
+        let displaySize: CGSize
     }
 
     private var windows: [SnipOverlayWindow] = []
     private var shots: [DisplayShot] = []
+    /// 最近成功输出的截图，只保留内存副本，供新会话回放。
+    private var history: [CaptureHistoryEntry] = []
+    private static let historyLimit = 10
+    var historyCount: Int { history.count }
     /// 当前待输出选区，绑定提交它的屏幕。输出请求必须带同一 displayID。
     private var pendingRegion: PendingRegion?
     private var saveJob: SaveJob?
@@ -54,7 +60,7 @@ final class SnipController {
                 continue
             }
             let window = SnipOverlayWindow(screen: screen)
-            window.contentView = OverlayView(shot: shot)
+            window.contentView = OverlayView(shot: shot, history: history)
             window.makeFirstResponder(window.contentView)
             window.makeKeyAndOrderFront(nil)
             windows.append(window)
@@ -110,12 +116,22 @@ final class SnipController {
             abortWithError("displayID \(displayID) 没有对应的冻结帧")
             return
         }
+        // 新会话带历史回放时，覆盖层给出实际显示图与像素裁剪矩形；旧通知退回冻结帧。
+        let sourceImage: CGImage
+        if let raw = info[.sourceImage] {
+            sourceImage = raw as! CGImage
+        } else {
+            sourceImage = shot.image
+        }
+        let cropRectPx = info[.cropRectPx] as? CGRect
+            ?? RectMath.imageRect(fromViewRect: viewRect, viewHeight: viewHeight, scale: shot.scale)
+        let outputScale = viewRect.width > 0 ? cropRectPx.width / viewRect.width : scale
         pendingRegion = PendingRegion(
             displayID: displayID,
-            shot: shot,
             viewRect: viewRect,
-            viewHeight: viewHeight,
-            scale: scale
+            sourceImage: sourceImage,
+            cropRectPx: cropRectPx,
+            scale: outputScale
         )
     }
 
@@ -136,6 +152,7 @@ final class SnipController {
             return
         }
         print("[snip] copied")
+        remember(image, displaySize: pending.viewRect.size)
         cancel()
     }
 
@@ -161,7 +178,11 @@ final class SnipController {
         panel.nameFieldStringValue = ImageOutput.defaultFileName()
         panel.directoryURL = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first
 
-        saveJob = SaveJob(panel: panel, image: image)
+        saveJob = SaveJob(
+            panel: panel,
+            image: image,
+            displaySize: pending.viewRect.size
+        )
         // 保存面板里需要可见鼠标
         setCrosshair(false)
         panel.beginSheetModal(for: parent) { [weak self] response in
@@ -195,6 +216,7 @@ final class SnipController {
         do {
             try data.write(to: url)
             print("[snip] saved to \(url.path)")
+            remember(job.image, displaySize: job.displaySize)
             cancel()
         } catch {
             print("[snip] error: 写入 \(url.path) 失败: \(error.localizedDescription)")
@@ -214,21 +236,24 @@ final class SnipController {
         cancel()
     }
 
-    /// 复制 / 保存共用的最终图合成：冻结帧裁剪 + 该屏画布上的标注。
+    /// 复制 / 保存共用的最终图合成：输出源裁剪 + 该屏画布上的标注。
     private func renderPendingOutput(_ pending: PendingRegion) -> CGImage? {
-        let cropRectPx = RectMath.imageRect(
-            fromViewRect: pending.viewRect,
-            viewHeight: pending.viewHeight,
-            scale: pending.scale
-        )
         let annotations = (overlayWindow(for: pending.displayID)?.contentView as? OverlayView)?
             .annotations ?? []
         return AnnotationExport.flatten(
-            base: pending.shot.image,
-            cropRectPx: cropRectPx,
+            base: pending.sourceImage,
+            cropRectPx: pending.cropRectPx,
             annotations: annotations,
             scale: pending.scale
         )
+    }
+
+    /// 最近成功输出的截图按时间倒序保留，最多 10 张。
+    private func remember(_ image: CGImage, displaySize: CGSize) {
+        history.insert(CaptureHistoryEntry(image: image, displaySize: displaySize), at: 0)
+        if history.count > Self.historyLimit {
+            history.removeLast(history.count - Self.historyLimit)
+        }
     }
 
     /// 输出请求来自另一块屏的覆盖层。拒绝，避免输出错屏内容。
