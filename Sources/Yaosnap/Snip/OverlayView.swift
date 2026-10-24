@@ -6,13 +6,23 @@ import YaosnapCore
 final class OverlayView: NSView {
     let shot: DisplayShot
 
-    /// 拖拽起点（视图坐标）。nil 表示当前没有进行中的拖拽。
+    /// 拖拽起点（视图坐标）。nil 表示当前没有按下鼠标。
     private var dragOrigin: CGPoint?
+    /// 光标下的可吸附窗口（全局坐标）。nil 表示光标不在任何窗口上。
+    private var hoverWindow: WindowCandidate?
     /// 当前选区（视图坐标，左下原点）。空矩形表示尚未选中。
     private(set) var selectionRect: CGRect = .zero
 
     private static let maskAlpha: CGFloat = 0.45
     private static let minimumSelectionSide: CGFloat = 1
+
+    /// 本屏可吸附候选。冻结帧存续期间窗口布局视为不变，只取一次。
+    private lazy var candidates: [WindowCandidate] = {
+        let own = getpid()
+        let all = WindowDetector.onScreenWindows(ownPID: own)
+        let snap = WindowDetector.snapCandidates(from: all, ownPID: own)
+        return snap.filter { shot.bounds.intersects($0.bounds) }
+    }()
 
     init(shot: DisplayShot) {
         self.shot = shot
@@ -31,22 +41,48 @@ final class OverlayView: NSView {
         // 用 NSImage 绘制，避免 CGImage 直接进 CGContext 时的上下翻转。
         NSImage(cgImage: shot.image, size: bounds.size).draw(in: bounds)
         drawMask()
-        guard !selectionRect.isEmpty else { return }
-        drawSelectionBorder()
-        drawSizeLabel()
+        if selectionRect.isEmpty {
+            drawHoverHighlight()
+        } else {
+            drawSelectionBorder()
+            drawSizeLabel()
+        }
     }
 
     // MARK: - 鼠标交互
 
+    override func mouseMoved(with event: NSEvent) {
+        guard dragOrigin == nil else { return }
+        let hit = windowUnderMouse(at: convert(event.locationInWindow, from: nil))
+        guard hit != hoverWindow else { return }
+        hoverWindow = hit
+        needsDisplay = true
+    }
+
     override func mouseDown(with event: NSEvent) {
-        dragOrigin = convert(event.locationInWindow, from: nil)
-        selectionRect = .zero
+        let point = convert(event.locationInWindow, from: nil)
+        dragOrigin = point
+        hoverWindow = nil
+        // 起点落在窗口内 → 初始选区为整个窗口；拖动后才脱离窗口锁定。
+        if let window = windowUnderMouse(at: point) {
+            selectionRect = RectMath.clamp(
+                RectMath.toViewRect(
+                    globalRect: window.bounds,
+                    displayBounds: shot.bounds,
+                    viewHeight: bounds.height
+                ),
+                to: bounds
+            )
+        } else {
+            selectionRect = .zero
+        }
         needsDisplay = true
     }
 
     override func mouseDragged(with event: NSEvent) {
         guard let origin = dragOrigin else { return }
         let current = convert(event.locationInWindow, from: nil)
+        // 拖动即脱离窗口锁定：按起点与当前点重算自由选区。
         // 鼠标可拖出视图范围，钳制后选区始终落在冻结帧内。
         selectionRect = RectMath.clamp(
             RectMath.normalizedRect(from: origin, to: current),
@@ -74,6 +110,15 @@ final class OverlayView: NSView {
         }
     }
 
+    /// 光标下的窗口：视图坐标 → CG 全局坐标后在本屏候选里取最顶层命中。
+    private func windowUnderMouse(at viewPoint: CGPoint) -> WindowCandidate? {
+        let globalPoint = CGPoint(
+            x: shot.bounds.minX + viewPoint.x,
+            y: shot.bounds.minY + (bounds.height - viewPoint.y)
+        )
+        return WindowDetector.window(at: globalPoint, in: candidates)
+    }
+
     private func commitSelection() {
         NotificationCenter.default.post(
             name: .snipCommitted,
@@ -88,6 +133,23 @@ final class OverlayView: NSView {
     }
 
     // MARK: - 绘制
+
+    private func drawHoverHighlight() {
+        guard let window = hoverWindow else { return }
+        let rect = RectMath.clamp(
+            RectMath.toViewRect(
+                globalRect: window.bounds,
+                displayBounds: shot.bounds,
+                viewHeight: bounds.height
+            ),
+            to: bounds
+        )
+        guard !rect.isEmpty else { return }
+        let border = NSBezierPath(rect: rect)
+        border.lineWidth = 2
+        NSColor.systemBlue.setStroke()
+        border.stroke()
+    }
 
     private func drawMask() {
         let mask = NSBezierPath(rect: bounds)
