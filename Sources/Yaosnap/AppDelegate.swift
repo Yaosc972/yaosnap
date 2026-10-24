@@ -18,15 +18,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.addObserver(
             self, selector: #selector(handleSnipSave(_:)), name: .snipSaveRequested, object: nil)
         print("Yaosnap launched")
-        let ok = hotkeyManager.register(.f1) { [snipController] in
+        let snipHandler: () -> Void = { [snipController] in
             MainActor.assumeIsolated {
+                print("[hotkey] snip triggered")
                 let t0 = CFAbsoluteTimeGetCurrent()
                 snipController.start()
                 let elapsed = (CFAbsoluteTimeGetCurrent() - t0) * 1000
                 print(String(format: "[perf] hotkey→overlay: %.1f ms", elapsed))
             }
         }
-        if !ok {
+        let ok = hotkeyManager.register(.f1, handler: snipHandler)
+        let ok2 = hotkeyManager.register(.ctrlShiftA, handler: snipHandler)
+        print("[hotkey] register F1 -> \(ok), Ctrl+Shift+A -> \(ok2)")
+        if !ok, !ok2 {
             let alert = NSAlert()
             alert.messageText = "F1 热键注册失败"
             alert.informativeText = "可能被其他程序占用，请关闭冲突程序后重启 Yaosnap。"

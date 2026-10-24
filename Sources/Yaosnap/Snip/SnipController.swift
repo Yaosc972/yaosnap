@@ -23,8 +23,10 @@ final class SnipController {
     private var isCursorHidden = false
 
     func start() {
+        print("[snip] start called")
         guard windows.isEmpty else { return }
         guard ScreenCaptureService.hasPermission() else {
+            print("[snip] no screen capture permission")
             ScreenCaptureService.requestPermission()
             showPermissionAlert()
             return
