@@ -4,23 +4,26 @@ import YaosnapCore
 
 @MainActor
 final class SnipController {
-    private struct PendingOutput {
-        let displayID: UInt32
-        let image: CGImage
-        /// 裁剪图像的像素/点比例，写剪贴板时按它折算点尺寸。
+    /// 已确定的选区。提交时只记信息，复制 / 保存时才拉标注并合成最终图，
+    /// 让标注改动无需重新提交选区。
+    private struct PendingRegion {
+        let displayID: CGDirectDisplayID
+        let shot: DisplayShot
+        let viewRect: CGRect
+        let viewHeight: CGFloat
         let scale: CGFloat
     }
 
     /// 打开保存面板时的快照。面板期间其他屏仍可提交，保存只能写这里的内容。
     private struct SaveJob {
         let panel: NSSavePanel
-        let output: PendingOutput
+        let image: CGImage
     }
 
     private var windows: [SnipOverlayWindow] = []
     private var shots: [DisplayShot] = []
     /// 当前待输出选区，绑定提交它的屏幕。输出请求必须带同一 displayID。
-    private var pendingOutput: PendingOutput?
+    private var pendingRegion: PendingRegion?
     private var saveJob: SaveJob?
     /// 十字光标是否生效。保存面板等场景需要临时恢复箭头。
     private var isCrosshairActive = false
@@ -41,7 +44,7 @@ final class SnipController {
         }
 
         shots = []
-        pendingOutput = nil
+        pendingRegion = nil
         for shot in captures {
             guard let screen = NSScreen.screens.first(where: {
                 ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?
@@ -84,14 +87,14 @@ final class SnipController {
         }
         windows.removeAll()
         shots.removeAll()
-        pendingOutput = nil
+        pendingRegion = nil
     }
 
     // MARK: - 输出
 
-    /// 选区确定：按 displayID 找到冻结帧并裁剪，结果留给 Enter / 双击 / ⌘S。
+    /// 选区确定：按 displayID 记住选区信息，输出时再合成图像。
     func commitSelection(_ notification: Notification) {
-        pendingOutput = nil
+        pendingRegion = nil
         guard let info = notification.userInfo,
               let viewRect = info[.viewRect] as? CGRect,
               let viewHeight = info[.viewHeight] as? CGFloat,
@@ -107,26 +110,27 @@ final class SnipController {
             abortWithError("displayID \(displayID) 没有对应的冻结帧")
             return
         }
-        let imageRect = RectMath.imageRect(
-            fromViewRect: viewRect,
+        pendingRegion = PendingRegion(
+            displayID: displayID,
+            shot: shot,
+            viewRect: viewRect,
             viewHeight: viewHeight,
             scale: scale
         )
-        guard let cropped = ImageOutput.crop(shot.image, to: imageRect) else {
-            abortWithError("裁剪失败 rect=\(imageRect) image=\(shot.image.width)x\(shot.image.height)")
-            return
-        }
-        pendingOutput = PendingOutput(displayID: displayID, image: cropped, scale: scale)
     }
 
     func copyPendingImage(_ notification: Notification) {
-        guard let pending = pendingOutput else { return }
+        guard let pending = pendingRegion else { return }
         guard let displayID = notification.userInfo?[.displayID] as? UInt32,
               displayID == pending.displayID else {
             rejectMismatch("复制", notification: notification, pending: pending)
             return
         }
-        guard ClipboardService.copyToPasteboard(pending.image, scale: pending.scale) else {
+        guard let image = renderPendingOutput(pending) else {
+            abortWithError("合成标注图像失败")
+            return
+        }
+        guard ClipboardService.copyToPasteboard(image, scale: pending.scale) else {
             print("[snip] error: 写入剪贴板失败")
             NSSound.beep()
             return
@@ -136,10 +140,14 @@ final class SnipController {
     }
 
     func savePendingImage(_ notification: Notification) {
-        guard let pending = pendingOutput, saveJob == nil else { return }
+        guard let pending = pendingRegion, saveJob == nil else { return }
         guard let displayID = notification.userInfo?[.displayID] as? UInt32,
               displayID == pending.displayID else {
             rejectMismatch("保存", notification: notification, pending: pending)
+            return
+        }
+        guard let image = renderPendingOutput(pending) else {
+            abortWithError("合成标注图像失败")
             return
         }
         let parent = overlayWindow(for: displayID) ?? NSApp.keyWindow ?? windows.first
@@ -153,7 +161,7 @@ final class SnipController {
         panel.nameFieldStringValue = ImageOutput.defaultFileName()
         panel.directoryURL = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first
 
-        saveJob = SaveJob(panel: panel, output: pending)
+        saveJob = SaveJob(panel: panel, image: image)
         // 保存面板里需要可见鼠标
         setCrosshair(false)
         panel.beginSheetModal(for: parent) { [weak self] response in
@@ -178,7 +186,7 @@ final class SnipController {
             resumeSessionAfterSavePanel()
             return
         }
-        guard let data = ImageOutput.pngData(from: job.output.image) else {
+        guard let data = ImageOutput.pngData(from: job.image) else {
             print("[snip] error: PNG 编码失败")
             NSSound.beep()
             resumeSessionAfterSavePanel()
@@ -206,11 +214,28 @@ final class SnipController {
         cancel()
     }
 
+    /// 复制 / 保存共用的最终图合成：冻结帧裁剪 + 该屏画布上的标注。
+    private func renderPendingOutput(_ pending: PendingRegion) -> CGImage? {
+        let cropRectPx = RectMath.imageRect(
+            fromViewRect: pending.viewRect,
+            viewHeight: pending.viewHeight,
+            scale: pending.scale
+        )
+        let annotations = (overlayWindow(for: pending.displayID)?.contentView as? OverlayView)?
+            .annotations ?? []
+        return AnnotationExport.flatten(
+            base: pending.shot.image,
+            cropRectPx: cropRectPx,
+            annotations: annotations,
+            scale: pending.scale
+        )
+    }
+
     /// 输出请求来自另一块屏的覆盖层。拒绝，避免输出错屏内容。
     private func rejectMismatch(
         _ action: String,
         notification: Notification,
-        pending: PendingOutput
+        pending: PendingRegion
     ) {
         let requested = notification.userInfo?[.displayID] as? UInt32
         print("[snip] error: \(action)请求 displayID=\(requested.map(String.init) ?? "缺失") 与待输出 displayID=\(pending.displayID) 不匹配")

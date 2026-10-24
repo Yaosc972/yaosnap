@@ -1,17 +1,22 @@
 import AppKit
 import YaosnapCore
 
-/// 单屏覆盖视图：绘制冻结帧与选区遮罩，承载拖拽选区交互。
+/// 单屏覆盖视图：绘制冻结帧与选区遮罩，承载选区与标注交互。
 @MainActor
 final class OverlayView: NSView {
     let shot: DisplayShot
 
-    /// 拖拽起点（视图坐标）。nil 表示当前没有按下鼠标。
-    private var dragOrigin: CGPoint?
-    /// 本次按下后位移是否超过阈值。用于区分"单击确认"和"重画选区"。
-    private var didDrag = false
-    /// 选区是否已确定（已发 snipCommitted），等待 Enter / 双击 / ⌘S 输出。
-    private var isCommitted = false
+    /// 会话状态机。idling 无选区；selecting 在拖选区（origin 视图坐标，freeDrag 表示
+    /// 已脱离窗口吸附）；ready 选区已确定；drawing 在拖标注（origin 画布坐标）。
+    /// 按压内的手势状态全部收进关联值，避免多个布尔手工同步。
+    private enum Phase {
+        case idle
+        case selecting(origin: CGPoint, freeDrag: Bool)
+        case ready
+        case drawing(origin: CGPoint)
+    }
+
+    private var phase: Phase = .idle
     /// 光标下的可吸附窗口（全局坐标）。nil 表示光标不在任何窗口上。
     private var hoverWindow: WindowCandidate?
     /// 当前选区（视图坐标，左下原点）。空矩形表示尚未选中。
@@ -24,7 +29,9 @@ final class OverlayView: NSView {
 
     private static let maskAlpha: CGFloat = 0.32
     private static let minimumSelectionSide: CGFloat = 1
-    /// 按下到松开的位移小于该值视为单击；双击确认时手抖不应清掉已确定的选区。
+    /// 标注形状任一边长小于该值视为无效，丢弃。
+    private static let minimumStrokeSide: CGFloat = 2
+    /// 按下到拖动的位移小于该值不脱离窗口吸附；双击确认时手抖不应清掉已确定的选区。
     private static let dragThreshold: CGFloat = 3
 
     /// 尺寸标签的绘制参数。散在绘制代码里会让间距和字号无法对齐调。
@@ -49,15 +56,32 @@ final class OverlayView: NSView {
         return snap.filter { shot.bounds.intersects($0.bounds) }
     }()
 
-    /// 选区确定后浮现的操作工具条（复制 / 保存 / 取消）。
-    private lazy var actionBar: ActionBarView = {
-        let bar = ActionBarView()
+    /// 选区确定后浮现的标注工具条（形状 / 颜色 / 笔尖 / 复制 / 保存 / 取消）。
+    private lazy var toolbar: AnnotateToolbar = {
+        let bar = AnnotateToolbar(
+            initialKind: toolStore.currentKind,
+            initialStyle: toolStore.currentStyle
+        )
+        bar.onSelectTool = { [weak self] kind in self?.selectTool(kind) }
+        bar.onStyleChange = { [weak self] style in self?.applyStyle(style) }
         bar.onCopy = { [weak self] in self?.requestCopy() }
         bar.onSave = { [weak self] in self?.requestSave() }
         bar.onCancel = { [weak self] in self?.requestCancel() }
         bar.isHidden = true
         return bar
     }()
+
+    /// 每形状独立记忆颜色与笔尖。
+    private var toolStore = ToolStyleStore()
+
+    /// 两字符快捷键（RR）的首字符暂存。
+    private var pendingShortcut: (key: String, at: TimeInterval)?
+
+    /// 标注画布。进入 ready 时创建，选区重画或清空时移除。
+    private var canvas: AnnotationCanvas?
+
+    /// 待导出标注。控制器在复制 / 保存时按 displayID 来取。
+    var annotations: [Annotation] { canvas?.annotations ?? [] }
 
     init(shot: DisplayShot) {
         self.shot = shot
@@ -70,7 +94,7 @@ final class OverlayView: NSView {
             width: shot.bounds.width,
             height: shot.bounds.height
         ))
-        addSubview(actionBar)
+        addSubview(toolbar)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -99,8 +123,8 @@ final class OverlayView: NSView {
     // MARK: - 鼠标交互
 
     override func mouseMoved(with event: NSEvent) {
-        // 已有选区时 hover 不绘制，跳过状态更新避免整屏重绘
-        guard dragOrigin == nil, selectionRect.isEmpty else { return }
+        // 有按压或已有选区时不画 hover，跳过状态更新避免整屏重绘
+        guard case .idle = phase, selectionRect.isEmpty else { return }
         let hit = windowUnderMouse(at: convert(event.locationInWindow, from: nil))
         guard hit != hoverWindow else { return }
         hoverWindow = hit
@@ -109,74 +133,76 @@ final class OverlayView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
-        if isCommitted, selectionRect.contains(point) {
-            if event.clickCount == 2 {
+        switch phase {
+        case .idle:
+            beginSelection(at: point)
+        case .ready:
+            if event.clickCount == 2, selectionRect.contains(point) {
                 requestCopy()
                 return
             }
-            // 已确定的选区：单击保留选区，拖动可重画
-            dragOrigin = point
-            didDrag = false
-            return
+            guard selectionRect.contains(point) else {
+                // 选区外按下：清空标注并重画选区
+                removeCanvas()
+                beginSelection(at: point)
+                return
+            }
+            // 选区内按下：按当前工具起一笔 draft，单击不落形状（点序列除外，单击即圆点）
+            guard let canvas else { return }
+            let start = canvasPoint(from: point)
+            canvas.draft = makeDraft(origin: start, current: start)
+            phase = .drawing(origin: start)
+        case .selecting, .drawing:
+            break // 已有按压，忽略重入
         }
-
-        isCommitted = false
-        didDrag = false
-        dragOrigin = point
-        hoverWindow = nil
-        updateActionBar()
-        // 起点落在窗口内 → 初始选区为整个窗口；拖动后才脱离窗口锁定。
-        if let window = windowUnderMouse(at: point) {
-            selectionRect = RectMath.clamp(
-                RectMath.toViewRect(
-                    globalRect: window.bounds,
-                    displayBounds: shot.bounds,
-                    viewHeight: bounds.height
-                ),
-                to: bounds
-            )
-        } else {
-            selectionRect = .zero
-        }
-        needsDisplay = true
     }
 
     override func mouseDragged(with event: NSEvent) {
-        guard let origin = dragOrigin else { return }
-        let current = convert(event.locationInWindow, from: nil)
-        guard didDrag
-            || abs(current.x - origin.x) >= Self.dragThreshold
-            || abs(current.y - origin.y) >= Self.dragThreshold else { return }
-        didDrag = true
-        isCommitted = false
-        updateActionBar()
-        // 拖动即脱离窗口锁定：按起点与当前点重算自由选区。
-        // 鼠标可拖出视图范围，钳制后选区始终落在冻结帧内。
-        selectionRect = RectMath.clamp(
-            RectMath.normalizedRect(from: origin, to: current),
-            to: bounds
-        )
-        needsDisplay = true
+        let point = convert(event.locationInWindow, from: nil)
+        switch phase {
+        case .selecting(let origin, let freeDrag):
+            guard freeDrag
+                || abs(point.x - origin.x) >= Self.dragThreshold
+                || abs(point.y - origin.y) >= Self.dragThreshold else { return }
+            phase = .selecting(origin: origin, freeDrag: true)
+            // 拖动即脱离窗口锁定：按起点与当前点重算自由选区。
+            // 鼠标可拖出视图范围，钳制后选区始终落在冻结帧内。
+            selectionRect = RectMath.clamp(
+                RectMath.normalizedRect(from: origin, to: point),
+                to: bounds
+            )
+            needsDisplay = true
+        case .drawing(let origin):
+            guard let canvas else { return }
+            let current = canvasPoint(from: point)
+            switch toolStore.currentKind {
+            case .brush, .marker, .mosaic:
+                appendDraftPoint(current)
+            case .rect, .roundedRect, .ellipse, .line, .arrow:
+                canvas.draft = makeDraft(origin: origin, current: current)
+            }
+        case .idle, .ready:
+            break
+        }
     }
 
     override func mouseUp(with event: NSEvent) {
-        guard dragOrigin != nil else { return }
-        dragOrigin = nil
-        // 单击已确定的选区：保留它，等待 Enter / 双击 / ⌘S
-        if isCommitted && !didDrag {
-            return
+        switch phase {
+        case .selecting:
+            guard selectionRect.width >= Self.minimumSelectionSide,
+                  selectionRect.height >= Self.minimumSelectionSide else {
+                selectionRect = .zero
+                phase = .idle
+                updateActionBar()
+                needsDisplay = true
+                return
+            }
+            commitSelection()
+        case .drawing:
+            commitDraft()
+        case .idle, .ready:
+            break // ready 下单击保留选区，等待 Enter / 双击 / ⌘S
         }
-        guard selectionRect.width >= Self.minimumSelectionSide,
-              selectionRect.height >= Self.minimumSelectionSide else {
-            selectionRect = .zero
-            isCommitted = false
-            updateActionBar()
-            needsDisplay = true
-            return
-        }
-        isCommitted = true
-        commitSelection()
-        updateActionBar()
     }
 
     override func keyDown(with event: NSEvent) {
@@ -184,21 +210,56 @@ final class OverlayView: NSView {
         case 53: // Esc
             NotificationCenter.default.post(name: .snipEscapePressed, object: nil)
         case 36: // Return
-            guard isCommitted, !selectionRect.isEmpty else {
+            guard case .ready = phase, !selectionRect.isEmpty else {
                 NSSound.beep()
                 return
             }
             requestCopy()
         // ⌘S 只认 command，⌘⌃S / ⌘⌥S 不是保存快捷键
         case 1 where event.modifierFlags.intersection([.command, .control, .option]) == .command:
-            guard isCommitted, !selectionRect.isEmpty else {
+            guard case .ready = phase, !selectionRect.isEmpty else {
                 NSSound.beep()
                 return
             }
             requestSave()
+        case 6 where event.modifierFlags.intersection([.command, .control, .option]) == .command: // ⌘Z
+            undoLastAnnotation()
         default:
-            super.keyDown(with: event)
+            if !handleToolShortcut(event) {
+                super.keyDown(with: event)
+            }
         }
+    }
+
+    /// 撤销最后一笔。ready / drawing 都可用；无标注提示音。只撤销不重做。
+    private func undoLastAnnotation() {
+        guard let canvas, !canvas.annotations.isEmpty else {
+            NSSound.beep()
+            return
+        }
+        canvas.annotations.removeLast()
+    }
+
+    /// 工具快捷键：无修饰键时匹配 ShapeCatalog 的 shortcut 字符。
+    /// 两字符 shortcut（RR）靠短时间内连按两次首字符进入。
+    private func handleToolShortcut(_ event: NSEvent) -> Bool {
+        guard case .ready = phase,
+              event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty,
+              let key = event.charactersIgnoringModifiers?.uppercased(), !key.isEmpty
+        else { return false }
+        let first = String(key.prefix(1))
+        let now = ProcessInfo.processInfo.systemUptime
+        if let pending = pendingShortcut, now - pending.at < 0.5 {
+            if let entry = ShapeCatalog.p2.first(where: { $0.shortcut == pending.key + first }) {
+                pendingShortcut = nil
+                selectTool(entry.kind)
+                return true
+            }
+        }
+        guard let entry = ShapeCatalog.p2.first(where: { $0.shortcut == first }) else { return false }
+        pendingShortcut = (key: first, at: now)
+        selectTool(entry.kind)
+        return true
     }
 
     /// 光标下的窗口：视图坐标 → CG 全局坐标后在本屏候选里取最顶层命中。
@@ -211,26 +272,39 @@ final class OverlayView: NSView {
         return WindowDetector.window(at: globalPoint, in: candidates)
     }
 
-    /// 选区确定后把工具条摆在选区右下角外侧；下方放不下时收进选区内。
-    private func updateActionBar() {
-        guard isCommitted, !selectionRect.isEmpty else {
-            actionBar.isHidden = true
-            return
-        }
-        actionBar.isHidden = false
-        let size = actionBar.frame.size
-        var origin = CGPoint(
-            x: selectionRect.maxX - size.width,
-            y: selectionRect.minY - size.height - 6
+    /// 视图点 → 画布点。画布 frame 与选区重合，减去选区原点即得。
+    private func canvasPoint(from viewPoint: CGPoint) -> CGPoint {
+        CGPoint(
+            x: min(max(viewPoint.x - selectionRect.minX, 0), selectionRect.width),
+            y: min(max(viewPoint.y - selectionRect.minY, 0), selectionRect.height)
         )
-        if origin.y < bounds.minY + 4 {
-            origin.y = selectionRect.minY + 6
-        }
-        origin.x = min(max(origin.x, bounds.minX + 4), bounds.maxX - size.width - 4)
-        actionBar.frame = NSRect(origin: origin, size: size)
     }
 
+    /// 开始一次选区拖拽。起点落在窗口内 → 初始选区为整个窗口；拖动后才脱离窗口锁定。
+    private func beginSelection(at point: CGPoint) {
+        hoverWindow = nil
+        if let window = windowUnderMouse(at: point) {
+            selectionRect = RectMath.clamp(
+                RectMath.toViewRect(
+                    globalRect: window.bounds,
+                    displayBounds: shot.bounds,
+                    viewHeight: bounds.height
+                ),
+                to: bounds
+            )
+        } else {
+            selectionRect = .zero
+        }
+        phase = .selecting(origin: point, freeDrag: false)
+        updateActionBar()
+        needsDisplay = true
+    }
+
+    /// 选区确定：边界取整保证预览与导出位图尺寸一致，然后进入 ready。
     private func commitSelection() {
+        selectionRect = selectionRect.integral
+        phase = .ready
+        setupCanvas()
         NotificationCenter.default.post(
             name: .snipCommitted,
             object: nil,
@@ -241,6 +315,131 @@ final class OverlayView: NSView {
                 SnipNotificationKey.displayID: shot.displayID,
             ]
         )
+        updateActionBar()
+    }
+
+    /// 拖拽的标注落笔。矩形系两边不足、线系位移不足则丢弃，单击不产生形状；
+    /// 点序列非空即提交，单击落成圆点。
+    private func commitDraft() {
+        guard let canvas, let draft = canvas.draft, isDraftValid(draft) else {
+            if let canvas { canvas.draft = nil }
+            phase = .ready
+            return
+        }
+        canvas.annotations.append(draft)
+        canvas.draft = nil
+        phase = .ready
+    }
+
+    private func isDraftValid(_ draft: Annotation) -> Bool {
+        switch draft.shape {
+        case .rect(let rect), .roundedRect(let rect, _), .ellipse(let rect):
+            return rect.width >= Self.minimumStrokeSide && rect.height >= Self.minimumStrokeSide
+        case .line(let from, let to), .arrow(let from, let to):
+            // 水平/垂直线的 bounds 有一边为 0，按位移判断
+            return hypot(to.x - from.x, to.y - from.y) >= Self.minimumStrokeSide
+        case .brush, .marker, .mosaic:
+            return true
+        }
+    }
+
+    /// 按当前工具构建 draft。origin == current 表示笔画起点。
+    private func makeDraft(origin: CGPoint, current: CGPoint) -> Annotation? {
+        guard let canvas else { return nil }
+        let style = canvas.currentStyle
+        switch toolStore.currentKind {
+        case .rect:
+            return Annotation(shape: .rect(RectMath.normalizedRect(from: origin, to: current)), style: style)
+        case .roundedRect:
+            let rect = RectMath.normalizedRect(from: origin, to: current)
+            // 圆角半径取短边 1/4，与 Snipaste 观感近似
+            return Annotation(
+                shape: .roundedRect(rect, radius: min(rect.width, rect.height) * 0.25),
+                style: style
+            )
+        case .ellipse:
+            return Annotation(shape: .ellipse(RectMath.normalizedRect(from: origin, to: current)), style: style)
+        case .line:
+            return Annotation(shape: .line(from: origin, to: current), style: style)
+        case .arrow:
+            return Annotation(shape: .arrow(from: origin, to: current), style: style)
+        case .brush:
+            return Annotation(shape: .brush([current]), style: style)
+        case .marker:
+            return Annotation(shape: .marker([current]), style: style)
+        case .mosaic:
+            return Annotation(shape: .mosaic([current]), style: style)
+        }
+    }
+
+    /// 点序列形状增量加点，1pt 内的点忽略，避免原地震动堆积重复点。
+    private func appendDraftPoint(_ point: CGPoint) {
+        guard let canvas, let draft = canvas.draft else { return }
+        func grown(_ points: [CGPoint]) -> [CGPoint]? {
+            guard let last = points.last,
+                  hypot(point.x - last.x, point.y - last.y) >= 1
+            else { return nil }
+            return points + [point]
+        }
+        let updated: Shape?
+        switch draft.shape {
+        case .brush(let points): updated = grown(points).map { .brush($0) }
+        case .marker(let points): updated = grown(points).map { .marker($0) }
+        case .mosaic(let points): updated = grown(points).map { .mosaic($0) }
+        case .rect, .roundedRect, .ellipse, .line, .arrow: updated = nil
+        }
+        if let updated {
+            canvas.draft = Annotation(id: draft.id, shape: updated, style: draft.style)
+        }
+    }
+
+    /// 选区确定后创建标注画布，frame 与选区重合。
+    private func setupCanvas() {
+        let imageRect = RectMath.imageRect(
+            fromViewRect: selectionRect,
+            viewHeight: bounds.height,
+            scale: shot.scale
+        )
+        let newCanvas = AnnotationCanvas(
+            base: shot.image,
+            cropOriginPx: CGPoint(x: imageRect.minX, y: imageRect.minY),
+            scale: shot.scale,
+            initialStyle: toolStore.currentStyle
+        )
+        // 画布压在工具条下面；hitTest 返回 nil，鼠标事件不受它遮挡。
+        addSubview(newCanvas, positioned: .below, relativeTo: toolbar)
+        newCanvas.frame = selectionRect
+        canvas = newCanvas
+    }
+
+    private func removeCanvas() {
+        canvas?.removeFromSuperview()
+        canvas = nil
+    }
+
+    private func updateActionBar() {
+        guard case .ready = phase, !selectionRect.isEmpty else {
+            toolbar.isHidden = true
+            return
+        }
+        toolbar.isHidden = false
+        toolbar.frame.origin = ToolbarPlacement.origin(
+            toolbarSize: toolbar.frame.size,
+            selection: selectionRect,
+            within: bounds
+        )
+    }
+
+    /// AnnotateToolbar.onSelectTool / 快捷键：切工具并读回该工具的记忆样式。
+    private func selectTool(_ kind: ShapeKind) {
+        canvas?.currentStyle = toolStore.select(kind)
+        toolbar.select(kind)
+    }
+
+    /// AnnotateToolbar.onStyleChange：样式写回当前工具的记忆。
+    private func applyStyle(_ style: Style) {
+        toolStore.update(style)
+        canvas?.currentStyle = style
     }
 
     private func requestCopy() {

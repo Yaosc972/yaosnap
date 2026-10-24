@@ -579,8 +579,8 @@ final class Harness {
 
     func runActionBar() {
         guard let (window, view) = beginSession("ACTIONBAR") else { return }
-        guard let bar = view.subviews.compactMap({ $0 as? ActionBarView }).first else {
-            fail("ACTIONBAR", "覆盖视图里没有 ActionBarView")
+        guard let bar = view.subviews.compactMap({ $0 as? AnnotateToolbar }).first else {
+            fail("ACTIONBAR", "覆盖视图里没有 AnnotateToolbar")
             endSession()
             return
         }
@@ -590,7 +590,8 @@ final class Harness {
             fail("ACTIONBAR-IDLE", "未选区时工具条应隐藏")
         }
 
-        drag(view, window: window, from: CGPoint(x: 100, y: 100), to: CGPoint(x: 400, y: 300))
+        // 选区要宽过 450pt 工具条，右对齐才不被屏幕边界钳制
+        drag(view, window: window, from: CGPoint(x: 50, y: 150), to: CGPoint(x: 980, y: 700))
         let rect = view.selectionRect
         if !bar.isHidden {
             pass("ACTIONBAR-SHOW", "选区确定后工具条显示 frame=\(bar.frame)")
@@ -606,8 +607,9 @@ final class Harness {
         _ = capture("09-actionbar.png")
 
         let buttons = bar.subviews.compactMap { $0 as? NSButton }
-        guard buttons.count == 3 else {
-            fail("ACTIONBAR-BUTTONS", "工具条按钮数=\(buttons.count)，期望 3")
+        // 8 形状 + 颜色 + 笔尖 + 复制/保存/取消
+        guard buttons.count == 13 else {
+            fail("ACTIONBAR-BUTTONS", "工具条按钮数=\(buttons.count)，期望 13")
             endSession()
             return
         }
@@ -616,7 +618,7 @@ final class Harness {
         )
         let expected = expectedCrop(from: view.shot, imageRect: imageRect)
         NSPasteboard.general.clearContents()
-        buttons[0].performClick(nil)
+        buttons[buttons.count - 3].performClick(nil)
         pump(0.3)
         verifyClipboardPixels("ACTIONBAR-COPY", expected: expected)
         if visibleOverlayWindows.isEmpty {
@@ -629,7 +631,7 @@ final class Harness {
         // 取消按钮：同一选区上点 ✕ 应直接结束会话
         guard let (window2, view2) = beginSession("ACTIONBAR-X") else { return }
         drag(view2, window: window2, from: CGPoint(x: 200, y: 200), to: CGPoint(x: 500, y: 400))
-        guard let bar2 = view2.subviews.compactMap({ $0 as? ActionBarView }).first,
+        guard let bar2 = view2.subviews.compactMap({ $0 as? AnnotateToolbar }).first,
               let cancelButton = bar2.subviews.compactMap({ $0 as? NSButton }).last else {
             fail("ACTIONBAR-X", "找不到取消按钮")
             endSession()
