@@ -17,4 +17,10 @@ public struct Hotkey: Equatable, Codable {
 
     /// kVK_ANSI_A = 0，Control+Shift。不受媒体键模式影响，作为可靠默认热键。
     public static let ctrlShiftA = Hotkey(keyCode: 0, modifiers: UInt32(controlKey | shiftKey))
+
+    /// kVK_F3 = 99，无修饰键，贴图。与 F1 一样受媒体键模式影响，需 fn+F3。
+    public static let f3 = Hotkey(keyCode: 99, modifiers: 0)
+
+    /// Shift+F3，隐藏 / 显示所有贴图。
+    public static let shiftF3 = Hotkey(keyCode: 99, modifiers: UInt32(shiftKey))
 }

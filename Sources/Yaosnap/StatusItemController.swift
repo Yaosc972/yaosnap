@@ -5,9 +5,11 @@ final class StatusItemController: NSObject {
     private let statusItem: NSStatusItem
     private let menu = NSMenu()
     private let onSnip: @MainActor () -> Void
+    private let onPin: @MainActor () -> Void
 
-    init(onSnip: @escaping @MainActor () -> Void) {
+    init(onSnip: @escaping @MainActor () -> Void, onPin: @escaping @MainActor () -> Void) {
         self.onSnip = onSnip
+        self.onPin = onPin
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         super.init()
         if let button = statusItem.button {
@@ -29,6 +31,9 @@ final class StatusItemController: NSObject {
         snipItem.image = menuIcon
             ?? NSImage(systemSymbolName: "camera.viewfinder", accessibilityDescription: "截图")
         menu.addItem(snipItem)
+        let pinItem = NSMenuItem(title: "贴图", action: #selector(pinTriggered), keyEquivalent: "")
+        pinItem.image = NSImage(systemSymbolName: "pin", accessibilityDescription: "贴图")
+        menu.addItem(pinItem)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "退出 Yaosnap", action: #selector(quit), keyEquivalent: "q"))
         for item in menu.items where item.action != nil {
@@ -58,6 +63,10 @@ final class StatusItemController: NSObject {
 
     @objc private func snipTriggered() {
         onSnip()
+    }
+
+    @objc private func pinTriggered() {
+        onPin()
     }
 
     @objc private func quit() {

@@ -6,9 +6,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItemController: StatusItemController?
     private let hotkeyManager = HotkeyManager()
     private let snipController = SnipController()
+    private let pinController = PinController()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        statusItemController = StatusItemController(onSnip: snipController.start)
+        statusItemController = StatusItemController(
+            onSnip: snipController.start,
+            onPin: { [pinController] in pinController.pinFromPasteboard() }
+        )
         NotificationCenter.default.addObserver(
             self, selector: #selector(handleSnipEscape(_:)), name: .snipEscapePressed, object: nil)
         NotificationCenter.default.addObserver(
@@ -30,6 +34,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let ok = hotkeyManager.register(.f1, handler: snipHandler)
         let ok2 = hotkeyManager.register(.ctrlShiftA, handler: snipHandler)
         print("[hotkey] register F1 -> \(ok), Ctrl+Shift+A -> \(ok2)")
+        let pinHandler: () -> Void = { [pinController] in
+            MainActor.assumeIsolated { _ = pinController.pinFromPasteboard() }
+        }
+        let hidePinsHandler: () -> Void = { [pinController] in
+            MainActor.assumeIsolated { _ = pinController.toggleVisibility() }
+        }
+        let ok3 = hotkeyManager.register(.f3, handler: pinHandler)
+        let ok4 = hotkeyManager.register(.shiftF3, handler: hidePinsHandler)
+        print("[hotkey] register F3 -> \(ok3), Shift+F3 -> \(ok4)")
         if !ok, !ok2 {
             let alert = NSAlert()
             alert.messageText = "F1 热键注册失败"
