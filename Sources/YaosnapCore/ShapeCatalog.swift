@@ -100,6 +100,14 @@ public enum ShapeCatalog {
             defaultStyle: Style(color: RGBAColor.palette[0], pen: .p3),
             phase: .p2
         ),
+        ShapeEntry(
+            kind: .text,
+            title: "文字",
+            symbol: "textformat",
+            shortcut: "T",
+            defaultStyle: Style(color: RGBAColor.palette[0], pen: .p3),
+            phase: .p2
+        ),
     ]
 
     /// P2 阶段工具条应显示的条目。P5 形状入库时标 .p5，这里自动过滤。

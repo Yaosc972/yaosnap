@@ -39,13 +39,23 @@ struct ShapeGeometryTests {
         #expect(Shape.mosaic([]).bounds == .zero)
     }
 
+    @Test func textBoundsMatchMeasurement() {
+        let origin = CGPoint(x: 12, y: 30)
+        let shape = Shape.text("Hello", origin: origin, fontSize: 22)
+        let expected = TextMetrics.boundingRect("Hello", fontSize: 22, origin: origin)
+        #expect(shape.bounds == expected)
+        #expect(shape.bounds.maxY > origin.y)
+        #expect(shape.bounds.minY < origin.y)
+    }
+
     @Test func catalogShapeOrderAndFilter() {
         // 数组顺序即未来工具条顺序
         #expect(ShapeCatalog.entries.map(\.kind) == [
-            .rect, .roundedRect, .ellipse, .line, .arrow, .brush, .marker, .mosaic,
+            .rect, .roundedRect, .ellipse, .line, .arrow, .brush, .marker, .mosaic, .text,
         ])
-        #expect(ShapeCatalog.p2.count == 8)
+        #expect(ShapeCatalog.p2.count == 9)
         #expect(ShapeCatalog.entry(for: .rect)?.symbol == "rectangle")
         #expect(ShapeCatalog.entry(for: .mosaic) != nil)
+        #expect(ShapeCatalog.entry(for: .text)?.shortcut == "T")
     }
 }

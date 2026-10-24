@@ -800,6 +800,68 @@ final class AnnotateHarness {
         endSession()
     }
 
+    /// 文字工具：选区内单击进入编辑 → Enter 提交 → 复制后剪贴板出现标注色文字像素。
+    private func runTextAnnotation() {
+        guard let (window, view) = beginSession("TEXT") else { return }
+        drag(view, window: window, from: CGPoint(x: 150, y: 150), to: CGPoint(x: 750, y: 600))
+        let selection = view.selectionRect
+        guard tapTool(view, .text, id: "TEXT") else {
+            endSession()
+            return
+        }
+        let click = CGPoint(x: selection.minX + 60, y: selection.minY + 220)
+        press(view, window: window, path: [click])
+        guard let field = view.subviews.compactMap({ $0 as? NSTextField }).first else {
+            fail("TEXT-COMMIT", "单击后没有出现文本输入框")
+            endSession()
+            return
+        }
+        field.stringValue = "Hello"
+        _ = field.sendAction(field.action, to: field.target)
+        pump(0.2)
+
+        guard view.annotations.count == 1,
+              case .text(let text, let origin, let fontSize) = view.annotations[0].shape,
+              text == "Hello",
+              origin == CGPoint(x: 60, y: 220),
+              fontSize == PenSize.p3.textFontSize else {
+            fail("TEXT-COMMIT", "提交结果异常 annotations=\(view.annotations)")
+            endSession()
+            return
+        }
+        pass("TEXT-COMMIT", "文字已入列 origin=\(origin) fontSize=\(fontSize)")
+
+        NSPasteboard.general.clearContents()
+        keyDown(36, characters: "\r", in: window, view: view)
+        guard let image = pasteboardImage(),
+              let bytes = srgbBytes(image, width: image.width, height: image.height) else {
+            fail("TEXT-PIXELS", "剪贴板没有图像")
+            endSession()
+            return
+        }
+        let px = Int(view.shot.scale)
+        let box = TextMetrics.boundingRect(text, fontSize: fontSize, origin: origin)
+        var colored = 0
+        for canvasY in Int(box.minY.rounded(.down))...Int(box.maxY.rounded(.up)) {
+            for canvasX in Int(box.minX.rounded(.down))...Int(box.maxX.rounded(.up))
+                where canvasX >= 0 && canvasY >= 0
+                    && canvasX * px < image.width && canvasY * px < image.height {
+                let offset = ((image.height - 1 - canvasY * px) * image.width + canvasX * px) * 4
+                if Int(bytes[offset]) > 180,
+                   Int(bytes[offset + 1]) < 130,
+                   Int(bytes[offset + 2]) < 130 {
+                    colored += 1
+                }
+            }
+        }
+        if colored > 0 {
+            pass("TEXT-PIXELS", "剪贴板文字区域有 \(colored) 个标注色像素")
+        } else {
+            fail("TEXT-PIXELS", "文字区域没有标注色像素 box=\(box)")
+        }
+        endSession()
+    }
+
     // MARK: - 主流程
 
     func runAll() {
@@ -815,6 +877,7 @@ final class AnnotateHarness {
         runShapeCopies()
         runToolStyleMemory()
         runUndo()
+        runTextAnnotation()
 
         print("SUMMARY passes=\(passes) failures=\(failures)")
         exit(failures == 0 ? 0 : 1)

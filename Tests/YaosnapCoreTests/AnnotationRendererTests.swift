@@ -56,6 +56,30 @@ struct AnnotationRendererTests {
         }
     }
 
+    @Test func textDrawsVisiblePixels() {
+        let width = 140, height = 70
+        let annotation = Annotation(
+            shape: .text("Hello", origin: CGPoint(x: 10, y: 25), fontSize: 24),
+            style: Style(color: red, pen: .p3)
+        )
+        let bytes = rendered(width: width, height: height) { ctx in
+            AnnotationRenderer.draw(
+                [annotation], draft: nil,
+                input: input(canvasSize: CGSize(width: width, height: height)),
+                into: ctx
+            )
+        }
+        var redPixels = 0
+        for bufferRow in 0..<height {
+            for x in 0..<width {
+                if isRed(PixelBuffer.pixel(bytes, x: x, y: bufferRow, width: width)) {
+                    redPixels += 1
+                }
+            }
+        }
+        #expect(redPixels > 0)
+    }
+
     @Test func rectDrawnAtExpectedCanvasRegion() {
         let width = 100, height = 100
         let annotation = Annotation(

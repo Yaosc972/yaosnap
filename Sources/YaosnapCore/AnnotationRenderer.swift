@@ -1,4 +1,5 @@
 import CoreGraphics
+import CoreText
 
 /// 渲染一次标注所需的全部输入。base 是完整冻结帧；cropOriginPx 是选区左下角
 /// 在帧内的像素位置（帧像素坐标原点在左上，y 向下）。
@@ -94,6 +95,19 @@ public enum AnnotationRenderer {
             drawInkStroke(points, color: markerColor, lineWidth: lineWidth, blend: .multiply, in: ctx)
         case .mosaic(let points):
             drawMosaic(points, style: annotation.style, input: input, in: ctx)
+        case .text(let string, let origin, let fontSize):
+            guard !string.isEmpty else { break }
+            let layout = TextMetrics.layout(
+                string,
+                fontSize: fontSize,
+                origin: origin,
+                foreground: color.cgColor
+            )
+            ctx.setBlendMode(.normal)
+            // CTLine 以文本矩阵定位基线；画布上下文 y 向上，与 CoreText 约定一致。
+            ctx.textMatrix = .identity
+            ctx.textPosition = origin
+            CTLineDraw(layout.line, ctx)
         }
     }
 

@@ -21,6 +21,7 @@ struct AnnotationTests {
             .brush([CGPoint(x: 0, y: 0), CGPoint(x: 5, y: 5), CGPoint(x: 9, y: 1)]),
             .marker([CGPoint(x: 2, y: 2), CGPoint(x: 8, y: 8)]),
             .mosaic([CGPoint(x: 4, y: 4)]),
+            .text("Hi", origin: CGPoint(x: 6, y: 8), fontSize: 22),
         ]
         for shape in shapes {
             let decoded = try roundTrip(shape)
@@ -46,6 +47,7 @@ struct AnnotationTests {
             (.brush([]), .brush),
             (.marker([]), .marker),
             (.mosaic([]), .mosaic),
+            (.text("", origin: .zero, fontSize: 14), .text),
         ]
         for (shape, kind) in cases {
             #expect(shape.kind == kind)
@@ -68,6 +70,15 @@ struct AnnotationTests {
         ]
         for (pen, block) in expected {
             #expect(pen.mosaicBlock == block)
+        }
+    }
+
+    @Test func penSizeTextFontSizeMapping() {
+        let expected: [PenSize: CGFloat] = [
+            .p1: 14, .p2: 18, .p3: 22, .p4: 28, .p5: 36,
+        ]
+        for (pen, size) in expected {
+            #expect(pen.textFontSize == size)
         }
     }
 

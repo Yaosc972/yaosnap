@@ -2,3 +2,5 @@
 Build/
 .DS_Store
 .env-tools/
+
+.audit/

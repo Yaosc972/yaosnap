@@ -2,7 +2,7 @@ import AppKit
 import YaosnapCore
 
 /// 选区标注工具条：形状选择、颜色/笔尖弹层、复制/保存/取消。
-/// 单行布局：[8 个形状按钮][分隔][颜色][笔尖][分隔][复制][保存][取消]。
+/// 单行布局：[形状按钮][分隔][颜色][笔尖][分隔][复制][保存][取消]。
 @MainActor
 final class AnnotateToolbar: NSView {
     var onSelectTool: ((ShapeKind) -> Void)?

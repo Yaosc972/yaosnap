@@ -7,13 +7,14 @@ final class OverlayView: NSView {
     let shot: DisplayShot
 
     /// 会话状态机。idling 无选区；selecting 在拖选区（origin 视图坐标，freeDrag 表示
-    /// 已脱离窗口吸附）；ready 选区已确定；drawing 在拖标注（origin 画布坐标）。
-    /// 按压内的手势状态全部收进关联值，避免多个布尔手工同步。
+    /// 已脱离窗口吸附）；ready 选区已确定；drawing 在拖标注（origin 画布坐标）；
+    /// editing 在输入单行文字。
     private enum Phase {
         case idle
         case selecting(origin: CGPoint, freeDrag: Bool)
         case ready
         case drawing(origin: CGPoint)
+        case editing
     }
 
     private var phase: Phase = .idle
@@ -33,6 +34,9 @@ final class OverlayView: NSView {
     private static let minimumStrokeSide: CGFloat = 2
     /// 按下到拖动的位移小于该值不脱离窗口吸附；双击确认时手抖不应清掉已确定的选区。
     private static let dragThreshold: CGFloat = 3
+    /// 文字输入框的宽度范围，超出部分由单行滚动承接。
+    private static let minimumTextWidth: CGFloat = 80
+    private static let maximumTextWidth: CGFloat = 320
 
     /// 尺寸标签的绘制参数。散在绘制代码里会让间距和字号无法对齐调。
     private enum SizeLabel {
@@ -76,6 +80,12 @@ final class OverlayView: NSView {
 
     /// 两字符快捷键（RR）的首字符暂存。
     private var pendingShortcut: (key: String, at: TimeInterval)?
+
+    /// 文字编辑控件与提交时需要的快照。origin 是画布坐标的基线起点。
+    private var textField: NSTextField?
+    private var textOrigin: CGPoint = .zero
+    private var textStyle: Style?
+    private var editingClickMonitor: Any?
 
     /// 标注画布。进入 ready 时创建，选区重画或清空时移除。
     private var canvas: AnnotationCanvas?
@@ -150,8 +160,14 @@ final class OverlayView: NSView {
             // 选区内按下：按当前工具起一笔 draft，单击不落形状（点序列除外，单击即圆点）
             guard let canvas else { return }
             let start = canvasPoint(from: point)
+            if toolStore.currentKind == .text {
+                beginTextEditing(at: point)
+                return
+            }
             canvas.draft = makeDraft(origin: start, current: start)
             phase = .drawing(origin: start)
+        case .editing:
+            commitTextEditing()
         case .selecting, .drawing:
             break // 已有按压，忽略重入
         }
@@ -180,8 +196,10 @@ final class OverlayView: NSView {
                 appendDraftPoint(current)
             case .rect, .roundedRect, .ellipse, .line, .arrow:
                 canvas.draft = makeDraft(origin: origin, current: current)
+            case .text:
+                break
             }
-        case .idle, .ready:
+        case .idle, .ready, .editing:
             break
         }
     }
@@ -200,12 +218,20 @@ final class OverlayView: NSView {
             commitSelection()
         case .drawing:
             commitDraft()
-        case .idle, .ready:
+        case .idle, .ready, .editing:
             break // ready 下单击保留选区，等待 Enter / 双击 / ⌘S
         }
     }
 
     override func keyDown(with event: NSEvent) {
+        if case .editing = phase {
+            switch event.keyCode {
+            case 53: cancelTextEditing()
+            case 36: commitTextEditing()
+            default: break // 编辑期间不响应复制 / 保存 / 撤销 / 工具快捷键
+            }
+            return
+        }
         switch event.keyCode {
         case 53: // Esc
             NotificationCenter.default.post(name: .snipEscapePressed, object: nil)
@@ -340,6 +366,113 @@ final class OverlayView: NSView {
             return hypot(to.x - from.x, to.y - from.y) >= Self.minimumStrokeSide
         case .brush, .marker, .mosaic:
             return true
+        case .text:
+            return false
+        }
+    }
+
+    // MARK: - 文字编辑
+
+    /// 单击进入编辑态。输入框按渲染同一份度量定位，框内文字垂直居中，
+    /// 框高取 ascent+descent 时基线正好落在点击点，提交前后文字不跳。
+    private func beginTextEditing(at viewPoint: CGPoint) {
+        guard let canvas else { return }
+        let style = canvas.currentStyle
+        let fontSize = style.pen.textFontSize
+        let line = TextMetrics.lineHeight(fontSize: fontSize)
+        let width = min(
+            max(Self.minimumTextWidth, selectionRect.maxX - viewPoint.x),
+            Self.maximumTextWidth
+        )
+        let field = NSTextField(frame: NSRect(
+            x: viewPoint.x,
+            y: viewPoint.y - line.descent,
+            width: width,
+            height: ceil(line.ascent + line.descent)
+        ))
+        field.isBordered = false
+        field.drawsBackground = false
+        field.focusRingType = .none
+        field.font = .systemFont(ofSize: fontSize)
+        let ink = NSColor(
+            srgbRed: style.color.r,
+            green: style.color.g,
+            blue: style.color.b,
+            alpha: 1
+        )
+        field.textColor = ink
+        field.cell?.usesSingleLineMode = true
+        field.cell?.wraps = false
+        field.cell?.isScrollable = true
+        field.target = self
+        field.action = #selector(textFieldSubmitted(_:))
+        field.delegate = self
+        addSubview(field, positioned: .above, relativeTo: canvas)
+        textField = field
+        textStyle = style
+        textOrigin = canvasPoint(from: viewPoint)
+        phase = .editing
+        window?.makeFirstResponder(field)
+        // 编辑态由 field editor 绘制，颜色要单独下发，否则用系统默认色。
+        if let editor = field.currentEditor() as? NSTextView {
+            editor.textColor = ink
+            editor.insertionPointColor = ink
+        }
+        installOutsideClickCommit()
+    }
+
+    @objc private func textFieldSubmitted(_ sender: NSTextField) {
+        commitTextEditing()
+    }
+
+    private func commitTextEditing() {
+        guard case .editing = phase, let field = textField else { return }
+        let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let origin = textOrigin
+        let style = textStyle
+        endTextEditing()
+        phase = .ready
+        window?.makeFirstResponder(self)
+        guard !text.isEmpty, let canvas, let style else { return }
+        canvas.annotations.append(Annotation(
+            shape: .text(text, origin: origin, fontSize: style.pen.textFontSize),
+            style: style
+        ))
+    }
+
+    private func cancelTextEditing() {
+        guard case .editing = phase else { return }
+        endTextEditing()
+        phase = .ready
+        window?.makeFirstResponder(self)
+    }
+
+    private func endTextEditing() {
+        if let monitor = editingClickMonitor {
+            NSEvent.removeMonitor(monitor)
+            editingClickMonitor = nil
+        }
+        // 先摘引用再移除视图：移除会触发失焦回调，引用已空时提交逻辑自然跳过。
+        let field = textField
+        textField = nil
+        field?.removeFromSuperview()
+        textStyle = nil
+    }
+
+    /// 工具条等子视图会先吃掉鼠标事件，编辑期间靠本地监听补上"点外部提交"。
+    private func installOutsideClickCommit() {
+        editingClickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown]) { [weak self] event in
+            guard let self,
+                  case .editing = self.phase,
+                  let field = self.textField,
+                  event.windowNumber == field.window?.windowNumber
+            else { return event }
+            let point = self.convert(event.locationInWindow, from: nil)
+            guard !field.frame.contains(point) else { return event }
+            // 工具条点击交给失焦提交，这样按钮同一次点击就能响应。
+            guard !self.toolbar.frame.contains(point) else { return event }
+            self.commitTextEditing()
+            return nil
         }
     }
 
@@ -369,6 +502,8 @@ final class OverlayView: NSView {
             return Annotation(shape: .marker([current]), style: style)
         case .mosaic:
             return Annotation(shape: .mosaic([current]), style: style)
+        case .text:
+            return nil
         }
     }
 
@@ -387,6 +522,7 @@ final class OverlayView: NSView {
         case .marker(let points): updated = grown(points).map { .marker($0) }
         case .mosaic(let points): updated = grown(points).map { .mosaic($0) }
         case .rect, .roundedRect, .ellipse, .line, .arrow: updated = nil
+        case .text: updated = nil
         }
         if let updated {
             canvas.draft = Annotation(id: draft.id, shape: updated, style: draft.style)
@@ -548,6 +684,25 @@ final class OverlayView: NSView {
             at: NSPoint(x: labelRect.minX + padding.width, y: labelRect.minY + padding.height),
             withAttributes: attributes
         )
+    }
+}
+
+extension OverlayView: NSTextFieldDelegate {
+    func control(
+        _ control: NSControl,
+        textView: NSTextView,
+        doCommandBy commandSelector: Selector
+    ) -> Bool {
+        guard commandSelector == #selector(NSResponder.cancelOperation(_:)) else { return false }
+        cancelTextEditing()
+        return true
+    }
+
+    /// 失焦即提交：点工具条或别处让字段让出 first responder 时走这里，
+    /// 这样按钮的同一次点击既能提交也不用吞事件。
+    func controlTextDidEndEditing(_ obj: Notification) {
+        guard case .editing = phase else { return }
+        commitTextEditing()
     }
 }
 

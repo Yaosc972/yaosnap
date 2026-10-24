@@ -52,8 +52,12 @@ public enum PenSize: Int, CaseIterable, Codable {
     /// 马赛克块边长，单位点。
     public var mosaicBlock: CGFloat { Self.mosaicBlocks[rawValue - 1] }
 
+    /// 文字工具字号，单位点。
+    public var textFontSize: CGFloat { Self.textFontSizes[rawValue - 1] }
+
     private static let lineWidths: [CGFloat] = [2, 3.5, 5, 7, 10]
     private static let mosaicBlocks: [CGFloat] = [8, 12, 16, 24, 32]
+    private static let textFontSizes: [CGFloat] = [14, 18, 22, 28, 36]
 }
 
 /// 形状种类。从 Shape 派生，同时是"每形状记忆颜色与笔尖"的键。
@@ -66,6 +70,7 @@ public enum ShapeKind: String, Codable, CaseIterable {
     case brush
     case marker
     case mosaic
+    case text
 }
 
 /// 标注形状。坐标一律是画布点坐标：原点在选区左下角，y 向上。
@@ -78,6 +83,8 @@ public enum Shape: Equatable, Codable {
     case brush([CGPoint])
     case marker([CGPoint])
     case mosaic([CGPoint])
+    /// origin 为文本基线起点，画布点坐标。字号独立于 PenSize 的线条宽度。
+    case text(String, origin: CGPoint, fontSize: CGFloat)
 
     public var kind: ShapeKind {
         switch self {
@@ -89,6 +96,7 @@ public enum Shape: Equatable, Codable {
         case .brush: return .brush
         case .marker: return .marker
         case .mosaic: return .mosaic
+        case .text: return .text
         }
     }
 
@@ -109,6 +117,8 @@ public enum Shape: Equatable, Codable {
                 maxY = max(maxY, point.y)
             }
             return CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+        case .text(let string, let origin, let fontSize):
+            return TextMetrics.boundingRect(string, fontSize: fontSize, origin: origin)
         }
     }
 }
