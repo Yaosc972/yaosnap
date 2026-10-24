@@ -3,10 +3,8 @@ import Testing
 @testable import YaosnapCore
 
 struct ScreenCaptureTests {
-    // 无屏幕录制权限时跳过（Swift Testing 无 XCTSkip，用 return 表达 skip）
-    @Test func captureReturnsAtLeastOneDisplay() {
-        guard ScreenCaptureService.hasPermission() else { return }
-
+    @Test(.enabled(if: ScreenCaptureService.hasPermission()))
+    func captureReturnsAtLeastOneDisplay() {
         let shots = ScreenCaptureService.captureAllDisplays()
         #expect(!shots.isEmpty)
 
@@ -21,8 +19,8 @@ struct ScreenCaptureTests {
     }
 
     // 无权限时捕获返回空数组，不抛错、不崩溃
-    @Test func captureWithoutPermissionReturnsEmpty() {
-        guard !ScreenCaptureService.hasPermission() else { return }
+    @Test(.enabled(if: !ScreenCaptureService.hasPermission()))
+    func captureWithoutPermissionReturnsEmpty() {
         #expect(ScreenCaptureService.captureAllDisplays().isEmpty)
     }
 }
