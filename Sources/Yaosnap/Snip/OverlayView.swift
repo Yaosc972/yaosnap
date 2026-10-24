@@ -8,6 +8,10 @@ final class OverlayView: NSView {
 
     /// 拖拽起点（视图坐标）。nil 表示当前没有按下鼠标。
     private var dragOrigin: CGPoint?
+    /// 本次按下后位移是否超过阈值。用于区分"单击确认"和"重画选区"。
+    private var didDrag = false
+    /// 选区是否已确定（已发 snipCommitted），等待 Enter / 双击 / ⌘S 输出。
+    private var isCommitted = false
     /// 光标下的可吸附窗口（全局坐标）。nil 表示光标不在任何窗口上。
     private var hoverWindow: WindowCandidate?
     /// 当前选区（视图坐标，左下原点）。空矩形表示尚未选中。
@@ -15,6 +19,8 @@ final class OverlayView: NSView {
 
     private static let maskAlpha: CGFloat = 0.45
     private static let minimumSelectionSide: CGFloat = 1
+    /// 按下到松开的位移小于该值视为单击；双击确认时手抖不应清掉已确定的选区。
+    private static let dragThreshold: CGFloat = 3
 
     /// 本屏可吸附候选。冻结帧存续期间窗口布局视为不变，只取一次。
     private lazy var candidates: [WindowCandidate] = {
@@ -52,7 +58,8 @@ final class OverlayView: NSView {
     // MARK: - 鼠标交互
 
     override func mouseMoved(with event: NSEvent) {
-        guard dragOrigin == nil else { return }
+        // 已有选区时 hover 不绘制，跳过状态更新避免整屏重绘
+        guard dragOrigin == nil, selectionRect.isEmpty else { return }
         let hit = windowUnderMouse(at: convert(event.locationInWindow, from: nil))
         guard hit != hoverWindow else { return }
         hoverWindow = hit
@@ -61,6 +68,19 @@ final class OverlayView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
+        if isCommitted, selectionRect.contains(point) {
+            if event.clickCount == 2 {
+                requestCopy()
+                return
+            }
+            // 已确定的选区：单击保留选区，拖动可重画
+            dragOrigin = point
+            didDrag = false
+            return
+        }
+
+        isCommitted = false
+        didDrag = false
         dragOrigin = point
         hoverWindow = nil
         // 起点落在窗口内 → 初始选区为整个窗口；拖动后才脱离窗口锁定。
@@ -82,6 +102,11 @@ final class OverlayView: NSView {
     override func mouseDragged(with event: NSEvent) {
         guard let origin = dragOrigin else { return }
         let current = convert(event.locationInWindow, from: nil)
+        guard didDrag
+            || abs(current.x - origin.x) >= Self.dragThreshold
+            || abs(current.y - origin.y) >= Self.dragThreshold else { return }
+        didDrag = true
+        isCommitted = false
         // 拖动即脱离窗口锁定：按起点与当前点重算自由选区。
         // 鼠标可拖出视图范围，钳制后选区始终落在冻结帧内。
         selectionRect = RectMath.clamp(
@@ -92,20 +117,34 @@ final class OverlayView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
+        guard dragOrigin != nil else { return }
         dragOrigin = nil
+        // 单击已确定的选区：保留它，等待 Enter / 双击 / ⌘S
+        if isCommitted && !didDrag {
+            return
+        }
         guard selectionRect.width >= Self.minimumSelectionSide,
               selectionRect.height >= Self.minimumSelectionSide else {
             selectionRect = .zero
+            isCommitted = false
             needsDisplay = true
             return
         }
+        isCommitted = true
         commitSelection()
     }
 
     override func keyDown(with event: NSEvent) {
-        if event.keyCode == 53 { // Esc
+        switch event.keyCode {
+        case 53: // Esc
             NotificationCenter.default.post(name: .snipEscapePressed, object: nil)
-        } else {
+        case 36: // Return
+            guard isCommitted, !selectionRect.isEmpty else { return }
+            requestCopy()
+        case 1 where event.modifierFlags.contains(.command): // ⌘S
+            guard isCommitted, !selectionRect.isEmpty else { return }
+            requestSave()
+        default:
             super.keyDown(with: event)
         }
     }
@@ -129,6 +168,18 @@ final class OverlayView: NSView {
                 "scale": shot.scale,
                 "displayID": shot.displayID,
             ]
+        )
+    }
+
+    private func requestCopy() {
+        NotificationCenter.default.post(name: .snipCopyRequested, object: nil)
+    }
+
+    private func requestSave() {
+        NotificationCenter.default.post(
+            name: .snipSaveRequested,
+            object: nil,
+            userInfo: ["displayID": shot.displayID]
         )
     }
 
@@ -205,4 +256,6 @@ final class OverlayView: NSView {
 extension Notification.Name {
     static let snipEscapePressed = Notification.Name("snipEscapePressed")
     static let snipCommitted = Notification.Name("snipCommitted")
+    static let snipCopyRequested = Notification.Name("snipCopyRequested")
+    static let snipSaveRequested = Notification.Name("snipSaveRequested")
 }

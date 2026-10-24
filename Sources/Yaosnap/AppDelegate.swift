@@ -10,11 +10,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItemController = StatusItemController(onSnip: snipController.start)
         NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(handleSnipEscape(_:)),
-            name: .snipEscapePressed,
-            object: nil
-        )
+            self, selector: #selector(handleSnipEscape(_:)), name: .snipEscapePressed, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(handleSnipCommitted(_:)), name: .snipCommitted, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(handleSnipCopy(_:)), name: .snipCopyRequested, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(handleSnipSave(_:)), name: .snipSaveRequested, object: nil)
         print("Yaosnap launched")
         let ok = hotkeyManager.register(.f1) { [snipController] in
             MainActor.assumeIsolated {
@@ -31,5 +33,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func handleSnipEscape(_ notification: Notification) {
         snipController.cancel()
+    }
+
+    @objc private func handleSnipCommitted(_ notification: Notification) {
+        snipController.commitSelection(notification)
+    }
+
+    @objc private func handleSnipCopy(_ notification: Notification) {
+        snipController.copyPendingImage()
+    }
+
+    @objc private func handleSnipSave(_ notification: Notification) {
+        snipController.savePendingImage(notification)
     }
 }
