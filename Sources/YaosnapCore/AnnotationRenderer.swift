@@ -97,7 +97,7 @@ public enum AnnotationRenderer {
             drawInkStroke(points, color: markerColor, lineWidth: lineWidth, blend: .multiply, in: ctx)
         case .mosaic(let points):
             drawMosaic(points, style: annotation.style, input: input, in: ctx)
-        case .text(let string, let origin, let fontSize):
+        case .text(let string, let origin, let fontSize, let rotation):
             guard !string.isEmpty else { break }
             let layout = TextMetrics.multiline(
                 string,
@@ -106,12 +106,21 @@ public enum AnnotationRenderer {
                 foreground: color.cgColor
             )
             ctx.setBlendMode(.normal)
+            ctx.saveGState()
+            if rotation != 0 {
+                // 绕未旋转包围盒中心旋转；行基线仍是本地坐标，CTM 负责带它们转。
+                let center = TextGeometry(rect: layout.rect, rotation: rotation).center
+                ctx.translateBy(x: center.x, y: center.y)
+                ctx.rotate(by: rotation)
+                ctx.translateBy(x: -center.x, y: -center.y)
+            }
             // CTLine 以文本矩阵定位基线；画布上下文 y 向上，与 CoreText 约定一致。
             ctx.textMatrix = .identity
             for row in layout.lines {
                 ctx.textPosition = row.baseline
                 CTLineDraw(row.line, ctx)
             }
+            ctx.restoreGState()
         }
     }
 

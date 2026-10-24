@@ -48,7 +48,7 @@ struct ShapeGeometryTests {
 
     @Test func textBoundsMatchMeasurement() {
         let origin = CGPoint(x: 12, y: 30)
-        let shape = Shape.text("Hello", origin: origin, fontSize: 22)
+        let shape = Shape.text("Hello", origin: origin, fontSize: 22, rotation: 0)
         let expected = TextMetrics.boundingRect("Hello", fontSize: 22, origin: origin)
         #expect(shape.bounds == expected)
         #expect(shape.bounds.maxY > origin.y)
@@ -94,7 +94,7 @@ struct ShapeGeometryTests {
 
     @Test func textHitUsesInflatedBounds() {
         let origin = CGPoint(x: 20, y: 30)
-        let shape = Shape.text("Hello", origin: origin, fontSize: 22)
+        let shape = Shape.text("Hello", origin: origin, fontSize: 22, rotation: 0)
         let bounds = shape.bounds
         #expect(shape.contains(CGPoint(x: bounds.midX, y: bounds.midY), tolerance: 0))
         #expect(shape.contains(CGPoint(x: bounds.minX - 2, y: bounds.midY), tolerance: 3))
@@ -143,7 +143,7 @@ struct ShapeGeometryTests {
             .brush([CGPoint(x: 0, y: 0), CGPoint(x: 5, y: 5)]),
             .marker([CGPoint(x: 2, y: 2), CGPoint(x: 8, y: 8)]),
             .mosaic([CGPoint(x: 4, y: 4)]),
-            .text("Hi", origin: CGPoint(x: 6, y: 8), fontSize: 22),
+            .text("Hi", origin: CGPoint(x: 6, y: 8), fontSize: 22, rotation: 0.4),
         ]
         for shape in shapes {
             let moved = shape.translated(by: delta)
@@ -157,12 +157,13 @@ struct ShapeGeometryTests {
     @Test func translatedTextMovesOrigin() {
         let origin = CGPoint(x: 6, y: 8)
         let delta = CGPoint(x: 12, y: 12)
-        guard case .text(_, let movedOrigin, let fontSize) =
-            Shape.text("Hi", origin: origin, fontSize: 22).translated(by: delta) else {
+        guard case .text(_, let movedOrigin, let fontSize, let rotation) =
+            Shape.text("Hi", origin: origin, fontSize: 22, rotation: 0.4).translated(by: delta) else {
             Issue.record("平移后应仍是文本")
             return
         }
         #expect(movedOrigin == CGPoint(x: origin.x + delta.x, y: origin.y + delta.y))
         #expect(fontSize == 22)
+        #expect(rotation == 0.4)
     }
 }

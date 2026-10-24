@@ -52,13 +52,55 @@ final class AnnotationCanvas: NSView {
     private func drawSelectionHighlight(in ctx: CGContext) {
         guard let id = selectedID,
               let shape = annotations.first(where: { $0.id == id })?.shape else { return }
-        // 画布 frame 与选区重合，画布坐标即视图坐标，直接描在包围盒外扩 3pt 处。
-        let box = shape.bounds.insetBy(dx: -3, dy: -3)
         ctx.saveGState()
         ctx.setStrokeColor(RGBAColor.palette[5].cgColor)
         ctx.setLineWidth(1.5)
-        ctx.setLineDash(phase: 0, lengths: [4, 3])
-        ctx.stroke(box)
+        if let geometry = shape.textGeometry {
+            drawTextHandles(geometry, in: ctx)
+        } else {
+            // 画布 frame 与选区重合，画布坐标即视图坐标，直接描在包围盒外扩 3pt 处。
+            let box = shape.bounds.insetBy(dx: -3, dy: -3)
+            ctx.setLineDash(phase: 0, lengths: [4, 3])
+            ctx.stroke(box)
+        }
         ctx.restoreGState()
+    }
+
+    /// 文字选中框随旋转一起转：四角白底小方块，顶部白底小圆点。
+    private func drawTextHandles(_ geometry: TextGeometry, in ctx: CGContext) {
+        let corners = geometry.corners
+        ctx.setLineDash(phase: 0, lengths: [4, 3])
+        ctx.beginPath()
+        ctx.move(to: corners[0])
+        for point in corners.dropFirst() {
+            ctx.addLine(to: point)
+        }
+        ctx.closePath()
+        ctx.strokePath()
+        ctx.setLineDash(phase: 0, lengths: [])
+
+        let side: CGFloat = 6
+        ctx.setFillColor(NSColor.white.cgColor)
+        for corner in corners {
+            let box = CGRect(
+                x: corner.x - side / 2,
+                y: corner.y - side / 2,
+                width: side,
+                height: side
+            )
+            ctx.fill(box)
+            ctx.stroke(box)
+        }
+
+        let dot = geometry.point(for: .rotate)
+        let radius: CGFloat = 4
+        let circle = CGRect(
+            x: dot.x - radius,
+            y: dot.y - radius,
+            width: radius * 2,
+            height: radius * 2
+        )
+        ctx.fillEllipse(in: circle)
+        ctx.strokeEllipse(in: circle)
     }
 }

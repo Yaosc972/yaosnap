@@ -70,7 +70,7 @@ struct AnnotationRendererTests {
     @Test func textDrawsVisiblePixels() {
         let width = 140, height = 70
         let annotation = Annotation(
-            shape: .text("Hello", origin: CGPoint(x: 10, y: 25), fontSize: 24),
+            shape: .text("Hello", origin: CGPoint(x: 10, y: 25), fontSize: 24, rotation: 0),
             style: Style(color: red, pen: .p3)
         )
         let bytes = rendered(width: width, height: height) { ctx in
@@ -97,7 +97,7 @@ struct AnnotationRendererTests {
         let text = "Hello\nWorld"
         let bytes = rendered(width: side, height: side) { ctx in
             AnnotationRenderer.draw(
-                [Annotation(shape: .text(text, origin: origin, fontSize: 24), style: Style(color: red, pen: .p3))],
+                [Annotation(shape: .text(text, origin: origin, fontSize: 24, rotation: 0), style: Style(color: red, pen: .p3))],
                 draft: nil,
                 input: input(canvasSize: CGSize(width: side, height: side)),
                 into: ctx
@@ -119,7 +119,7 @@ struct AnnotationRendererTests {
         let fontSize: CGFloat = 22
         let bytes = rendered(width: side, height: side) { ctx in
             AnnotationRenderer.draw(
-                [Annotation(shape: .text(text, origin: origin, fontSize: fontSize), style: Style(color: red, pen: .p3))],
+                [Annotation(shape: .text(text, origin: origin, fontSize: fontSize, rotation: 0), style: Style(color: red, pen: .p3))],
                 draft: nil,
                 input: input(canvasSize: CGSize(width: side, height: side)),
                 into: ctx

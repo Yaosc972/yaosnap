@@ -86,7 +86,8 @@ public enum Shape: Equatable, Codable {
     case marker([CGPoint])
     case mosaic([CGPoint])
     /// origin 为文本基线起点，画布点坐标。字号独立于 PenSize 的线条宽度。
-    case text(String, origin: CGPoint, fontSize: CGFloat)
+    /// rotation 是绕未旋转包围盒中心的弧度，0 表示水平。
+    case text(String, origin: CGPoint, fontSize: CGFloat, rotation: CGFloat)
 
     public var kind: ShapeKind {
         switch self {
@@ -120,8 +121,11 @@ public enum Shape: Equatable, Codable {
                 maxY = max(maxY, point.y)
             }
             return CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
-        case .text(let string, let origin, let fontSize):
-            return TextMetrics.boundingRect(string, fontSize: fontSize, origin: origin)
+        case .text(let string, let origin, let fontSize, let rotation):
+            return TextGeometry(
+                rect: TextMetrics.boundingRect(string, fontSize: fontSize, origin: origin),
+                rotation: rotation
+            ).rotatedBounds
         }
     }
 
@@ -138,8 +142,11 @@ public enum Shape: Equatable, Codable {
             let nx = (point.x - rect.midX) / rx
             let ny = (point.y - rect.midY) / ry
             return nx * nx + ny * ny <= 1
-        case .text:
-            return bounds.insetBy(dx: -tolerance, dy: -tolerance).contains(point)
+        case .text(let string, let origin, let fontSize, let rotation):
+            let rect = TextMetrics.boundingRect(string, fontSize: fontSize, origin: origin)
+            // 反向旋转回本地坐标再按未旋转包围盒判断，旋转后的命中与视觉一致。
+            let local = TextGeometry(rect: rect, rotation: rotation).unrotate(point)
+            return rect.insetBy(dx: -tolerance, dy: -tolerance).contains(local)
         case .line(let from, let to), .arrow(let from, let to):
             return Self.distance(from: point, toSegmentFrom: from, to: to) <= tolerance
         case .brush(let points), .marker(let points), .mosaic(let points), .polyline(let points):
@@ -178,9 +185,18 @@ public enum Shape: Equatable, Codable {
             return .marker(points.map(moved))
         case .mosaic(let points):
             return .mosaic(points.map(moved))
-        case .text(let string, let origin, let fontSize):
-            return .text(string, origin: moved(origin), fontSize: fontSize)
+        case .text(let string, let origin, let fontSize, let rotation):
+            return .text(string, origin: moved(origin), fontSize: fontSize, rotation: rotation)
         }
+    }
+
+    /// 文字的未旋转包围盒与控制点几何。非文字形状为 nil。
+    public var textGeometry: TextGeometry? {
+        guard case .text(let string, let origin, let fontSize, let rotation) = self else { return nil }
+        return TextGeometry(
+            rect: TextMetrics.boundingRect(string, fontSize: fontSize, origin: origin),
+            rotation: rotation
+        )
     }
 
     /// 点到线段的距离。零长线段退化为点到点距离。

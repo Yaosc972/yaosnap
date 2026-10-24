@@ -77,6 +77,16 @@ public enum TextMetrics {
         multiline(text, fontSize: fontSize, origin: origin).rect
     }
 
+    /// 让包围盒中心落在 center 所需的 origin。缩放时保持中心不动。
+    public static func origin(
+        text: String,
+        fontSize: CGFloat,
+        centeredAt center: CGPoint
+    ) -> CGPoint {
+        let rect = boundingRect(text, fontSize: fontSize, origin: .zero)
+        return CGPoint(x: center.x - rect.midX, y: center.y - rect.midY)
+    }
+
     private static func makeLine(
         _ text: String,
         fontSize: CGFloat,

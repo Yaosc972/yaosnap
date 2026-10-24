@@ -10,7 +10,8 @@ final class OverlayView: NSView {
     /// 已脱离窗口吸附）；ready 选区已确定；drawing 在拖标注（origin 画布坐标）；
     /// polylineEditing 折线已落下首点、等待后续顶点（points 是已确认顶点）；
     /// editing 在输入文字；selected 选中了一条标注；moving 在拖动它（grab 是画布坐标的
-    /// 按下点，original 是按下时的形状，拖动全程按它平移）。
+    /// 按下点，original 是按下时的形状，拖动全程按它平移）；resizingText / rotatingText
+    /// 在拖文字控制点（center 是未旋转包围盒中心，original 是按下时的形状）。
     private enum Phase {
         case idle
         case selecting(origin: CGPoint, freeDrag: Bool)
@@ -22,6 +23,8 @@ final class OverlayView: NSView {
         /// pendingClone 非空表示这是 Control 按下起的克隆拖动：真正挪动时才把副本入列，
         /// 只是点一下不会留下多余副本。
         case moving(id: UUID, grab: CGPoint, original: Shape, pendingClone: Annotation?)
+        case resizingText(id: UUID, corner: TextHandle, original: Shape, center: CGPoint)
+        case rotatingText(id: UUID, original: Shape, center: CGPoint)
     }
 
     /// 工具模式。select 时鼠标只做选中与移动，不落新形状；draw 时行为与之前一致。
@@ -50,6 +53,8 @@ final class OverlayView: NSView {
     private static let dragThreshold: CGFloat = 3
     /// 选择工具命中测试的容差：细线条点击偏几个点也能选中。
     private static let hitTolerance: CGFloat = 4
+    /// 文字控制点的命中半径。比绘制的方块略大，按下不要求像素级精确。
+    private static let textHandleHitRadius: CGFloat = 8
     /// 文字编辑器的最小宽度。选区右侧不够宽时向右溢出，保证插入点始终可输入。
     private static let minimumTextWidth: CGFloat = 80
 
@@ -199,6 +204,12 @@ final class OverlayView: NSView {
                 requestCopy()
                 return
             }
+            // 控制点优先于文字本体，也优先于"点在选区外"的取消逻辑：
+            // 旋转圆点可能落在选区边缘外。
+            if let hit = textHandleHit(at: rawCanvasPoint(from: point)) {
+                beginTextHandleDrag(hit)
+                return
+            }
             guard selectionRect.contains(point) else {
                 removeCanvas()
                 beginSelection(at: point)
@@ -218,7 +229,7 @@ final class OverlayView: NSView {
             beginDraft(at: point)
         case .editing:
             commitTextEditing()
-        case .selecting, .drawing, .moving:
+        case .selecting, .drawing, .moving, .resizingText, .rotatingText:
             break // 已有按压，忽略重入
         }
     }
@@ -265,6 +276,43 @@ final class OverlayView: NSView {
                 x: current.x - grab.x,
                 y: current.y - grab.y
             ))
+        case .resizingText(let id, let corner, let original, let center):
+            guard let canvas,
+                  case .text(let text, _, let fontSize, let rotation) = original,
+                  let geometry = original.textGeometry,
+                  let index = canvas.annotations.firstIndex(where: { $0.id == id }) else { return }
+            let current = rawCanvasPoint(from: point)
+            let startDistance = hypot(
+                geometry.point(for: corner).x - center.x,
+                geometry.point(for: corner).y - center.y
+            )
+            let currentDistance = hypot(current.x - center.x, current.y - center.y)
+            let newSize = TextGeometry.scaledFontSize(
+                fontSize,
+                from: startDistance,
+                to: currentDistance
+            )
+            // Shift 拖角把旋转过的文字拉回水平，缩放照常。
+            let newRotation = event.modifierFlags.contains(.shift) ? 0 : rotation
+            canvas.annotations[index].shape = .text(
+                text,
+                origin: TextMetrics.origin(text: text, fontSize: newSize, centeredAt: center),
+                fontSize: newSize,
+                rotation: newRotation
+            )
+        case .rotatingText(let id, let original, let center):
+            guard let canvas,
+                  case .text(let text, let origin, let fontSize, _) = original,
+                  let index = canvas.annotations.firstIndex(where: { $0.id == id }) else { return }
+            let current = rawCanvasPoint(from: point)
+            // 手柄在正上方时为 0 度；减去 π/2 让水平拖动对应水平文字。
+            let angle = atan2(current.y - center.y, current.x - center.x) - .pi / 2
+            canvas.annotations[index].shape = .text(
+                text,
+                origin: origin,
+                fontSize: fontSize,
+                rotation: angle
+            )
         case .idle, .ready, .polylineEditing, .editing, .selected:
             break
         }
@@ -298,6 +346,9 @@ final class OverlayView: NSView {
             }
             commitDraft()
         case .moving(let id, _, _, _):
+            phase = .selected(id: id)
+            canvas?.selectedID = id
+        case .resizingText(let id, _, _, _), .rotatingText(let id, _, _):
             phase = .selected(id: id)
             canvas?.selectedID = id
         case .idle, .ready, .polylineEditing, .editing, .selected:
@@ -469,7 +520,8 @@ final class OverlayView: NSView {
     private var isCommittedPhase: Bool {
         switch phase {
         case .ready, .selected, .moving: return true
-        case .idle, .selecting, .drawing, .polylineEditing, .editing: return false
+        case .idle, .selecting, .drawing, .polylineEditing, .editing,
+             .resizingText, .rotatingText: return false
         }
     }
 
@@ -477,7 +529,8 @@ final class OverlayView: NSView {
     private var isReadyOrSelected: Bool {
         switch phase {
         case .ready, .selected: return true
-        case .idle, .selecting, .drawing, .polylineEditing, .editing, .moving: return false
+        case .idle, .selecting, .drawing, .polylineEditing, .editing, .moving,
+             .resizingText, .rotatingText: return false
         }
     }
 
@@ -485,7 +538,8 @@ final class OverlayView: NSView {
     private var canOutput: Bool {
         switch phase {
         case .ready, .selected: return true
-        case .idle, .selecting, .drawing, .polylineEditing, .editing, .moving: return false
+        case .idle, .selecting, .drawing, .polylineEditing, .editing, .moving,
+             .resizingText, .rotatingText: return false
         }
     }
 
@@ -551,6 +605,44 @@ final class OverlayView: NSView {
             x: min(max(viewPoint.x - selectionRect.minX, 0), selectionRect.width),
             y: min(max(viewPoint.y - selectionRect.minY, 0), selectionRect.height)
         )
+    }
+
+    /// 不钳制到选区的画布坐标。控制点可能落在选区外的边缘处，命中要用真实坐标。
+    private func rawCanvasPoint(from viewPoint: CGPoint) -> CGPoint {
+        CGPoint(x: viewPoint.x - selectionRect.minX, y: viewPoint.y - selectionRect.minY)
+    }
+
+    /// 选中的文字标注及其控制点。旋转圆点最先命中，其次四角。
+    private func textHandleHit(at point: CGPoint) -> (id: UUID, handle: TextHandle)? {
+        guard case .selected(let id) = phase,
+              let shape = canvas?.annotations.first(where: { $0.id == id })?.shape,
+              let geometry = shape.textGeometry else { return nil }
+        let handles = [TextHandle.rotate] + TextHandle.allCases.filter(\.isCorner)
+        for handle in handles {
+            let anchor = geometry.point(for: handle)
+            if hypot(point.x - anchor.x, point.y - anchor.y) <= Self.textHandleHitRadius {
+                return (id, handle)
+            }
+        }
+        return nil
+    }
+
+    private func beginTextHandleDrag(_ hit: (id: UUID, handle: TextHandle)) {
+        guard let canvas,
+              let shape = canvas.annotations.first(where: { $0.id == hit.id })?.shape,
+              let geometry = shape.textGeometry else { return }
+        canvas.selectedID = hit.id
+        switch hit.handle {
+        case .rotate:
+            phase = .rotatingText(id: hit.id, original: shape, center: geometry.center)
+        case .topLeft, .topRight, .bottomRight, .bottomLeft:
+            phase = .resizingText(
+                id: hit.id,
+                corner: hit.handle,
+                original: shape,
+                center: geometry.center
+            )
+        }
     }
 
     /// 开始一次选区拖拽。起点落在窗口内 → 初始选区为整个窗口；拖动后才脱离窗口锁定。
@@ -773,7 +865,12 @@ final class OverlayView: NSView {
             return
         }
         let annotation = Annotation(
-            shape: .text(text, origin: origin, fontSize: style.pen.textFontSize),
+            shape: .text(
+                text,
+                origin: origin,
+                fontSize: style.pen.textFontSize,
+                rotation: 0
+            ),
             style: style
         )
         canvas.annotations.append(annotation)

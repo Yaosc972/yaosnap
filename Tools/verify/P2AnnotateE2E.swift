@@ -288,6 +288,22 @@ final class AnnotateHarness {
         return rep.cgImage
     }
 
+    /// 走与复制 / 保存相同的导出路径，但不结束会话，便于同一次会话内前后对比。
+    private func exportedBytes(_ view: OverlayView) -> [UInt8]? {
+        let cropRectPx = RectMath.imageRect(
+            fromViewRect: view.selectionRect,
+            viewHeight: view.bounds.height,
+            scale: view.shot.scale
+        )
+        guard let image = AnnotationExport.flatten(
+            base: view.shot.image,
+            cropRectPx: cropRectPx,
+            annotations: view.annotations,
+            scale: view.shot.scale
+        ) else { return nil }
+        return srgbBytes(image, width: image.width, height: image.height)
+    }
+
     private func srgbBytes(_ image: CGImage, width: Int, height: Int) -> [UInt8]? {
         guard let context = CGContext(
             data: nil, width: width, height: height,
@@ -926,10 +942,11 @@ final class AnnotateHarness {
         sendKey(36, characters: "\r", to: reopened, in: window, modifierFlags: .command)
 
         guard view.annotations.count == 1,
-              case .text(let text, let origin, let fontSize) = view.annotations[0].shape,
+              case .text(let text, let origin, let fontSize, let rotation) = view.annotations[0].shape,
               text == "Hello",
               origin == CGPoint(x: 60, y: 220),
-              fontSize == PenSize.p3.textFontSize else {
+              fontSize == PenSize.p3.textFontSize,
+              rotation == 0 else {
             fail("TEXT-COMMIT", "提交结果异常 annotations=\(view.annotations)")
             endSession()
             return
@@ -987,7 +1004,7 @@ final class AnnotateHarness {
         sendKey(36, characters: "\r", to: editor, in: window, modifierFlags: .command)
 
         guard view.annotations.count == 1,
-              case .text(let text, let origin, let fontSize) = view.annotations[0].shape,
+              case .text(let text, let origin, let fontSize, _) = view.annotations[0].shape,
               text == "测试文字\n测试文字" else {
             fail("TEXT-MULTILINE", "多行提交异常 annotations=\(view.annotations)")
             endSession()
@@ -1006,6 +1023,119 @@ final class AnnotateHarness {
             return
         }
         pass("TEXT-MULTILINE", "两行已入列 lines=\(layout.lines.count) rect.height=\(layout.rect.height) 行距=\(step) 单行高=\(lineHeight)")
+        endSession()
+    }
+
+    /// 文字控制点：拖角缩放、拖顶部圆点旋转、Shift 拖角回正，导出像素随旋转变化。
+    private func runTextTransform() {
+        guard let (window, view) = beginSession("TEXT-TRANSFORM") else { return }
+        drag(view, window: window, from: CGPoint(x: 150, y: 150), to: CGPoint(x: 750, y: 650))
+        let selection = view.selectionRect
+        guard tapTool(view, .text, id: "TEXT-RESIZE") else {
+            endSession()
+            return
+        }
+        let click = CGPoint(x: selection.minX + 60, y: selection.minY + 260)
+        press(view, window: window, path: [click])
+        guard let editor = view.subviews.compactMap({ $0 as? NSTextView }).first else {
+            fail("TEXT-RESIZE", "单击后没有出现文字编辑器")
+            endSession()
+            return
+        }
+        editor.string = "Hi"
+        sendKey(36, characters: "\r", to: editor, in: window, modifierFlags: .command)
+
+        func viewPoint(_ point: CGPoint) -> CGPoint {
+            CGPoint(x: selection.minX + point.x, y: selection.minY + point.y)
+        }
+        func scaledFromCenter(_ point: CGPoint, around center: CGPoint, by scale: CGFloat) -> CGPoint {
+            CGPoint(
+                x: center.x + (point.x - center.x) * scale,
+                y: center.y + (point.y - center.y) * scale
+            )
+        }
+
+        guard view.annotations.count == 1,
+              let geometry = view.annotations[0].shape.textGeometry,
+              case .text(_, _, let fontSize0, let rotation0) = view.annotations[0].shape,
+              rotation0 == 0 else {
+            fail("TEXT-RESIZE", "前置文字标注缺失 annotations=\(view.annotations.count)")
+            endSession()
+            return
+        }
+        let center = viewPoint(geometry.center)
+
+        let corner = viewPoint(geometry.point(for: .bottomRight))
+        press(
+            view,
+            window: window,
+            path: [corner, scaledFromCenter(corner, around: center, by: 1.6)]
+        )
+        guard case .text(_, _, let fontSize1, let rotation1) = view.annotations[0].shape,
+              rotation1 == 0,
+              fontSize1 > fontSize0 * 1.4 else {
+            fail("TEXT-RESIZE", "拖右下角应放大字号 fontSize \(fontSize0) → \(view.annotations[0].shape)")
+            endSession()
+            return
+        }
+        pass("TEXT-RESIZE", "拖右下角字号 \(fontSize0) → \(fontSize1)，旋转保持 0")
+
+        guard let beforeBytes = exportedBytes(view) else {
+            fail("TEXT-ROTATE-PIXELS", "旋转前导出没有图像")
+            endSession()
+            return
+        }
+
+        guard let rotateGeometry = view.annotations[0].shape.textGeometry else {
+            fail("TEXT-ROTATE", "缩放后丢失文字形状")
+            endSession()
+            return
+        }
+        press(view, window: window, path: [
+            viewPoint(rotateGeometry.point(for: .rotate)),
+            CGPoint(x: center.x + 120, y: center.y),
+        ])
+        guard case .text(_, _, let fontSize2, let rotation2) = view.annotations[0].shape,
+              abs(rotation2) > 0.01,
+              abs(fontSize2 - fontSize1) < 0.001 else {
+            fail("TEXT-ROTATE", "拖顶部圆点应只改旋转 shape=\(view.annotations[0].shape)")
+            endSession()
+            return
+        }
+        pass("TEXT-ROTATE", "拖顶部圆点旋转 \(rotation2) 弧度，字号不变")
+
+        guard let afterBytes = exportedBytes(view) else {
+            fail("TEXT-ROTATE-PIXELS", "旋转后导出没有图像")
+            endSession()
+            return
+        }
+        guard beforeBytes != afterBytes else {
+            fail("TEXT-ROTATE-PIXELS", "旋转前后导出像素完全一致")
+            endSession()
+            return
+        }
+        pass("TEXT-ROTATE-PIXELS", "旋转后导出像素与旋转前不同")
+
+        guard let shiftGeometry = view.annotations[0].shape.textGeometry else {
+            fail("TEXT-UNROTATE", "旋转后丢失文字形状")
+            endSession()
+            return
+        }
+        let shiftCorner = viewPoint(shiftGeometry.point(for: .topRight))
+        press(
+            view,
+            window: window,
+            path: [shiftCorner, scaledFromCenter(shiftCorner, around: center, by: 1.3)],
+            modifierFlags: .shift
+        )
+        guard case .text(_, _, let fontSize3, let rotation3) = view.annotations[0].shape,
+              abs(rotation3) < 1e-9,
+              fontSize3 > fontSize2 * 1.1 else {
+            fail("TEXT-UNROTATE", "Shift 拖角应回正并放大 shape=\(view.annotations[0].shape)")
+            endSession()
+            return
+        }
+        pass("TEXT-UNROTATE", "Shift 拖角 rotation → 0，字号 \(fontSize2) → \(fontSize3)")
         endSession()
     }
 
@@ -1502,6 +1632,7 @@ final class AnnotateHarness {
         runUndo()
         runTextAnnotation()
         runMultilineText()
+        runTextTransform()
         runSelectDrag()
         runDeleteSelection()
         runCopyPasteSelection()
