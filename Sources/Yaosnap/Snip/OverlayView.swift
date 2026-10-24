@@ -373,11 +373,14 @@ final class OverlayView: NSView {
         let line = TextMetrics.lineHeight(fontSize: fontSize)
         let width = max(Self.minimumTextWidth, selectionRect.maxX - viewPoint.x)
         let bottom = selectionRect.minY
+        let top = viewPoint.y + line.ascent
+        // 至少留三行：点击点贴近选区底部时，换行后的内容否则完全看不见。
+        let height = max(3 * (line.ascent + line.descent), top - bottom)
         let editor = AnnotatingTextView(frame: NSRect(
             x: viewPoint.x,
-            y: bottom,
+            y: top - height,
             width: width,
-            height: max(0, viewPoint.y + line.ascent - bottom)
+            height: height
         ))
         editor.drawsBackground = false
         editor.isRichText = false
@@ -416,6 +419,24 @@ final class OverlayView: NSView {
         phase = .editing
         window?.makeFirstResponder(editor)
         installOutsideClickCommit()
+    }
+
+    /// 第一行基线要落在提交后的位置。中文走 fallback 字体，ascent 与主字体不同，
+    /// 输入过程中按实际首行重新对齐一次，提交前后文字不跳。
+    private func alignEditorBaseline() {
+        guard let editor = textEditor, let style = textStyle else { return }
+        let firstRow = editor.string.components(separatedBy: "\n").first ?? ""
+        let layout = TextMetrics.multiline(
+            firstRow.isEmpty ? "国" : firstRow,
+            fontSize: style.pen.textFontSize,
+            origin: .zero
+        )
+        let top = selectionRect.minY + textOrigin.y + layout.rect.maxY
+        var frame = editor.frame
+        frame.origin.y = top - frame.height
+        if frame != editor.frame {
+            editor.frame = frame
+        }
     }
 
     private func commitTextEditing() {
@@ -689,8 +710,12 @@ private final class AnnotatingTextView: NSTextView {
     var onCancel: (() -> Void)?
 
     override func keyDown(with event: NSEvent) {
-        // Esc 在 NSTextView 里可能先触发补全，直接拦下来保证只做取消。
+        // 输入法组字时 Esc 属于候选窗，不能当成取消整段编辑。
         if event.keyCode == 53 {
+            if hasMarkedText() {
+                super.keyDown(with: event)
+                return
+            }
             onCancel?()
             return
         }
@@ -708,6 +733,11 @@ extension OverlayView: NSTextViewDelegate {
     func textDidEndEditing(_ notification: Notification) {
         guard case .editing = phase else { return }
         commitTextEditing()
+    }
+
+    func textDidChange(_ notification: Notification) {
+        guard case .editing = phase else { return }
+        alignEditorBaseline()
     }
 }
 

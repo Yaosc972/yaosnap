@@ -16,10 +16,14 @@ public enum TextMetrics {
             ?? CTFontCreateWithName("Helvetica" as CFString, size, nil)
     }
 
-    /// 主字体的 ascent/descent。空字符串量不出行高，编辑框定位用这个。
+    /// 行高探针。中文走 fallback 字体，ascent 比主字体大，用纯 ASCII 量会让
+    /// 编辑框顶部偏低、提交前后文字跳动，所以探针里带一个汉字和降部字符。
     public static func lineHeight(fontSize: CGFloat) -> (ascent: CGFloat, descent: CGFloat) {
-        let f = font(size: fontSize)
-        return (CTFontGetAscent(f), CTFontGetDescent(f))
+        let line = makeLine("国Wg", fontSize: fontSize, foreground: nil)
+        var ascent: CGFloat = 0
+        var descent: CGFloat = 0
+        _ = CTLineGetTypographicBounds(line, &ascent, &descent, nil)
+        return (ascent, descent)
     }
 
     /// `\n` 硬拆行。第一行基线是 origin，后续行按统一行距下移。行距取所有行里最高的
