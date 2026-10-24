@@ -138,12 +138,7 @@ final class SnipController {
     }
 
     func copyPendingImage(_ notification: Notification) {
-        guard let pending = pendingRegion else { return }
-        guard let displayID = notification.userInfo?[.displayID] as? UInt32,
-              displayID == pending.displayID else {
-            rejectMismatch("复制", notification: notification, pending: pending)
-            return
-        }
+        guard let pending = validatedPending(for: notification, action: "复制") else { return }
         guard let image = renderPendingOutput(pending) else {
             abortWithError("合成标注图像失败")
             return
@@ -159,12 +154,8 @@ final class SnipController {
     }
 
     func savePendingImage(_ notification: Notification) {
-        guard let pending = pendingRegion, saveJob == nil else { return }
-        guard let displayID = notification.userInfo?[.displayID] as? UInt32,
-              displayID == pending.displayID else {
-            rejectMismatch("保存", notification: notification, pending: pending)
-            return
-        }
+        guard saveJob == nil,
+              let pending = validatedPending(for: notification, action: "保存") else { return }
         guard let image = renderPendingOutput(pending) else {
             abortWithError("合成标注图像失败")
             return
@@ -173,7 +164,7 @@ final class SnipController {
             quickSave(image, displaySize: pending.viewRect.size)
             return
         }
-        let parent = overlayWindow(for: displayID) ?? NSApp.keyWindow ?? windows.first
+        let parent = overlayWindow(for: pending.displayID) ?? NSApp.keyWindow ?? windows.first
         guard let parent else {
             abortWithError("没有可用的覆盖窗口")
             return
@@ -196,6 +187,72 @@ final class SnipController {
                 self?.finishSave(response)
             }
         }
+    }
+
+    /// 提取选区文字。Vision 在后台跑，识别完回主线程写剪贴板并提示。
+    func recognizeTextPending(_ notification: Notification) {
+        guard let pending = validatedPending(for: notification, action: "提取文字") else { return }
+        guard let image = renderPendingOutput(pending) else {
+            NSSound.beep()
+            return
+        }
+        let displayID = pending.displayID
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let text = TextRecognizer.recognizeText(in: image)
+            Task { @MainActor in
+                self?.finishTextRecognition(text, displayID: displayID)
+            }
+        }
+    }
+
+    /// 识别选区里的二维码 / 条形码。
+    func scanBarcodePending(_ notification: Notification) {
+        guard let pending = validatedPending(for: notification, action: "识别码") else { return }
+        guard let image = renderPendingOutput(pending) else {
+            NSSound.beep()
+            return
+        }
+        let displayID = pending.displayID
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let payload = BarcodeScanner.scanFirstPayload(in: image)
+            Task { @MainActor in
+                self?.finishBarcodeScan(payload, displayID: displayID)
+            }
+        }
+    }
+
+    private func finishTextRecognition(_ text: String, displayID: UInt32) {
+        guard !text.isEmpty else {
+            print("[snip] 文字识别没有结果")
+            NSSound.beep()
+            return
+        }
+        guard ClipboardService.copyString(text) else {
+            print("[snip] error: 文字写入剪贴板失败")
+            NSSound.beep()
+            return
+        }
+        print("[snip] 提取文字 \(text.count) 字")
+        (overlayWindow(for: displayID)?.contentView as? OverlayView)?
+            .showToolbarMessage("文字已复制")
+    }
+
+    private func finishBarcodeScan(_ payload: String?, displayID: UInt32) {
+        guard let payload, !payload.isEmpty else {
+            // Snipaste 的扫码失败行为：清空系统剪贴板。
+            ClipboardService.clear()
+            print("[snip] 没有识别到二维码 / 条形码，已清空剪贴板")
+            NSSound.beep()
+            return
+        }
+        guard ClipboardService.copyString(payload) else {
+            print("[snip] error: 识别结果写入剪贴板失败")
+            NSSound.beep()
+            return
+        }
+        print("[snip] 识别码 \(payload.count) 字符")
+        (overlayWindow(for: displayID)?.contentView as? OverlayView)?
+            .showToolbarMessage("识别码已复制")
     }
 
     private func finishSave(_ response: NSApplication.ModalResponse) {
@@ -282,6 +339,20 @@ final class SnipController {
         if history.count > Self.historyLimit {
             history.removeLast(history.count - Self.historyLimit)
         }
+    }
+
+    /// 复制 / 保存 / 识别共用：取本屏待输出选区，核对请求来源。
+    private func validatedPending(
+        for notification: Notification,
+        action: String
+    ) -> PendingRegion? {
+        guard let pending = pendingRegion else { return nil }
+        guard let displayID = notification.userInfo?[.displayID] as? UInt32,
+              displayID == pending.displayID else {
+            rejectMismatch(action, notification: notification, pending: pending)
+            return nil
+        }
+        return pending
     }
 
     /// 输出请求来自另一块屏的覆盖层。拒绝，避免输出错屏内容。

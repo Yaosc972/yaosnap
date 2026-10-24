@@ -1,14 +1,16 @@
 import AppKit
 import YaosnapCore
 
-/// 选区标注工具条：选择、形状选择、颜色/笔尖弹层、复制/保存/取消。
-/// 单行布局：[选择][分隔][形状按钮][分隔][颜色][笔尖][分隔][复制][保存][取消]。
+/// 选区标注工具条：选择、形状选择、颜色/笔尖弹层、复制/提取文字/识别码/保存/取消。
+/// 单行布局：[选择][分隔][形状按钮][分隔][颜色][笔尖][分隔][复制][提取文字][识别码][保存][取消]。
 @MainActor
 final class AnnotateToolbar: NSView {
     var onSelectTool: ((ShapeKind) -> Void)?
     var onSelectMode: (() -> Void)?
     var onStyleChange: ((Style) -> Void)?
     var onCopy: (() -> Void)?
+    var onExtractText: (() -> Void)?
+    var onScanBarcode: (() -> Void)?
     var onSave: (() -> Void)?
     /// ⌘ + 保存按钮：写快捷保存目录。
     var onQuickSave: (() -> Void)?
@@ -25,7 +27,7 @@ final class AnnotateToolbar: NSView {
         private static let toolRow: CGFloat = CGFloat(ShapeCatalog.p2.count) * buttonSide
             + CGFloat(ShapeCatalog.p2.count - 1) * spacing
         private static let styleRow: CGFloat = buttonSide * 2 + spacing
-        private static let actionRow: CGFloat = buttonSide * 3 + spacing * 2
+        private static let actionRow: CGFloat = buttonSide * 5 + spacing * 4
         private static let separators: CGFloat = (separatorGap + separatorWidth + separatorGap) * 3
         static let width: CGFloat = padding * 2 + buttonSide + toolRow + styleRow + actionRow + separators
     }
@@ -38,9 +40,29 @@ final class AnnotateToolbar: NSView {
     private(set) var toolButtons: [ShapeKind: HoverButton] = [:]
     private(set) var colorButton: HoverButton!
     private(set) var penButton: HoverButton!
+    private(set) var textButton: HoverButton!
+    private(set) var barcodeButton: HoverButton!
     private(set) var saveButton: HoverButton!
     private(set) var colorPopover: NSPopover?
     private(set) var penPopover: NSPopover?
+    /// 识别结果提示，盖在按钮上，1.6 秒后自动隐藏。
+    private lazy var messageLabel: PassthroughLabel = {
+        let label = PassthroughLabel(labelWithString: "")
+        label.font = .systemFont(ofSize: 12, weight: .medium)
+        label.textColor = .white
+        label.alignment = .center
+        label.wantsLayer = true
+        label.layer?.backgroundColor = NSColor(white: 0, alpha: 0.78).cgColor
+        label.layer?.cornerRadius = 6
+        label.isHidden = true
+        return label
+    }()
+    private var messageToken = 0
+
+    /// 提示条只是显示层，不吃点击，避免覆盖期间下面的按钮点不动。
+    private final class PassthroughLabel: NSTextField {
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    }
 
     init(initialKind: ShapeKind, initialStyle: Style) {
         selectedKind = initialKind
@@ -50,6 +72,7 @@ final class AnnotateToolbar: NSView {
         layer?.backgroundColor = NSColor(white: 0.12, alpha: 0.92).cgColor
         layer?.cornerRadius = 8
         layoutButtons()
+        addSubview(messageLabel)
         refreshStyleButtons()
         refreshSelection()
     }
@@ -127,6 +150,18 @@ final class AnnotateToolbar: NSView {
         place(penButton)
         separator()
         place(makeHoverButton(symbol: "doc.on.doc", title: "复制", action: #selector(copyTapped)))
+        textButton = makeHoverButton(
+            symbol: "text.viewfinder",
+            title: "提取文字",
+            action: #selector(extractTextTapped)
+        )
+        place(textButton)
+        barcodeButton = makeHoverButton(
+            symbol: "qrcode.viewfinder",
+            title: "识别码",
+            action: #selector(scanBarcodeTapped)
+        )
+        place(barcodeButton)
         saveButton = makeHoverButton(
             symbol: "square.and.arrow.down",
             title: "保存",
@@ -223,6 +258,28 @@ final class AnnotateToolbar: NSView {
             : NSColor.clear.cgColor
     }
 
+    /// 识别结果在工具条上短暂提示。后一次提示会让前一次的隐藏计时失效。
+    func showMessage(_ text: String) {
+        guard !text.isEmpty else { return }
+        messageLabel.stringValue = text
+        let height: CGFloat = 24
+        let fitting = messageLabel.attributedStringValue.size().width
+        let width = min(bounds.width - Metrics.padding * 2, ceil(fitting) + 24)
+        messageLabel.frame = NSRect(
+            x: (bounds.width - width) / 2,
+            y: (bounds.height - height) / 2,
+            width: width,
+            height: height
+        )
+        messageLabel.isHidden = false
+        messageToken += 1
+        let token = messageToken
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { [weak self] in
+            guard let self, self.messageToken == token else { return }
+            self.messageLabel.isHidden = true
+        }
+    }
+
     // MARK: - 弹层
 
     @objc private func colorTapped() {
@@ -300,6 +357,8 @@ final class AnnotateToolbar: NSView {
     }
 
     @objc private func copyTapped() { onCopy?() }
+    @objc private func extractTextTapped() { onExtractText?() }
+    @objc private func scanBarcodeTapped() { onScanBarcode?() }
     @objc private func saveTapped() {
         if saveButton.currentModifiers().contains(.command) {
             onQuickSave?()

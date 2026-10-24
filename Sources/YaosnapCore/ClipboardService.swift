@@ -11,6 +11,11 @@ public enum ClipboardService {
         )
     }
 
+    /// Snipaste 的扫码失败行为：清空系统剪贴板，避免旧内容被误当识别结果。
+    public static func clear() {
+        NSPasteboard.general.clearContents()
+    }
+
     @discardableResult
     public static func copyString(_ string: String) -> Bool {
         let pasteboard = NSPasteboard.general

@@ -607,10 +607,16 @@ final class Harness {
         _ = capture("09-actionbar.png")
 
         let buttons = bar.subviews.compactMap { $0 as? NSButton }
-        // 选择 + 形状 + 颜色 + 笔尖 + 复制/保存/取消
-        let expectedButtons = 1 + ShapeCatalog.p2.count + 2 + 3
-        guard buttons.count == expectedButtons else {
-            fail("ACTIONBAR-BUTTONS", "工具条按钮数=\(buttons.count)，期望 \(expectedButtons)")
+        // 按内容推导：选择 + 形状目录 + 颜色/笔尖 + 输出动作，不写死总数。
+        let expectedTitles = ["选择"]
+            + ShapeCatalog.p2.map(\.title)
+            + ["颜色", "笔尖", "复制", "提取文字", "识别码", "保存", "取消"]
+        let actualTitles = buttons.compactMap(\.toolTip)
+        guard actualTitles.count == expectedTitles.count,
+              Set(actualTitles) == Set(expectedTitles) else {
+            let missing = Set(expectedTitles).subtracting(actualTitles).sorted()
+            let extra = Set(actualTitles).subtracting(expectedTitles).sorted()
+            fail("ACTIONBAR-BUTTONS", "按钮内容不符 缺=\(missing) 多=\(extra)")
             endSession()
             return
         }
@@ -619,7 +625,12 @@ final class Harness {
         )
         let expected = expectedCrop(from: view.shot, imageRect: imageRect)
         NSPasteboard.general.clearContents()
-        buttons[buttons.count - 3].performClick(nil)
+        guard let copyButton = buttons.first(where: { $0.toolTip == "复制" }) else {
+            fail("ACTIONBAR-COPY", "工具条上找不到复制按钮")
+            endSession()
+            return
+        }
+        copyButton.performClick(nil)
         pump(0.3)
         verifyClipboardPixels("ACTIONBAR-COPY", expected: expected)
         if visibleOverlayWindows.isEmpty {

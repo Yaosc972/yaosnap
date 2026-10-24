@@ -100,6 +100,8 @@ final class OverlayView: NSView {
         bar.onSelectMode = { [weak self] in self?.enterSelectMode() }
         bar.onStyleChange = { [weak self] style in self?.applyStyle(style) }
         bar.onCopy = { [weak self] in self?.requestCopy() }
+        bar.onExtractText = { [weak self] in self?.requestTextRecognition() }
+        bar.onScanBarcode = { [weak self] in self?.requestBarcodeScan() }
         bar.onSave = { [weak self] in self?.requestSave() }
         bar.onQuickSave = { [weak self] in self?.requestSave(quick: true) }
         bar.onCancel = { [weak self] in self?.requestCancel() }
@@ -1459,6 +1461,27 @@ final class OverlayView: NSView {
         )
     }
 
+    private func requestTextRecognition() {
+        NotificationCenter.default.post(
+            name: .snipTextRecognizeRequested,
+            object: nil,
+            userInfo: [SnipNotificationKey.displayID: shot.displayID]
+        )
+    }
+
+    private func requestBarcodeScan() {
+        NotificationCenter.default.post(
+            name: .snipBarcodeScanRequested,
+            object: nil,
+            userInfo: [SnipNotificationKey.displayID: shot.displayID]
+        )
+    }
+
+    /// 识别结果回显。控制器在后台识别完成后回主线程调用。
+    func showToolbarMessage(_ text: String) {
+        toolbar.showMessage(text)
+    }
+
     private func requestSave(quick: Bool = false) {
         var info: [AnyHashable: Any] = [SnipNotificationKey.displayID: shot.displayID]
         if quick { info[SnipNotificationKey.quickSave] = true }
@@ -1739,6 +1762,8 @@ extension Notification.Name {
     static let snipEscapePressed = Notification.Name("snipEscapePressed")
     static let snipCommitted = Notification.Name("snipCommitted")
     static let snipCopyRequested = Notification.Name("snipCopyRequested")
+    static let snipTextRecognizeRequested = Notification.Name("snipTextRecognizeRequested")
+    static let snipBarcodeScanRequested = Notification.Name("snipBarcodeScanRequested")
     static let snipSaveRequested = Notification.Name("snipSaveRequested")
 }
 

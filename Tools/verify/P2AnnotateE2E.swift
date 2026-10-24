@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import CoreImage
 import Foundation
 import ImageIO
 import UniformTypeIdentifiers
@@ -16,12 +17,16 @@ final class AnnotateObserverWiring {
         center.addObserver(self, selector: #selector(escape(_:)), name: .snipEscapePressed, object: nil)
         center.addObserver(self, selector: #selector(committed(_:)), name: .snipCommitted, object: nil)
         center.addObserver(self, selector: #selector(copyRequested(_:)), name: .snipCopyRequested, object: nil)
+        center.addObserver(self, selector: #selector(textRequested(_:)), name: .snipTextRecognizeRequested, object: nil)
+        center.addObserver(self, selector: #selector(barcodeRequested(_:)), name: .snipBarcodeScanRequested, object: nil)
         center.addObserver(self, selector: #selector(saveRequested(_:)), name: .snipSaveRequested, object: nil)
     }
 
     @objc private func escape(_ notification: Notification) { controller.cancel() }
     @objc private func committed(_ notification: Notification) { controller.commitSelection(notification) }
     @objc private func copyRequested(_ notification: Notification) { controller.copyPendingImage(notification) }
+    @objc private func textRequested(_ notification: Notification) { controller.recognizeTextPending(notification) }
+    @objc private func barcodeRequested(_ notification: Notification) { controller.scanBarcodePending(notification) }
     @objc private func saveRequested(_ notification: Notification) { controller.savePendingImage(notification) }
 }
 
@@ -2109,6 +2114,74 @@ final class AnnotateHarness {
         endSession()
     }
 
+    /// 提取文字 / 识别码按钮：存在性 + 二维码结果写入剪贴板。
+    private func runRecognition() {
+        guard let (window, view) = beginSession("RECOGNIZE-BUTTONS") else { return }
+        drag(view, window: window, from: CGPoint(x: 150, y: 150), to: CGPoint(x: 650, y: 500))
+        guard let bar = view.subviews.compactMap({ $0 as? AnnotateToolbar }).first,
+              let textButton = bar.textButton,
+              let barcodeButton = bar.barcodeButton else {
+            fail("RECOGNIZE-BUTTONS", "工具条上找不到提取文字 / 识别码按钮")
+            endSession()
+            return
+        }
+        guard textButton.toolTip == "提取文字", barcodeButton.toolTip == "识别码",
+              textButton.image != nil, barcodeButton.image != nil else {
+            fail("RECOGNIZE-BUTTONS", "按钮标识不符：\(textButton.toolTip ?? "nil") / \(barcodeButton.toolTip ?? "nil")")
+            endSession()
+            return
+        }
+        pass("RECOGNIZE-BUTTONS", "工具条含提取文字 / 识别码按钮")
+
+        let payload = "yaosnap-e2e-2026"
+        guard let qr = Self.makeQRCode(payload) else {
+            fail("RECOGNIZE-BARCODE", "生成二维码图像失败")
+            endSession()
+            return
+        }
+        // 走历史回放同一条提交路径注入二维码，不依赖真实屏幕内容。
+        let full = CGRect(x: 0, y: 0, width: qr.width, height: qr.height)
+        NotificationCenter.default.post(
+            name: .snipCommitted,
+            object: nil,
+            userInfo: [
+                SnipNotificationKey.viewRect: full,
+                SnipNotificationKey.viewHeight: full.height,
+                SnipNotificationKey.scale: CGFloat(1),
+                SnipNotificationKey.displayID: view.shot.displayID,
+                SnipNotificationKey.sourceImage: qr,
+                SnipNotificationKey.cropRectPx: full,
+            ]
+        )
+        pump(0.1)
+        NSPasteboard.general.clearContents()
+        barcodeButton.performClick(nil)
+
+        // 首次 Vision 调用要加载模型，给足等待时间。
+        let deadline = Date().addingTimeInterval(30)
+        var copied: String?
+        while Date() < deadline {
+            copied = NSPasteboard.general.string(forType: .string)
+            if copied == payload { break }
+            pump(0.2)
+        }
+        if copied == payload {
+            pass("RECOGNIZE-BARCODE", "点击识别码后剪贴板为 \(payload)")
+        } else {
+            fail("RECOGNIZE-BARCODE", "剪贴板期望 \(payload)，实际 \(copied ?? "nil")")
+        }
+        endSession()
+    }
+
+    private static func makeQRCode(_ payload: String) -> CGImage? {
+        let filter = CIFilter(name: "CIQRCodeGenerator")
+        filter?.setValue(Data(payload.utf8), forKey: "inputMessage")
+        filter?.setValue("M", forKey: "inputCorrectionLevel")
+        guard let output = filter?.outputImage else { return nil }
+        let scaled = output.transformed(by: CGAffineTransform(scaleX: 10, y: 10))
+        return CIContext().createCGImage(scaled, from: scaled.extent)
+    }
+
     func runAll() {
         if !ScreenCaptureService.hasPermission() {
             print("FATAL 屏幕录制权限缺失，无法执行标注验收")
@@ -2125,6 +2198,7 @@ final class AnnotateHarness {
         runUndo()
         runRedo()
         runQuickSave()
+        runRecognition()
         runSerialTool()
         runBlurTool()
         runEraserTool()
