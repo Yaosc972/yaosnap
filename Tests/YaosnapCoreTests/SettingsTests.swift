@@ -58,6 +58,8 @@ struct SettingsTests {
 
         #expect(decoded.restoreCapacity == 5)
         #expect(!decoded.autoSelectOnCreation)
+        #expect(decoded.selectionAspectRatio == .free)
+        #expect(!decoded.exportShadow)
         #expect(decoded.hotCorners == .standard)
         #expect(decoded.whiteboard == .standard)
     }

@@ -74,4 +74,18 @@ struct RectMathNudgeTests {
     @Test func emptyRectUnchanged() {
         #expect(RectMath.nudge(.zero, direction: .up, mode: .move, within: bounds) == .zero)
     }
+
+    // 固定比例下扩大：对面边固定，两轴按比例一起长
+    @Test func aspectExpandKeepsRatioAndOppositeEdge() {
+        let expanded = RectMath.nudge(
+            base,
+            direction: .up,
+            mode: .expand,
+            within: bounds,
+            aspectRatio: 2
+        )
+        #expect(abs(expanded.width / expanded.height - 2) < 0.001)
+        #expect(abs(expanded.minY - base.minY) < 0.001)
+        #expect(expanded.height > base.height)
+    }
 }

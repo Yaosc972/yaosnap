@@ -61,6 +61,11 @@ final class OverlayView: NSView {
     /// 新标注创建后是否自动选中，来自设置，默认开启。
     var autoSelectOnCreation = true
 
+    /// 选区宽高比，来自设置。改写后只刷新工具条上的比例标签。
+    var selectionAspectRatio: SelectionAspectRatio = .free {
+        didSet { toolbar.updateAspectRatio(selectionAspectRatio) }
+    }
+
     private static let maskAlpha: CGFloat = 0.32
     private static let minimumSelectionSide: CGFloat = 1
     /// 标注形状任一边长小于该值视为无效，丢弃。
@@ -110,7 +115,8 @@ final class OverlayView: NSView {
     private lazy var toolbar: AnnotateToolbar = {
         let bar = AnnotateToolbar(
             initialKind: toolStore.currentKind,
-            initialStyle: toolStore.currentStyle
+            initialStyle: toolStore.currentStyle,
+            initialAspectRatio: selectionAspectRatio
         )
         bar.onSelectTool = { [weak self] kind in self?.selectTool(kind) }
         bar.onSelectMode = { [weak self] in self?.enterSelectMode() }
@@ -120,6 +126,7 @@ final class OverlayView: NSView {
         bar.onScanBarcode = { [weak self] in self?.requestBarcodeScan() }
         bar.onSave = { [weak self] in self?.requestSave() }
         bar.onQuickSave = { [weak self] in self?.requestSave(quick: true) }
+        bar.onShare = { [weak self] in self?.requestShare() }
         bar.onCancel = { [weak self] in self?.requestCancel() }
         bar.isHidden = true
         return bar
@@ -335,12 +342,22 @@ final class OverlayView: NSView {
                 || abs(point.x - origin.x) >= Self.dragThreshold
                 || abs(point.y - origin.y) >= Self.dragThreshold else { return }
             phase = .selecting(origin: origin, freeDrag: true)
-            // 拖动即脱离窗口锁定：按起点与当前点重算自由选区。
-            // 鼠标可拖出视图范围，钳制后选区始终落在冻结帧内。
-            selectionRect = RectMath.clamp(
-                RectMath.normalizedRect(from: origin, to: point),
-                to: bounds
-            )
+            // 拖动即脱离窗口锁定：按起点与当前点重算选区，固定比例时按比例扩展。
+            // 鼠标可拖出视图范围，两种路径都把结果限制在冻结帧内。
+            if let ratio = selectionAspectRatio.value {
+                selectionRect = RectMath.aspectRect(
+                    from: origin,
+                    to: point,
+                    ratio: ratio,
+                    within: bounds,
+                    minimumSide: Self.minimumSelectionSide
+                )
+            } else {
+                selectionRect = RectMath.clamp(
+                    RectMath.normalizedRect(from: origin, to: point),
+                    to: bounds
+                )
+            }
             needsDisplay = true
         case .drawing(let origin):
             guard let canvas else { return }
@@ -883,7 +900,8 @@ final class OverlayView: NSView {
             direction: direction,
             mode: mode,
             within: bounds,
-            minimumSide: Self.minimumSelectionSide
+            minimumSide: Self.minimumSelectionSide,
+            aspectRatio: selectionAspectRatio.value
         )
         guard updated != selectionRect else { return }
         updateSelection(updated, annotationsFollowSelection: mode == .move)
@@ -1656,6 +1674,14 @@ final class OverlayView: NSView {
         )
     }
 
+    private func requestShare() {
+        NotificationCenter.default.post(
+            name: .snipShareRequested,
+            object: nil,
+            userInfo: [SnipNotificationKey.displayID: shot.displayID]
+        )
+    }
+
     private func requestTextRecognition() {
         NotificationCenter.default.post(
             name: .snipTextRecognizeRequested,
@@ -1975,6 +2001,7 @@ extension Notification.Name {
     static let snipEscapePressed = Notification.Name("snipEscapePressed")
     static let snipCommitted = Notification.Name("snipCommitted")
     static let snipCopyRequested = Notification.Name("snipCopyRequested")
+    static let snipShareRequested = Notification.Name("snipShareRequested")
     static let snipTextRecognizeRequested = Notification.Name("snipTextRecognizeRequested")
     static let snipBarcodeScanRequested = Notification.Name("snipBarcodeScanRequested")
     static let snipSaveRequested = Notification.Name("snipSaveRequested")

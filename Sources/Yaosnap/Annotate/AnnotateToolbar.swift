@@ -15,6 +15,7 @@ final class AnnotateToolbar: NSView {
     var onSave: (() -> Void)?
     /// ⌘ + 保存按钮：写快捷保存目录。
     var onQuickSave: (() -> Void)?
+    var onShare: (() -> Void)?
     var onCancel: (() -> Void)?
 
     private enum Metrics {
@@ -23,12 +24,14 @@ final class AnnotateToolbar: NSView {
         static let padding: CGFloat = 7
         static let separatorWidth: CGFloat = 1
         static let separatorGap: CGFloat = 6
+        static let ratioLabelWidth: CGFloat = 36
         static let height: CGFloat = buttonSide + padding * 2
         // 复杂表达式拆开，编译器在单表达式里推不动
         private static let toolRow: CGFloat = CGFloat(ShapeCatalog.p2.count) * buttonSide
             + CGFloat(ShapeCatalog.p2.count - 1) * spacing
         private static let styleRow: CGFloat = buttonSide * 3 + spacing * 2
-        private static let actionRow: CGFloat = buttonSide * 5 + spacing * 4
+        private static let actionRow: CGFloat = ratioLabelWidth + spacing
+            + buttonSide * 6 + spacing * 5
         private static let separators: CGFloat = (separatorGap + separatorWidth + separatorGap) * 3
         static let width: CGFloat = padding * 2 + buttonSide + toolRow + styleRow + actionRow + separators
     }
@@ -36,6 +39,7 @@ final class AnnotateToolbar: NSView {
     private(set) var selectedKind: ShapeKind = .rect
     private(set) var isSelectMode = false
     private(set) var currentStyle: Style
+    private let initialAspectRatio: SelectionAspectRatio
     private let paletteStore: PaletteStore
     private var paletteModel: PaletteModel
     /// 暴露给验收 harness 程序化点击。
@@ -47,6 +51,8 @@ final class AnnotateToolbar: NSView {
     private(set) var textButton: HoverButton!
     private(set) var barcodeButton: HoverButton!
     private(set) var saveButton: HoverButton!
+    private(set) var shareButton: HoverButton!
+    private(set) var ratioLabel: NSTextField!
     private(set) var colorPopover: NSPopover?
     private(set) var penPopover: NSPopover?
     /// 识别结果提示，盖在按钮上，1.6 秒后自动隐藏。
@@ -68,9 +74,15 @@ final class AnnotateToolbar: NSView {
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
     }
 
-    init(initialKind: ShapeKind, initialStyle: Style, paletteStore: PaletteStore = PaletteStore()) {
+    init(
+        initialKind: ShapeKind,
+        initialStyle: Style,
+        initialAspectRatio: SelectionAspectRatio = .free,
+        paletteStore: PaletteStore = PaletteStore()
+    ) {
         selectedKind = initialKind
         currentStyle = initialStyle
+        self.initialAspectRatio = initialAspectRatio
         self.paletteStore = paletteStore
         paletteModel = paletteStore.load()
         super.init(frame: NSRect(x: 0, y: 0, width: Metrics.width, height: Metrics.height))
@@ -101,6 +113,11 @@ final class AnnotateToolbar: NSView {
     func updateStyle(_ style: Style) {
         currentStyle = style
         refreshStyleButtons()
+    }
+
+    /// 选区比例变了只更新标签；拖拽数学由 OverlayView 持有设置值自行计算。
+    func updateAspectRatio(_ ratio: SelectionAspectRatio) {
+        ratioLabel.stringValue = ratio.title
     }
 
     /// 切到选择工具。形状按钮全部取消高亮。
@@ -158,6 +175,18 @@ final class AnnotateToolbar: NSView {
         lineStyleButton.contentTintColor = .white
         place(lineStyleButton)
         separator()
+        ratioLabel = NSTextField(labelWithString: initialAspectRatio.title)
+        ratioLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        ratioLabel.textColor = NSColor(white: 1, alpha: 0.7)
+        ratioLabel.alignment = .center
+        ratioLabel.frame = NSRect(
+            x: x,
+            y: Metrics.padding,
+            width: Metrics.ratioLabelWidth,
+            height: side
+        )
+        addSubview(ratioLabel)
+        x += Metrics.ratioLabelWidth + Metrics.spacing
         place(makeHoverButton(symbol: "doc.on.doc", title: "复制", action: #selector(copyTapped)))
         textButton = makeHoverButton(
             symbol: "text.viewfinder",
@@ -177,6 +206,12 @@ final class AnnotateToolbar: NSView {
             action: #selector(saveTapped)
         )
         place(saveButton)
+        shareButton = makeHoverButton(
+            symbol: "square.and.arrow.up",
+            title: "分享",
+            action: #selector(shareTapped)
+        )
+        place(shareButton)
         place(makeHoverButton(symbol: "xmark", title: "取消", action: #selector(cancelTapped)))
     }
 
@@ -427,6 +462,7 @@ final class AnnotateToolbar: NSView {
         }
     }
     @objc private func cancelTapped() { onCancel?() }
+    @objc private func shareTapped() { onShare?() }
 }
 
 /// 无边框图标按钮，带悬停高亮。工具条与弹层共用。

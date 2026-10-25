@@ -38,6 +38,8 @@ final class SnipController {
     /// 当前待输出选区，绑定提交它的屏幕。输出请求必须带同一 displayID。
     private var pendingRegion: PendingRegion?
     private var saveJob: SaveJob?
+    /// 系统分享面板。展示期间必须持有，否则回调前就被释放。
+    private var sharePicker: NSSharingServicePicker?
     /// 快捷保存根目录。验收 harness 注入临时目录，生产用 ~/Pictures/Yaosnap。
     var quickSaveDirectory: URL?
 
@@ -217,6 +219,7 @@ final class SnipController {
                 initialHistoryIndex: initialHistory
             )
             view.autoSelectOnCreation = settings.autoSelectOnCreation
+            view.selectionAspectRatio = settings.selectionAspectRatio
             if pickColor {
                 view.onPickColor = { [weak self] in self?.cancel() }
             }
@@ -281,6 +284,7 @@ final class SnipController {
         windows.removeAll()
         shots.removeAll()
         pendingRegion = nil
+        sharePicker = nil
     }
 
     // MARK: - 输出
@@ -337,7 +341,10 @@ final class SnipController {
 
     func copyPendingImage(_ notification: Notification) {
         guard let pending = validatedPending(for: notification, action: "复制") else { return }
-        guard let image = renderPendingOutput(pending) else {
+        guard let image = renderPendingOutput(
+            pending,
+            applyShadow: settingsStore.load().exportShadow
+        ) else {
             abortWithError("合成标注图像失败")
             return
         }
@@ -354,7 +361,10 @@ final class SnipController {
     func savePendingImage(_ notification: Notification) {
         guard saveJob == nil,
               let pending = validatedPending(for: notification, action: "保存") else { return }
-        guard let image = renderPendingOutput(pending) else {
+        guard let image = renderPendingOutput(
+            pending,
+            applyShadow: settingsStore.load().exportShadow
+        ) else {
             abortWithError("合成标注图像失败")
             return
         }
@@ -388,10 +398,39 @@ final class SnipController {
         }
     }
 
+    /// 分享：与复制同一张导出图，交给系统分享选择器。
+    func sharePendingImage(_ notification: Notification) {
+        guard let pending = validatedPending(for: notification, action: "分享") else { return }
+        guard let image = renderPendingOutput(
+            pending,
+            applyShadow: settingsStore.load().exportShadow
+        ) else {
+            abortWithError("合成标注图像失败")
+            return
+        }
+        let pointSize = CGSize(
+            width: CGFloat(image.width) / pending.scale,
+            height: CGFloat(image.height) / pending.scale
+        )
+        let shareImage = NSImage(cgImage: image, size: pointSize)
+        guard !NSSharingService.sharingServices(forItems: [shareImage]).isEmpty else {
+            print("[snip] 没有可用的分享服务")
+            NSSound.beep()
+            return
+        }
+        guard let view = overlayWindow(for: pending.displayID)?.contentView as? OverlayView else {
+            abortWithError("没有可用的覆盖窗口")
+            return
+        }
+        let picker = NSSharingServicePicker(items: [shareImage])
+        sharePicker = picker
+        picker.show(relativeTo: view.selectionRect, of: view, preferredEdge: .minY)
+    }
+
     /// 提取选区文字。Vision 在后台跑，识别完回主线程写剪贴板并提示。
     func recognizeTextPending(_ notification: Notification) {
         guard let pending = validatedPending(for: notification, action: "提取文字") else { return }
-        guard let image = renderPendingOutput(pending) else {
+        guard let image = renderPendingOutput(pending, applyShadow: false) else {
             NSSound.beep()
             return
         }
@@ -407,7 +446,7 @@ final class SnipController {
     /// 识别选区里的二维码 / 条形码。
     func scanBarcodePending(_ notification: Notification) {
         guard let pending = validatedPending(for: notification, action: "识别码") else { return }
-        guard let image = renderPendingOutput(pending) else {
+        guard let image = renderPendingOutput(pending, applyShadow: false) else {
             NSSound.beep()
             return
         }
@@ -619,15 +658,22 @@ final class SnipController {
         cancel()
     }
 
-    /// 复制 / 保存共用的最终图合成：输出源裁剪 + 该屏画布上的标注。
-    private func renderPendingOutput(_ pending: PendingRegion) -> CGImage? {
+    /// 复制 / 保存 / 分享共用的最终图合成：输出源裁剪 + 该屏画布上的标注。
+    /// 阴影边距按输出像素缩放，24pt / 12pt 在 Retina 上仍是观感一致的尺寸。
+    private func renderPendingOutput(_ pending: PendingRegion, applyShadow: Bool) -> CGImage? {
         let annotations = (overlayWindow(for: pending.displayID)?.contentView as? OverlayView)?
             .annotations ?? []
-        return AnnotationExport.flatten(
+        guard let rendered = AnnotationExport.flatten(
             base: pending.sourceImage,
             cropRectPx: pending.cropRectPx,
             annotations: annotations,
             scale: pending.scale
+        ) else { return nil }
+        guard applyShadow else { return rendered }
+        return ImageShadow.apply(
+            to: rendered,
+            margin: ImageShadow.defaultMargin * pending.scale,
+            blur: ImageShadow.defaultBlur * pending.scale
         )
     }
 

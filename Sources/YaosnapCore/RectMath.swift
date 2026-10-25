@@ -24,6 +24,48 @@ public enum RectMath {
         )
     }
 
+    /// 按固定宽高比从拖拽起点向外扩展。位移较大的轴决定尺寸，另一轴按比例推出；
+    /// 两边都不小于 minimumSide；放不下时等比缩小，缩到低于 minimumSide 返回 .zero。
+    public static func aspectRect(
+        from start: CGPoint,
+        to end: CGPoint,
+        ratio: CGFloat,
+        within bounds: CGRect,
+        minimumSide: CGFloat = 1
+    ) -> CGRect {
+        guard ratio > 0, ratio.isFinite else { return .zero }
+        let minSide = max(0, minimumSide)
+        let dx = end.x - start.x
+        let dy = end.y - start.y
+        let xSign: CGFloat = dx >= 0 ? 1 : -1
+        let ySign: CGFloat = dy >= 0 ? 1 : -1
+
+        var width: CGFloat
+        var height: CGFloat
+        if abs(dx) >= abs(dy) {
+            width = max(abs(dx), minSide, minSide * ratio)
+            height = width / ratio
+        } else {
+            height = max(abs(dy), minSide, minSide / ratio)
+            width = height * ratio
+        }
+
+        let availableX = xSign > 0 ? bounds.maxX - start.x : start.x - bounds.minX
+        let availableY = ySign > 0 ? bounds.maxY - start.y : start.y - bounds.minY
+        guard availableX > 0, availableY > 0 else { return .zero }
+        let fit = min(1, availableX / width, availableY / height)
+        width *= fit
+        height *= fit
+        guard width >= minSide, height >= minSide else { return .zero }
+
+        return CGRect(
+            x: xSign > 0 ? start.x : start.x - width,
+            y: ySign > 0 ? start.y : start.y - height,
+            width: width,
+            height: height
+        )
+    }
+
     /// 裁剪到边界内；完全不相交时返回 .zero
     public static func clamp(_ rect: CGRect, to bounds: CGRect) -> CGRect {
         let clipped = rect.intersection(bounds)
@@ -92,14 +134,26 @@ public enum RectMath {
 
     /// 方向键微调：平移 1pt，或向指定方向扩 / 缩 1pt。
     /// 结果始终落在 bounds 内，缩小时两边都不小于 minimumSide。
+    /// 给了 aspectRatio 时扩 / 缩保持该比例，平移不受影响。
     public static func nudge(
         _ rect: CGRect,
         direction: NudgeDirection,
         mode: NudgeMode,
         within bounds: CGRect,
-        minimumSide: CGFloat = 1
+        minimumSide: CGFloat = 1,
+        aspectRatio: CGFloat? = nil
     ) -> CGRect {
         guard !rect.isEmpty else { return rect }
+        if let ratio = aspectRatio, ratio > 0, ratio.isFinite, mode != .move {
+            return aspectNudge(
+                rect,
+                direction: direction,
+                mode: mode,
+                ratio: ratio,
+                within: bounds,
+                minimumSide: minimumSide
+            )
+        }
         var result = rect
         switch mode {
         case .move:
@@ -150,6 +204,62 @@ public enum RectMath {
             }
         }
         return result
+    }
+
+    /// 保持宽高比的扩 / 缩。改动的那条边对面固定，另一轴居中，尺寸由比例推出；
+    /// 最后只平移回 bounds，不改变尺寸。
+    private static func aspectNudge(
+        _ rect: CGRect,
+        direction: NudgeDirection,
+        mode: NudgeMode,
+        ratio: CGFloat,
+        within bounds: CGRect,
+        minimumSide: CGFloat
+    ) -> CGRect {
+        let minSide = max(0, minimumSide)
+        // 驱动轴的下限要反过来保证另一轴也够 minimumSide。
+        let drivenMinimum = direction == .up || direction == .down
+            ? max(minSide, minSide / ratio)
+            : max(minSide, minSide * ratio)
+
+        var size = rect.size
+        switch direction {
+        case .up, .down:
+            let target = mode == .expand ? rect.height + 1 : rect.height - 1
+            size.height = mode == .shrink ? max(drivenMinimum, target) : target
+            size.width = size.height * ratio
+        case .left, .right:
+            let target = mode == .expand ? rect.width + 1 : rect.width - 1
+            size.width = mode == .shrink ? max(drivenMinimum, target) : target
+            size.height = size.width / ratio
+        }
+        guard size.width > 0, size.height > 0 else { return rect }
+        // 竖直扩缩会带着宽度一起长，贴着屏幕边缘时可能超出 bounds，等比收回来。
+        let fit = min(1, bounds.width / size.width, bounds.height / size.height)
+        size.width *= fit
+        size.height *= fit
+        guard size.width >= minSide, size.height >= minSide else { return rect }
+
+        var origin = rect.origin
+        switch direction {
+        case .up:
+            origin.y = rect.minY
+        case .down:
+            origin.y = rect.maxY - size.height
+        case .left:
+            origin.x = rect.maxX - size.width
+        case .right:
+            origin.x = rect.minX
+        }
+        if direction == .up || direction == .down {
+            origin.x = rect.midX - size.width / 2
+        } else {
+            origin.y = rect.midY - size.height / 2
+        }
+
+        origin.x = clampedOrigin(origin.x, side: size.width, lower: bounds.minX, upper: bounds.maxX)
+        origin.y = clampedOrigin(origin.y, side: size.height, lower: bounds.minY, upper: bounds.maxY)
+        return CGRect(origin: origin, size: size)
     }
 
     private static func clampedOrigin(

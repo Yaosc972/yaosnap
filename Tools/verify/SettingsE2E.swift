@@ -99,6 +99,24 @@ final class SettingsHarness {
         check("hot-corner-toggle", store.load().hotCorners.enabled == !cornerBefore,
               "触发角开关写回 \(store.load().hotCorners.enabled)")
 
+        check("aspect-ratio-default", controller.aspectRatioPopup.titleOfSelectedItem == "自由",
+              "选区比例默认 \(controller.aspectRatioPopup.titleOfSelectedItem ?? "nil")")
+        controller.aspectRatioPopup.selectItem(withTitle: "16:9")
+        if let action = controller.aspectRatioPopup.action {
+            NSApp.sendAction(
+                action,
+                to: controller.aspectRatioPopup.target,
+                from: controller.aspectRatioPopup
+            )
+        }
+        check("aspect-ratio-write", store.load().selectionAspectRatio == .sixteenNine,
+              "选区比例写回 \(store.load().selectionAspectRatio.rawValue)")
+
+        let shadowBefore = store.load().exportShadow
+        controller.shadowCheckbox.performClick(nil)
+        check("shadow-toggle", store.load().exportShadow == !shadowBefore,
+              "导出阴影写回 \(store.load().exportShadow)")
+
         guard let topLeft = controller.hotCornerBoxes[.topLeft] else {
             fail("hot-corner-boxes", "缺少左上角复选框")
             return summarize()

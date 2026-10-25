@@ -62,6 +62,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.addObserver(
             self, selector: #selector(handleSnipCopy(_:)), name: .snipCopyRequested, object: nil)
         NotificationCenter.default.addObserver(
+            self, selector: #selector(handleSnipShare(_:)), name: .snipShareRequested, object: nil)
+        NotificationCenter.default.addObserver(
             self, selector: #selector(handleSnipSave(_:)), name: .snipSaveRequested, object: nil)
         print("Yaosnap launched")
         settings = settingsStore.load()
@@ -170,6 +172,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func handleSnipCopy(_ notification: Notification) {
         snipController.copyPendingImage(notification)
+    }
+
+    @objc private func handleSnipShare(_ notification: Notification) {
+        snipController.sharePendingImage(notification)
     }
 
     @objc private func handleSnipSave(_ notification: Notification) {

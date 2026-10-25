@@ -39,6 +39,8 @@ public struct Settings: Equatable, Codable {
     public var quickSaveDirectory: String?
     public var restoreCapacity: Int
     public var autoSelectOnCreation: Bool
+    public var selectionAspectRatio: SelectionAspectRatio
+    public var exportShadow: Bool
     public var hotCorners: HotCornerSettings
     public var whiteboard: WhiteboardSettings
 
@@ -50,6 +52,8 @@ public struct Settings: Equatable, Codable {
         quickSaveDirectory: String? = nil,
         restoreCapacity: Int = Settings.defaultRestoreCapacity,
         autoSelectOnCreation: Bool = true,
+        selectionAspectRatio: SelectionAspectRatio = .free,
+        exportShadow: Bool = false,
         hotCorners: HotCornerSettings = .standard,
         whiteboard: WhiteboardSettings = .standard
     ) {
@@ -60,6 +64,8 @@ public struct Settings: Equatable, Codable {
         self.quickSaveDirectory = quickSaveDirectory
         self.restoreCapacity = restoreCapacity
         self.autoSelectOnCreation = autoSelectOnCreation
+        self.selectionAspectRatio = selectionAspectRatio
+        self.exportShadow = exportShadow
         self.hotCorners = hotCorners
         self.whiteboard = whiteboard
     }
@@ -72,6 +78,8 @@ public struct Settings: Equatable, Codable {
         case quickSaveDirectory
         case restoreCapacity
         case autoSelectOnCreation
+        case selectionAspectRatio
+        case exportShadow
         case hotCorners
         case whiteboard
     }
@@ -86,6 +94,10 @@ public struct Settings: Equatable, Codable {
         quickSaveDirectory = try container.decodeIfPresent(String.self, forKey: .quickSaveDirectory)
         restoreCapacity = try container.decode(Int.self, forKey: .restoreCapacity)
         autoSelectOnCreation = try container.decode(Bool.self, forKey: .autoSelectOnCreation)
+        selectionAspectRatio = try container.decodeIfPresent(
+            SelectionAspectRatio.self, forKey: .selectionAspectRatio
+        ) ?? .free
+        exportShadow = try container.decodeIfPresent(Bool.self, forKey: .exportShadow) ?? false
         hotCorners = try container.decodeIfPresent(HotCornerSettings.self, forKey: .hotCorners) ?? .standard
         whiteboard = try container.decodeIfPresent(WhiteboardSettings.self, forKey: .whiteboard) ?? .standard
     }

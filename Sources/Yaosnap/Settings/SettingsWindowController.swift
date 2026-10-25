@@ -126,6 +126,8 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate, N
     let restoreCapacityField = NSTextField()
     let restoreCapacityStepper = NSStepper()
     let autoSelectCheckbox = NSButton(checkboxWithTitle: "创建后自动选中", target: nil, action: nil)
+    let aspectRatioPopup = NSPopUpButton()
+    let shadowCheckbox = NSButton(checkboxWithTitle: "保存 / 复制时添加", target: nil, action: nil)
     let hotCornerCheckbox = NSButton(checkboxWithTitle: "启用", target: nil, action: nil)
     private(set) var hotCornerBoxes: [ScreenCorner: NSButton] = [:]
     let dwellField = NSTextField()
@@ -246,6 +248,19 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate, N
         autoSelectCheckbox.action = #selector(autoSelectToggled)
         rows.append([autoSelectTitle, autoSelectCheckbox])
 
+        let aspectTitle = NSTextField(labelWithString: "选区比例")
+        aspectTitle.alignment = .right
+        aspectRatioPopup.addItems(withTitles: SelectionAspectRatio.allCases.map(\.title))
+        aspectRatioPopup.target = self
+        aspectRatioPopup.action = #selector(aspectRatioChanged)
+        rows.append([aspectTitle, aspectRatioPopup])
+
+        let shadowTitle = NSTextField(labelWithString: "导出阴影")
+        shadowTitle.alignment = .right
+        shadowCheckbox.target = self
+        shadowCheckbox.action = #selector(shadowToggled)
+        rows.append([shadowTitle, shadowCheckbox])
+
         let cornerTitle = NSTextField(labelWithString: "触发角")
         cornerTitle.alignment = .right
         hotCornerCheckbox.target = self
@@ -334,6 +349,10 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate, N
         restoreCapacityField.integerValue = settings.restoreCapacity
         restoreCapacityStepper.integerValue = settings.restoreCapacity
         autoSelectCheckbox.state = settings.autoSelectOnCreation ? .on : .off
+        if let index = SelectionAspectRatio.allCases.firstIndex(of: settings.selectionAspectRatio) {
+            aspectRatioPopup.selectItem(at: index)
+        }
+        shadowCheckbox.state = settings.exportShadow ? .on : .off
         hotCornerCheckbox.state = settings.hotCorners.enabled ? .on : .off
         for (corner, box) in hotCornerBoxes {
             box.state = settings.hotCorners.corners.contains(corner) ? .on : .off
@@ -398,6 +417,18 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate, N
 
     @objc private func autoSelectToggled() {
         settings.autoSelectOnCreation = autoSelectCheckbox.state == .on
+        apply()
+    }
+
+    @objc private func aspectRatioChanged() {
+        let index = aspectRatioPopup.indexOfSelectedItem
+        guard SelectionAspectRatio.allCases.indices.contains(index) else { return }
+        settings.selectionAspectRatio = SelectionAspectRatio.allCases[index]
+        apply()
+    }
+
+    @objc private func shadowToggled() {
+        settings.exportShadow = shadowCheckbox.state == .on
         apply()
     }
 

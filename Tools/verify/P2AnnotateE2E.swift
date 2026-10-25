@@ -2541,6 +2541,89 @@ final class AnnotateHarness {
         endSession()
     }
 
+    /// 设置里选了 16:9 后，拖出的选区保持该比例，工具条标签同步。
+    private func runAspectRatio() {
+        let suite = "yaosnap.p2.aspect.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suite) else {
+            fail("ASPECT-RATIO", "无法创建测试 UserDefaults suite")
+            return
+        }
+        defaults.removePersistentDomain(forName: suite)
+        let store = SettingsStore(defaults: defaults)
+        var settings = store.load()
+        settings.selectionAspectRatio = .sixteenNine
+        store.save(settings)
+        controller.settingsStore = store
+        defer {
+            controller.settingsStore = SettingsStore()
+            defaults.removePersistentDomain(forName: suite)
+        }
+
+        guard let (window, view) = beginSession("ASPECT-RATIO") else { return }
+        drag(view, window: window, from: CGPoint(x: 100, y: 100), to: CGPoint(x: 800, y: 500))
+        let rect = view.selectionRect
+        let target = 16.0 / 9.0
+        let deviation = abs(rect.width / rect.height - target) / target
+        if deviation <= 0.01 {
+            pass("ASPECT-RATIO", "选区 \(rect) 比例偏差 \(String(format: "%.4f", deviation))")
+        } else {
+            fail("ASPECT-RATIO", "选区 \(rect) 比例 \(rect.width / rect.height) 偏离 16:9")
+        }
+
+        guard let bar = view.subviews.compactMap({ $0 as? AnnotateToolbar }).first else {
+            fail("ASPECT-RATIO-LABEL", "覆盖视图里没有 AnnotateToolbar")
+            endSession()
+            return
+        }
+        if bar.ratioLabel.stringValue == "16:9" {
+            pass("ASPECT-RATIO-LABEL", "工具条比例标签为 16:9")
+        } else {
+            fail("ASPECT-RATIO-LABEL", "比例标签为 \(bar.ratioLabel.stringValue)")
+        }
+        endSession()
+    }
+
+    /// 导出阴影开关前后，同一选区复制的剪贴板图像四周各多出一圈边距。
+    private func runShadowExport() {
+        let suite = "yaosnap.p2.shadow.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suite) else {
+            fail("SHADOW-EXPORT", "无法创建测试 UserDefaults suite")
+            return
+        }
+        defaults.removePersistentDomain(forName: suite)
+        let store = SettingsStore(defaults: defaults)
+        controller.settingsStore = store
+        defer {
+            controller.settingsStore = SettingsStore()
+            defaults.removePersistentDomain(forName: suite)
+        }
+
+        func copiedSize(_ id: String) -> (Int, Int)? {
+            guard let (window, view) = beginSession(id) else { return nil }
+            drag(view, window: window, from: CGPoint(x: 150, y: 150), to: CGPoint(x: 450, y: 350))
+            NSPasteboard.general.clearContents()
+            keyDown(36, characters: "\r", in: window, view: view)
+            defer { endSession() }
+            guard let image = pasteboardImage() else {
+                fail(id, "剪贴板没有图像")
+                return nil
+            }
+            return (image.width, image.height)
+        }
+
+        guard let plain = copiedSize("SHADOW-OFF") else { return }
+        var settings = store.load()
+        settings.exportShadow = true
+        store.save(settings)
+        guard let shadowed = copiedSize("SHADOW-ON") else { return }
+
+        if shadowed.0 > plain.0, shadowed.1 > plain.1 {
+            pass("SHADOW-EXPORT", "无边距 \(plain.0)x\(plain.1) -> 加阴影 \(shadowed.0)x\(shadowed.1)")
+        } else {
+            fail("SHADOW-EXPORT", "加阴影后尺寸未变大 \(plain.0)x\(plain.1) -> \(shadowed.0)x\(shadowed.1)")
+        }
+    }
+
     func runAll() {
         if !ScreenCaptureService.hasPermission() {
             print("FATAL 屏幕录制权限缺失，无法执行标注验收")
@@ -2557,6 +2640,8 @@ final class AnnotateHarness {
         runUndo()
         runRedo()
         runQuickSave()
+        runAspectRatio()
+        runShadowExport()
         runRecognition()
         runSerialTool()
         runBlurTool()
