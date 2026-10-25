@@ -32,6 +32,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // 设置里开着 UI 元素检测但还没授权时，启动就请求一次；
+        // 不请求的话「辅助功能」列表里根本没有本应用，用户无从勾选。
+        if settingsStore.load().detectUIElements, !UIElementDetector.isTrusted {
+            _ = UIElementDetector.requestTrust()
+        }
+        print("[ax] trusted=\(UIElementDetector.isTrusted) detectUI=\(settingsStore.load().detectUIElements)")
         statusItemController = StatusItemController(
             onSnip: snipController.start,
             onPin: { [pinController] in pinController.pinFromPasteboard() },
