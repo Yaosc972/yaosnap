@@ -2836,6 +2836,29 @@ final class AnnotateHarness {
         endSession()
     }
 
+    /// 选区确定后拖右边缘调整大小：宽度变大，左边界不动。
+    private func runSelectionResize() {
+        guard let (window, view) = beginSession("SELECTION-RESIZE") else { return }
+        drag(view, window: window, from: CGPoint(x: 200, y: 200), to: CGPoint(x: 700, y: 600))
+        let original = view.selectionRect
+        // 右边缘中点按下，向右再拖 100pt。
+        press(view, window: window, path: [
+            CGPoint(x: original.maxX, y: original.midY),
+            CGPoint(x: original.maxX + 100, y: original.midY),
+        ])
+        let resized = view.selectionRect
+        guard resized.width > original.width, resized.minX == original.minX else {
+            fail("SELECTION-RESIZE", "右缘拖动 \(original) → \(resized)，期望宽度变大且 minX 不变")
+            endSession()
+            return
+        }
+        pass(
+            "SELECTION-RESIZE",
+            "右缘拖动 \(original.size) → \(resized.size)，minX 保持 \(resized.minX)"
+        )
+        endSession()
+    }
+
     /// 设置里选了 16:9 后，拖出的选区保持该比例，工具条标签同步。
     private func runAspectRatio() {
         let suite = "yaosnap.p2.aspect.\(UUID().uuidString)"
@@ -3048,6 +3071,7 @@ final class AnnotateHarness {
         runLineStyleDash()
         runArrowHeads()
         runShapeResizeHandle()
+        runSelectionResize()
         runWhiteboardMode()
 
         print("SUMMARY passes=\(passes) failures=\(failures)")

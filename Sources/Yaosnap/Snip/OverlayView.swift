@@ -19,7 +19,8 @@ final class OverlayView: NSView {
     /// 按下点，originals 是按下时每个形状，拖动全程按它平移）；marquee 在选择模式下拖框选
     /// （base 是追加框选前的集合）；resizingText / rotatingText
     /// 在拖文字控制点（center 是未旋转包围盒中心，original 是按下时的形状）；
-    /// resizingShape 在拖面状形状的四角（recorded 表示这次拖动已压过撤销栈）。
+    /// resizingShape 在拖面状形状的四角（recorded 表示这次拖动已压过撤销栈）；
+    /// resizingSelection 在拖选区边缘或四角（original 是按下时的选区，用于标注位置补偿）。
     private enum Phase {
         case idle
         case selecting(origin: CGPoint, freeDrag: Bool)
@@ -41,6 +42,8 @@ final class OverlayView: NSView {
         case resizingText(id: UUID, corner: TextHandle, original: Shape, center: CGPoint)
         case rotatingText(id: UUID, original: Shape, center: CGPoint)
         case resizingShape(id: UUID, corner: ShapeHandle, original: Shape, recorded: Bool)
+        /// 在拖选区边缘或四角：edge 决定改哪条边，original 是按下时的选区。
+        case resizingSelection(edge: SelectionEdge, original: CGRect)
     }
 
     /// 工具模式。select 时鼠标只做选中与移动，不落新形状；draw 时行为与之前一致。
@@ -60,7 +63,13 @@ final class OverlayView: NSView {
     /// 是否开启元素吸附，来自设置。
     var elementDetectionEnabled = false
     /// 当前选区（视图坐标，左下原点）。空矩形表示尚未选中。
-    private(set) var selectionRect: CGRect = .zero
+    /// 变化后刷新光标区域：边缘与四角的 cursor rect 跟着新边界走。
+    private(set) var selectionRect: CGRect = .zero {
+        didSet {
+            guard selectionRect != oldValue else { return }
+            window?.invalidateCursorRects(for: self)
+        }
+    }
 
     /// 是否显示十字光标。保存面板等场景由控制器临时关闭。
     var showsCrosshair = true {
@@ -85,6 +94,10 @@ final class OverlayView: NSView {
     private static let dragThreshold: CGFloat = 3
     /// 选择工具命中测试的容差：细线条点击偏几个点也能选中。
     private static let hitTolerance: CGFloat = 4
+    /// 选区边缘拖拽的命中容差：贴边几 pt 内即可调整大小，内部深按仍走画标注。
+    private static let selectionEdgeHitTolerance: CGFloat = 4
+    /// 选区边缘光标热区的边长。
+    private static let selectionCursorSize: CGFloat = 6
     /// 文字与面状形状控制点共用的命中半径。比绘制的方块略大，按下不要求像素级精确。
     private static let handleHitRadius: CGFloat = 8
     /// 文字编辑器的最小宽度。选区右侧不够宽时向右溢出，保证插入点始终可输入。
@@ -229,6 +242,42 @@ final class OverlayView: NSView {
         if showsCrosshair {
             addCursorRect(bounds, cursor: .crosshair)
         }
+        guard !selectionRect.isEmpty else { return }
+        let half = Self.selectionCursorSize / 2
+        for edge in SelectionEdge.allCases {
+            let center = cursorCenter(for: edge)
+            let rect = CGRect(
+                x: center.x - half,
+                y: center.y - half,
+                width: Self.selectionCursorSize,
+                height: Self.selectionCursorSize
+            ).intersection(bounds)
+            guard !rect.isNull, !rect.isEmpty else { continue }
+            addCursorRect(rect, cursor: cursor(for: edge))
+        }
+    }
+
+    /// 边缘光标热区的中心：四条边取中点，四个角取角点。
+    private func cursorCenter(for edge: SelectionEdge) -> CGPoint {
+        switch edge {
+        case .top: return CGPoint(x: selectionRect.midX, y: selectionRect.maxY)
+        case .bottom: return CGPoint(x: selectionRect.midX, y: selectionRect.minY)
+        case .left: return CGPoint(x: selectionRect.minX, y: selectionRect.midY)
+        case .right: return CGPoint(x: selectionRect.maxX, y: selectionRect.midY)
+        case .topLeft: return CGPoint(x: selectionRect.minX, y: selectionRect.maxY)
+        case .topRight: return CGPoint(x: selectionRect.maxX, y: selectionRect.maxY)
+        case .bottomLeft: return CGPoint(x: selectionRect.minX, y: selectionRect.minY)
+        case .bottomRight: return CGPoint(x: selectionRect.maxX, y: selectionRect.minY)
+        }
+    }
+
+    /// 四角没有公开的斜角光标，统一复用左右箭头；边按方向取上下 / 左右。
+    private func cursor(for edge: SelectionEdge) -> NSCursor {
+        switch edge {
+        case .top, .bottom: return .resizeUpDown
+        case .left, .right, .topLeft, .topRight, .bottomLeft, .bottomRight:
+            return .resizeLeftRight
+        }
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -286,6 +335,15 @@ final class OverlayView: NSView {
                 requestCopy()
                 return
             }
+            // 边缘命中优先于"选区外重画"：贴边按下是调整大小，不是新选区。
+            if let edge = SelectionEdge.hit(
+                point: point,
+                in: selectionRect,
+                tolerance: Self.selectionEdgeHitTolerance
+            ) {
+                phase = .resizingSelection(edge: edge, original: selectionRect)
+                return
+            }
             guard selectionRect.contains(point) else {
                 // 选区外按下：清空标注并重画选区
                 removeCanvas()
@@ -320,6 +378,15 @@ final class OverlayView: NSView {
                 beginShapeHandleDrag(hit)
                 return
             }
+            // 形状控制点优先；其后才是选区边缘，最后才判"点在选区外"重画。
+            if let edge = SelectionEdge.hit(
+                point: point,
+                in: selectionRect,
+                tolerance: Self.selectionEdgeHitTolerance
+            ) {
+                phase = .resizingSelection(edge: edge, original: selectionRect)
+                return
+            }
             guard selectionRect.contains(point) else {
                 removeCanvas()
                 beginSelection(at: point)
@@ -346,7 +413,7 @@ final class OverlayView: NSView {
         case .editing:
             commitTextEditing()
         case .selecting, .drawing, .moving, .marquee,
-             .resizingText, .rotatingText, .resizingShape:
+             .resizingText, .rotatingText, .resizingShape, .resizingSelection:
             break // 已有按压，忽略重入
         }
     }
@@ -490,6 +557,17 @@ final class OverlayView: NSView {
                 phase = .resizingShape(id: id, corner: corner, original: original, recorded: true)
             }
             canvas.annotations[index].shape = original.resized(to: box)
+        case .resizingSelection(let edge, let original):
+            // 只改命中的边；标注画布在 mouseUp 时统一补偿，拖动中保持原位。
+            selectionRect = SelectionEdge.resized(
+                original,
+                edge: edge,
+                to: point,
+                minimum: Self.minimumSelectionSide,
+                within: bounds
+            )
+            updateActionBar()
+            needsDisplay = true
         case .idle, .ready, .polylineEditing, .editing, .selected:
             break
         }
@@ -550,6 +628,19 @@ final class OverlayView: NSView {
         case .resizingShape(let id, _, _, _):
             phase = .selected(ids: [id])
             canvas?.selectedIDs = [id]
+        case .resizingSelection(_, let original):
+            // 先按最终边界对齐，再抵消选区左下角位移：已画标注保持屏幕原位。
+            selectionRect = selectionRect.integral
+            let delta = CGPoint(
+                x: original.minX - selectionRect.minX,
+                y: original.minY - selectionRect.minY
+            )
+            if delta != .zero {
+                canvas?.translateAnnotations(by: delta)
+            }
+            // commitSelection 会回到 ready，选中高亮不再有意义，一并清掉。
+            canvas?.selectedIDs = []
+            commitSelection()
         case .idle, .ready, .polylineEditing, .editing, .selected:
             break // ready 下单击保留选区，等待 Enter / 双击 / ⌘S
         }
@@ -889,7 +980,7 @@ final class OverlayView: NSView {
         switch phase {
         case .ready, .selected, .moving: return true
         case .idle, .selecting, .drawing, .polylineEditing, .editing, .marquee,
-             .resizingText, .rotatingText, .resizingShape: return false
+             .resizingText, .rotatingText, .resizingShape, .resizingSelection: return false
         }
     }
 
@@ -898,7 +989,7 @@ final class OverlayView: NSView {
         switch phase {
         case .ready, .selected: return true
         case .idle, .selecting, .drawing, .polylineEditing, .editing, .moving, .marquee,
-             .resizingText, .rotatingText, .resizingShape: return false
+             .resizingText, .rotatingText, .resizingShape, .resizingSelection: return false
         }
     }
 
@@ -907,7 +998,7 @@ final class OverlayView: NSView {
         switch phase {
         case .ready, .selected: return true
         case .idle, .selecting, .drawing, .polylineEditing, .editing, .moving, .marquee,
-             .resizingText, .rotatingText, .resizingShape: return false
+             .resizingText, .rotatingText, .resizingShape, .resizingSelection: return false
         }
     }
 
@@ -1285,7 +1376,13 @@ final class OverlayView: NSView {
     private func commitSelection() {
         selectionRect = selectionRect.integral
         phase = .ready
-        setupCanvas()
+        if let canvas {
+            // 已有画布（边缘调整后重新确定）：保留已画标注，只同步尺寸与截图原点。
+            canvas.frame = selectionRect
+            canvas.updateCropOrigin(cropOriginPx(for: selectionRect))
+        } else {
+            setupCanvas()
+        }
         publishSelection()
         updateActionBar()
     }
