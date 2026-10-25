@@ -14,6 +14,20 @@ final class PinWindow: NSWindow {
     /// 初始适配到屏幕 80% 后的尺寸。transform.scale 从 1 起，首次变换才不会跳回原图尺寸。
     let basePointSize: CGSize
 
+    /// 每次裁剪前的保留区域，⌘Z 逐级退回。原始的 pasteImage 始终未改动。
+    private var cropHistory: [CGRect?] = []
+    private var imageCache: (key: ImageKey, image: CGImage, pointSize: CGSize)?
+
+    private struct ImageKey: Equatable {
+        let crop: CGRect?
+        let grayscale: Bool
+        let inverted: Bool
+    }
+
+    private var pixelSize: CGSize {
+        CGSize(width: pasteImage.image.width, height: pasteImage.image.height)
+    }
+
     /// topLeft 使用主屏左上角为原点的屏幕坐标（y 向下），与 CLI 的 --pos 一致。
     init(
         pasteImage: PasteImage,
@@ -62,7 +76,7 @@ final class PinWindow: NSWindow {
         configureWindow()
 
         pinView.baseSize = size
-        pinView.image = NSImage(cgImage: pasteImage.image, size: pasteImage.pointSize)
+        refreshImage()
     }
 
     /// 从恢复列表重建。frame 与 transform 都取关闭时的原值，尺寸不再重新适配屏幕。
@@ -79,8 +93,7 @@ final class PinWindow: NSWindow {
         configureWindow()
         transform = entry.transform
         alphaValue = entry.transform.opacity
-        pinView.baseSize = entry.basePointSize
-        pinView.image = NSImage(cgImage: pasteImage.image, size: pasteImage.pointSize)
+        refreshImage()
         pinView.transform = entry.transform
         pinView.needsDisplay = true
     }
@@ -145,24 +158,99 @@ final class PinWindow: NSWindow {
         applyTransform()
     }
 
-    func resetTransform() {
-        transform.reset()
+    func toggleGrayscale() {
+        transform.toggleGrayscale()
         applyTransform()
     }
 
-    /// 以当前中心为锚重设尺寸，再保证窗口留在屏幕可见区域。
-    private func applyTransform() {
+    func toggleInverted() {
+        transform.toggleInverted()
+        applyTransform()
+    }
+
+    func resetTransform() {
+        transform.reset()
+        cropHistory.removeAll()
+        applyTransform()
+    }
+
+    /// 裁剪只改 transform 里的保留区域，原图不复制也不删。窗口左上角保持不动。
+    @discardableResult
+    func applyCrop(viewSelection: CGRect) -> Bool {
+        guard !transform.isThumbnail,
+              let selection = PinCrop.clampedSelection(viewSelection, in: pinView.bounds),
+              let rect = PinCrop.pixelRect(
+                  fromViewRect: selection,
+                  viewSize: pinView.bounds.size,
+                  imagePixelSize: pixelSize,
+                  transform: transform,
+                  basePointSize: basePointSize
+              ) else { return false }
+        cropHistory.append(transform.cropRect)
+        transform.setCrop(rect)
+        applyTransform(anchor: .topLeft)
+        return true
+    }
+
+    @discardableResult
+    func undoLastCrop() -> Bool {
+        guard let previous = cropHistory.popLast() else { return false }
+        transform.setCrop(previous)
+        applyTransform(anchor: .topLeft)
+        return true
+    }
+
+    /// 效果与裁剪都烘进同一张显示图，导出走同一份成品，而不是在视图上叠滤镜。
+    private func refreshImage() {
+        let key = ImageKey(
+            crop: transform.cropRect,
+            grayscale: transform.isGrayscale,
+            inverted: transform.isInverted
+        )
+        if imageCache?.key != key {
+            imageCache = (
+                key,
+                PinImageEffects.render(
+                    pasteImage.image,
+                    crop: key.crop,
+                    grayscale: key.grayscale,
+                    inverted: key.inverted
+                ),
+                transform.displayedSize(original: pasteImage.pointSize, imagePixelSize: pixelSize)
+            )
+        }
+        guard let imageCache else { return }
+        pinView.image = NSImage(cgImage: imageCache.image, size: imageCache.pointSize)
+        pinView.baseSize = transform.displayedSize(
+            original: basePointSize,
+            imagePixelSize: pixelSize
+        )
+    }
+
+    private enum Anchor {
+        case center
+        case topLeft
+    }
+
+    /// 以当前中心（裁剪时以左上角）为锚重设尺寸，再保证窗口留在屏幕可见区域。
+    private func applyTransform(anchor: Anchor = .center) {
         pinView.transform = transform
-        let size = transform.windowSize(base: basePointSize)
-        let center = CGPoint(x: frame.midX, y: frame.midY)
+        refreshImage()
+        let size = transform.windowSize(base: pinView.baseSize)
+        let oldFrame = frame
         alphaValue = transform.opacity
+        let origin: CGPoint
+        switch anchor {
+        case .center:
+            origin = CGPoint(
+                x: floor(oldFrame.midX - size.width / 2),
+                y: floor(oldFrame.midY - size.height / 2)
+            )
+        case .topLeft:
+            origin = CGPoint(x: oldFrame.minX, y: oldFrame.maxY - size.height)
+        }
         setFrame(
-            CGRect(
-                x: floor(center.x - size.width / 2),
-                y: floor(center.y - size.height / 2),
-                width: size.width,
-                height: size.height
-            ),
+            CGRect(origin: origin, size: size),
             display: true
         )
         pinView.needsDisplay = true
@@ -191,6 +279,9 @@ private final class PinContentView: NSView {
     private var dragStart: NSPoint?
     private var windowStart: NSPoint?
     private var resizeState: ResizeState?
+    private var isCropping = false
+    private var cropStart: CGPoint?
+    private var cropSelection: CGRect?
 
     private let hotZone: CGFloat = 8
 
@@ -257,10 +348,58 @@ private final class PinContentView: NSView {
             height: size.height
         ))
         context.restoreGState()
+        drawCropOverlay(context)
+    }
+
+    /// 裁剪模式下压暗保留区之外，并画出选择框与操作提示。
+    private func drawCropOverlay(_ context: CGContext) {
+        guard isCropping else { return }
+        let dim = NSColor.black.withAlphaComponent(0.45).cgColor
+        context.setFillColor(dim)
+        if let selection = cropSelection, selection.width > 0, selection.height > 0 {
+            let outside = [
+                CGRect(x: 0, y: 0, width: bounds.width, height: selection.minY),
+                CGRect(x: 0, y: selection.maxY, width: bounds.width, height: bounds.height - selection.maxY),
+                CGRect(x: 0, y: selection.minY, width: selection.minX, height: selection.height),
+                CGRect(x: selection.maxX, y: selection.minY, width: bounds.width - selection.maxX, height: selection.height)
+            ]
+            for rect in outside where rect.width > 0 && rect.height > 0 {
+                context.fill(rect)
+            }
+            // 白线外再压一圈深色，浅色贴图上也能看清边界。
+            context.setStrokeColor(NSColor.white.cgColor)
+            context.setLineWidth(1)
+            context.stroke(selection.insetBy(dx: 0.5, dy: 0.5))
+            context.setStrokeColor(NSColor.black.withAlphaComponent(0.6).cgColor)
+            context.stroke(selection.insetBy(dx: 1.5, dy: 1.5))
+        } else {
+            context.fill(bounds)
+        }
+        let hint = (isCropping && cropSelection == nil)
+            ? "拖动选择保留区域，Esc 取消"
+            : "松开确认，Esc 取消"
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 12, weight: .medium),
+            .foregroundColor: NSColor.white
+        ]
+        let text = hint as NSString
+        let textSize = text.size(withAttributes: attributes)
+        text.draw(
+            at: CGPoint(x: (bounds.width - textSize.width) / 2, y: bounds.height - textSize.height - 12),
+            withAttributes: attributes
+        )
     }
 
     override func mouseDown(with event: NSEvent) {
         guard let pinWindow = window as? PinWindow else { return }
+        pinWindow.makeKey()
+        let point = convert(event.locationInWindow, from: nil)
+        if isCropping {
+            cropStart = point
+            cropSelection = nil
+            needsDisplay = true
+            return
+        }
         if event.clickCount == 2 {
             if event.modifierFlags.contains(.shift) {
                 pinWindow.toggleThumbnail()
@@ -269,8 +408,6 @@ private final class PinContentView: NSView {
             }
             return
         }
-        pinWindow.makeKey()
-        let point = convert(event.locationInWindow, from: nil)
         if let edge = edge(at: point) {
             beginResize(edge, in: pinWindow)
             return
@@ -282,6 +419,18 @@ private final class PinContentView: NSView {
 
     override func mouseDragged(with event: NSEvent) {
         guard let pinWindow = window as? PinWindow else { return }
+        if isCropping {
+            guard let cropStart else { return }
+            let current = convert(event.locationInWindow, from: nil)
+            cropSelection = CGRect(
+                x: min(cropStart.x, current.x),
+                y: min(cropStart.y, current.y),
+                width: abs(current.x - cropStart.x),
+                height: abs(current.y - cropStart.y)
+            ).intersection(bounds)
+            needsDisplay = true
+            return
+        }
         if let resizeState {
             updateResize(resizeState, in: pinWindow, mouse: NSEvent.mouseLocation)
             return
@@ -295,9 +444,68 @@ private final class PinContentView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
+        if isCropping {
+            let selection = cropSelection
+            endCropMode()
+            guard let selection, selection.width >= 1, selection.height >= 1,
+                  let pinWindow = window as? PinWindow else { return }
+            pinWindow.applyCrop(viewSelection: selection)
+            return
+        }
         dragStart = nil
         windowStart = nil
         resizeState = nil
+    }
+
+    private func beginCrop() {
+        guard !transform.isThumbnail, let pinWindow = window as? PinWindow else { return }
+        pinWindow.makeKey()
+        isCropping = true
+        cropStart = nil
+        cropSelection = nil
+        needsDisplay = true
+        window?.invalidateCursorRects(for: self)
+        NSCursor.crosshair.set()
+    }
+
+    private func endCropMode() {
+        isCropping = false
+        cropStart = nil
+        cropSelection = nil
+        needsDisplay = true
+        window?.invalidateCursorRects(for: self)
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        guard window is PinWindow else { return nil }
+        let menu = NSMenu()
+        menu.addItem(effectItem(title: "灰度", isOn: transform.isGrayscale, action: #selector(toggleGrayscaleFromMenu)))
+        menu.addItem(effectItem(title: "反色", isOn: transform.isInverted, action: #selector(toggleInvertedFromMenu)))
+        menu.addItem(.separator())
+        let crop = NSMenuItem(title: "裁剪", action: #selector(beginCropFromMenu), keyEquivalent: "")
+        crop.target = self
+        crop.isEnabled = !transform.isThumbnail
+        menu.addItem(crop)
+        return menu
+    }
+
+    private func effectItem(title: String, isOn: Bool, action: Selector) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        item.target = self
+        item.state = isOn ? .on : .off
+        return item
+    }
+
+    @objc private func toggleGrayscaleFromMenu() {
+        (window as? PinWindow)?.toggleGrayscale()
+    }
+
+    @objc private func toggleInvertedFromMenu() {
+        (window as? PinWindow)?.toggleInverted()
+    }
+
+    @objc private func beginCropFromMenu() {
+        beginCrop()
     }
 
     override func otherMouseDown(with event: NSEvent) {
@@ -325,7 +533,9 @@ private final class PinContentView: NSView {
             return
         }
         if event.keyCode == 53 {
-            if event.modifierFlags.contains(.shift) {
+            if isCropping {
+                endCropMode()
+            } else if event.modifierFlags.contains(.shift) {
                 pinWindow.destroy()
             } else {
                 pinWindow.close()
@@ -334,13 +544,19 @@ private final class PinContentView: NSView {
         }
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let characters = event.charactersIgnoringModifiers ?? ""
+        let key = characters.lowercased()
+        if flags.contains(.command) {
+            if key == "z", pinWindow.undoLastCrop() { return }
+            super.keyDown(with: event)
+            return
+        }
         if flags.contains(.control) {
             // Ctrl+W 的 characters 可能是控制字符，keyCode 更可靠。
-            if event.keyCode == 13 || characters.lowercased() == "w" {
+            if event.keyCode == 13 || key == "w" {
                 pinWindow.close()
                 return
             }
-            switch characters {
+            switch key {
             case "+", "=":
                 pinWindow.adjustOpacity(by: 0.1)
             case "-", "_":
@@ -350,7 +566,7 @@ private final class PinContentView: NSView {
             }
             return
         }
-        switch characters {
+        switch key {
         case "1":
             pinWindow.rotate(byQuarterTurns: -1)
         case "2":
@@ -363,17 +579,31 @@ private final class PinContentView: NSView {
             pinWindow.adjustScale(by: 0.1)
         case "-", "_":
             pinWindow.adjustScale(by: -0.1)
+        case "g":
+            pinWindow.toggleGrayscale()
+        case "i":
+            pinWindow.toggleInverted()
+        case "c":
+            beginCrop()
         default:
             super.keyDown(with: event)
         }
     }
 
     override func cancelOperation(_ sender: Any?) {
-        window?.close()
+        if isCropping {
+            endCropMode()
+        } else {
+            window?.close()
+        }
     }
 
     override func resetCursorRects() {
         super.resetCursorRects()
+        if isCropping {
+            addCursorRect(bounds, cursor: .crosshair)
+            return
+        }
         guard !transform.isThumbnail else { return }
         let bounds = self.bounds
         let hot = min(hotZone, min(bounds.width, bounds.height) / 2)

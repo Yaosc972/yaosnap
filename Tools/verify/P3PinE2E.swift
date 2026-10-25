@@ -106,6 +106,56 @@ final class PinHarness {
         )
     }
 
+    private func mouseDragEvent(
+        _ type: NSEvent.EventType,
+        at point: CGPoint,
+        window: NSWindow
+    ) -> NSEvent? {
+        NSEvent.mouseEvent(
+            with: type,
+            location: point,
+            modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 0,
+            clickCount: 1,
+            pressure: 1
+        )
+    }
+
+    /// 把窗口内容离屏渲染成位图再取像素，屏幕休眠时也不会拿到全黑。
+    private func sampledPixel(
+        of window: PinWindow,
+        atRelative point: CGPoint
+    ) -> (r: Int, g: Int, b: Int)? {
+        guard let view = window.contentView,
+              view.bounds.width > 0, view.bounds.height > 0,
+              let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return nil }
+        view.cacheDisplay(in: view.bounds, to: rep)
+        guard let image = rep.cgImage else { return nil }
+        let width = rep.pixelsWide
+        let height = rep.pixelsHigh
+        guard width > 0, height > 0,
+              let context = CGContext(
+                  data: nil,
+                  width: width,
+                  height: height,
+                  bitsPerComponent: 8,
+                  bytesPerRow: width * 4,
+                  space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
+                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
+              ) else { return nil }
+        context.interpolationQuality = .none
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        guard let base = context.data else { return nil }
+        let x = min(width - 1, max(0, Int(point.x * CGFloat(width))))
+        let yFromBottom = min(height - 1, max(0, Int(point.y * CGFloat(height))))
+        let offset = ((height - 1 - yFromBottom) * width + x) * 4
+        let bytes = base.assumingMemoryBound(to: UInt8.self)
+        return (Int(bytes[offset]), Int(bytes[offset + 1]), Int(bytes[offset + 2]))
+    }
+
     // MARK: - 用例
 
     private func runFirstPin() {
@@ -365,6 +415,116 @@ final class PinHarness {
         pump()
     }
 
+    private func runImageEffects() {
+        guard let window = pinFreshWindow(), let view = window.contentView,
+              let original = sampledPixel(of: window, atRelative: CGPoint(x: 0.5, y: 0.5)),
+              let grayEvent = keyEvent(keyCode: 5, characters: "g", window: window) else {
+            fail("PIN-GRAYSCALE", "没有可读像素的贴图窗口")
+            return
+        }
+        view.keyDown(with: grayEvent)
+        pump(0.1)
+        guard let gray = sampledPixel(of: window, atRelative: CGPoint(x: 0.5, y: 0.5)) else {
+            fail("PIN-GRAYSCALE", "灰度后读不到像素")
+            window.close()
+            return
+        }
+        if gray.r == gray.g, gray.g == gray.b,
+           !(original.r == original.g && original.g == original.b) {
+            pass("PIN-GRAYSCALE", "G 后像素 \(gray.r),\(gray.g),\(gray.b) 三通道相等")
+        } else {
+            fail("PIN-GRAYSCALE", "原色 \(original)，灰度后 \(gray)")
+        }
+
+        guard let invertEvent = keyEvent(keyCode: 34, characters: "i", window: window) else {
+            fail("PIN-INVERT", "构造 I 键失败")
+            window.close()
+            return
+        }
+        view.keyDown(with: invertEvent)
+        pump(0.1)
+        guard let inverted = sampledPixel(of: window, atRelative: CGPoint(x: 0.5, y: 0.5)) else {
+            fail("PIN-INVERT", "反色后读不到像素")
+            window.close()
+            return
+        }
+        if abs(inverted.r - (255 - gray.r)) <= 2,
+           abs(inverted.g - (255 - gray.g)) <= 2,
+           abs(inverted.b - (255 - gray.b)) <= 2 {
+            pass("PIN-INVERT", "反色后像素 \(inverted) 等于 255 减灰度值")
+        } else {
+            fail("PIN-INVERT", "灰度 \(gray)，反色后 \(inverted)")
+        }
+
+        // 关掉两个开关应回到原色，验证原始图没有被改写。
+        view.keyDown(with: invertEvent)
+        view.keyDown(with: grayEvent)
+        pump(0.1)
+        if let restored = sampledPixel(of: window, atRelative: CGPoint(x: 0.5, y: 0.5)),
+           abs(restored.r - original.r) <= 2,
+           abs(restored.g - original.g) <= 2,
+           abs(restored.b - original.b) <= 2 {
+            pass("PIN-EFFECT-RESTORE", "关掉灰度与反色后恢复原色")
+        } else {
+            fail("PIN-EFFECT-RESTORE", "原色 \(original)，恢复后读像素失败或颜色不符")
+        }
+        window.close()
+        pump()
+    }
+
+    private func runCrop() {
+        guard let window = pinFreshWindow(), let view = window.contentView else {
+            fail("PIN-CROP", "没有新建贴图窗口")
+            return
+        }
+        let before = window.frame
+        guard let cropKey = keyEvent(keyCode: 8, characters: "c", window: window),
+              let down = mouseDragEvent(.leftMouseDown, at: CGPoint(x: 0, y: 0), window: window),
+              let drag = mouseDragEvent(.leftMouseDragged, at: CGPoint(x: 20, y: 30), window: window),
+              let up = mouseDragEvent(.leftMouseUp, at: CGPoint(x: 20, y: 30), window: window) else {
+            fail("PIN-CROP", "构造裁剪事件失败")
+            window.close()
+            return
+        }
+        view.keyDown(with: cropKey)
+        pump(0.05)
+        view.mouseDown(with: down)
+        view.mouseDragged(with: drag)
+        view.mouseUp(with: up)
+        pump(0.1)
+
+        let after = window.frame
+        if after.size == NSSize(width: 20, height: 30),
+           after.minX == before.minX,
+           after.maxY == before.maxY {
+            pass("PIN-CROP", "裁剪后窗口 20x30，左上角未动")
+        } else {
+            fail("PIN-CROP", "裁剪后 frame \(after)，裁剪前 \(before)")
+        }
+
+        guard let undo = keyEvent(
+            keyCode: 6,
+            characters: "z",
+            modifiers: [.command],
+            window: window
+        ) else {
+            fail("PIN-CROP-UNDO", "构造 ⌘Z 失败")
+            window.close()
+            return
+        }
+        view.keyDown(with: undo)
+        pump(0.1)
+        if window.frame.size == before.size,
+           window.frame.minX == before.minX,
+           window.frame.maxY == before.maxY {
+            pass("PIN-CROP-UNDO", "⌘Z 恢复到裁剪前的 40x30")
+        } else {
+            fail("PIN-CROP-UNDO", "撤销后 frame \(window.frame)，期望 \(before)")
+        }
+        window.close()
+        pump()
+    }
+
     private func runMiddleReset() {
         guard let window = pinFreshWindow(), let view = window.contentView else {
             fail("PIN-MIDDLE-RESET", "没有新建贴图窗口")
@@ -574,6 +734,8 @@ final class PinHarness {
         runZoom()
         runRotate()
         runOpacity()
+        runImageEffects()
+        runCrop()
         runMiddleReset()
         runControlW()
         runRestoreClosed()
