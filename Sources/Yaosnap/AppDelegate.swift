@@ -48,6 +48,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             onRenamePinGroup: { [pinController] id, name in pinController.renameGroup(id, to: name) },
             onDeletePinGroup: { [pinController] id in pinController.deleteGroup(id) },
             onToggleSolo: { [pinController] in pinController.toggleSoloForCurrentPin() },
+            onSelectAllPins: { [pinController] in pinController.selectAllPins() },
+            onClearPinSelection: { [pinController] in pinController.clearSelection() },
+            onJoinSelectionToGroup: { [pinController] in pinController.joinSelectionToActiveGroup() },
             onOpenSettings: { [weak self] in self?.showSettings() },
             onActiveWindow: { [snipController] in snipController.startActiveWindow() },
             onRepeatLastRegion: { [snipController] in snipController.repeatLastRegion() },
@@ -188,7 +191,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 PinGroupMenuState.Group(id: $0.id, name: $0.name, isDefault: $0.isDefault)
             },
             activeID: controller.activePinGroupID,
-            soloActive: controller.soloPinID != nil
+            soloActive: controller.soloPinID != nil,
+            selectedCount: controller.selectedPinCount,
+            visibleCount: controller.visiblePinCount
         )
     }
 }

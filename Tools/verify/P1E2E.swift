@@ -846,7 +846,13 @@ final class Harness {
             },
             onReplayHistory: { _ in },
             pinGroupState: {
-                PinGroupMenuState(groups: [], activeID: 0, soloActive: false)
+                PinGroupMenuState(
+                    groups: [],
+                    activeID: 0,
+                    soloActive: false,
+                    selectedCount: 0,
+                    visibleCount: 0
+                )
             },
             onSelectPinGroup: { _ in },
             onCreatePinGroup: { _ in true },

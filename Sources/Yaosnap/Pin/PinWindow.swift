@@ -8,7 +8,13 @@ final class PinWindow: NSWindow {
     let pasteImage: PasteImage
     /// 控制器分配的身份，分组与 Solo 只按它记账，不用窗口对象。
     let pinID: Int
+    /// 多选与整组拖动由控制器协调，窗口只把交互意图转过去。
+    weak var pinController: PinController?
     private(set) var transform: PinTransform = .identity
+    /// 背景只影响绘制，不进入 transform，也不参与任何导出。
+    private(set) var background: PinBackground = .transparent
+    /// 是否在多选集合里；控制器是唯一写入口。
+    private(set) var isMultiSelected = false
     /// Shift+Esc 销毁的贴图不进恢复列表，普通关闭才进。
     private(set) var canRestore = true
     /// 初始适配到屏幕 80% 后的尺寸。transform.scale 从 1 起，首次变换才不会跳回原图尺寸。
@@ -168,6 +174,24 @@ final class PinWindow: NSWindow {
         applyTransform()
     }
 
+    func setBackground(_ mode: PinBackground) {
+        guard background != mode else { return }
+        background = mode
+        pinView.background = mode
+        pinView.needsDisplay = true
+    }
+
+    func cycleBackground() {
+        setBackground(background.next())
+        print("[pin] background=\(background.rawValue) pin=\(pinID)")
+    }
+
+    func setMultiSelected(_ selected: Bool) {
+        guard isMultiSelected != selected else { return }
+        isMultiSelected = selected
+        pinView.isSelected = selected
+    }
+
     func resetTransform() {
         transform.reset()
         cropHistory.removeAll()
@@ -275,6 +299,12 @@ private final class PinContentView: NSView {
     var image: NSImage?
     var baseSize: CGSize = .zero
     var transform: PinTransform = .identity
+    var background: PinBackground = .transparent
+    var isSelected = false {
+        didSet {
+            if isSelected != oldValue { needsDisplay = true }
+        }
+    }
 
     private var dragStart: NSPoint?
     private var windowStart: NSPoint?
@@ -284,6 +314,9 @@ private final class PinContentView: NSView {
     private var cropSelection: CGRect?
 
     private let hotZone: CGFloat = 8
+
+    /// 棋盘格瓦片按模式缓存，颜色只有四种组合，重复构造 CGImage 是纯浪费。
+    private static var checkerTiles: [PinBackground: CGImage] = [:]
 
     private struct ResizeState {
         let edge: PinEdge
@@ -329,8 +362,9 @@ private final class PinContentView: NSView {
     override var isOpaque: Bool { false }
 
     override func draw(_ dirtyRect: NSRect) {
-        guard let image, baseSize.width > 0, baseSize.height > 0,
-              let context = NSGraphicsContext.current?.cgContext else { return }
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        drawBackground(context)
+        guard let image, baseSize.width > 0, baseSize.height > 0 else { return }
         let size = transform.unrotatedSize(base: baseSize)
         context.saveGState()
         context.translateBy(x: bounds.midX, y: bounds.midY)
@@ -348,7 +382,52 @@ private final class PinContentView: NSView {
             height: size.height
         ))
         context.restoreGState()
+        drawSelectionRing(context)
         drawCropOverlay(context)
+    }
+
+    /// 背景铺在图像之下；图像自身的透明区域会露出它。
+    private func drawBackground(_ context: CGContext) {
+        guard let fill = background.fill else { return }
+        context.setFillColor(fill.cgColor)
+        context.fill(bounds)
+        guard let tile = Self.checkerTile(for: background) else { return }
+        context.saveGState()
+        // 瓦片是 16px 的整数倍图，最近邻放大才不会把 8pt 格子糊成灰边。
+        context.interpolationQuality = .none
+        context.draw(tile, in: bounds, byTiling: true)
+        context.restoreGState()
+    }
+
+    private static func checkerTile(for mode: PinBackground) -> CGImage? {
+        if let cached = checkerTiles[mode] { return cached }
+        guard let base = mode.fill, let alternate = mode.checkerAlternate else { return nil }
+        let cell = Int(PinBackground.checkerCellSize)
+        let side = cell * 2
+        guard let context = CGContext(
+            data: nil,
+            width: side,
+            height: side,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        context.setFillColor(base.cgColor)
+        context.fill(CGRect(x: 0, y: 0, width: side, height: side))
+        context.setFillColor(alternate.cgColor)
+        context.fill(CGRect(x: 0, y: 0, width: cell, height: cell))
+        context.fill(CGRect(x: cell, y: cell, width: cell, height: cell))
+        guard let image = context.makeImage() else { return nil }
+        checkerTiles[mode] = image
+        return image
+    }
+
+    private func drawSelectionRing(_ context: CGContext) {
+        guard isSelected else { return }
+        context.setStrokeColor(NSColor.controlAccentColor.cgColor)
+        context.setLineWidth(2)
+        context.stroke(bounds.insetBy(dx: 1, dy: 1))
     }
 
     /// 裁剪模式下压暗保留区之外，并画出选择框与操作提示。
@@ -408,13 +487,19 @@ private final class PinContentView: NSView {
             }
             return
         }
+        // Shift 单击只改多选集合，不进入拖动或缩放。
+        if event.modifierFlags.contains(.shift) {
+            pinWindow.pinController?.toggleSelection(pinID: pinWindow.pinID)
+            return
+        }
         if let edge = edge(at: point) {
             beginResize(edge, in: pinWindow)
             return
         }
         resizeState = nil
-        dragStart = NSEvent.mouseLocation
+        dragStart = pinWindow.convertPoint(toScreen: event.locationInWindow)
         windowStart = pinWindow.frame.origin
+        pinWindow.pinController?.beginDrag(of: pinWindow)
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -436,10 +521,12 @@ private final class PinContentView: NSView {
             return
         }
         guard let dragStart, let windowStart else { return }
-        let current = NSEvent.mouseLocation
+        let current = pinWindow.convertPoint(toScreen: event.locationInWindow)
+        let delta = CGPoint(x: current.x - dragStart.x, y: current.y - dragStart.y)
+        if pinWindow.pinController?.dragSelection(by: delta) == true { return }
         pinWindow.setFrameOrigin(CGPoint(
-            x: windowStart.x + current.x - dragStart.x,
-            y: windowStart.y + current.y - dragStart.y
+            x: windowStart.x + delta.x,
+            y: windowStart.y + delta.y
         ))
     }
 
@@ -455,6 +542,7 @@ private final class PinContentView: NSView {
         dragStart = nil
         windowStart = nil
         resizeState = nil
+        (window as? PinWindow)?.pinController?.endDrag()
     }
 
     private func beginCrop() {
@@ -477,16 +565,49 @@ private final class PinContentView: NSView {
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
-        guard window is PinWindow else { return nil }
+        guard let pinWindow = window as? PinWindow else { return nil }
         let menu = NSMenu()
         menu.addItem(effectItem(title: "灰度", isOn: transform.isGrayscale, action: #selector(toggleGrayscaleFromMenu)))
         menu.addItem(effectItem(title: "反色", isOn: transform.isInverted, action: #selector(toggleInvertedFromMenu)))
+
+        let backgroundItem = NSMenuItem(title: "背景", action: nil, keyEquivalent: "")
+        backgroundItem.submenu = makeBackgroundMenu(current: pinWindow.background)
+        menu.addItem(backgroundItem)
+
         menu.addItem(.separator())
         let crop = NSMenuItem(title: "裁剪", action: #selector(beginCropFromMenu), keyEquivalent: "")
         crop.target = self
         crop.isEnabled = !transform.isThumbnail
         menu.addItem(crop)
+
+        if let controller = pinWindow.pinController, controller.selectedPinCount > 0 {
+            let join = NSMenuItem(title: "选中的贴图加入当前分组", action: #selector(joinSelectionFromMenu), keyEquivalent: "")
+            join.target = self
+            menu.addItem(join)
+        }
         return menu
+    }
+
+    private func makeBackgroundMenu(current: PinBackground) -> NSMenu {
+        let menu = NSMenu()
+        for mode in PinBackground.allCases {
+            let item = NSMenuItem(title: mode.title, action: #selector(backgroundSelected(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = mode.rawValue
+            item.state = mode == current ? .on : .off
+            menu.addItem(item)
+        }
+        return menu
+    }
+
+    @objc private func backgroundSelected(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let mode = PinBackground(rawValue: raw) else { return }
+        (window as? PinWindow)?.setBackground(mode)
+    }
+
+    @objc private func joinSelectionFromMenu() {
+        (window as? PinWindow)?.pinController?.joinSelectionToActiveGroup()
     }
 
     private func effectItem(title: String, isOn: Bool, action: Selector) -> NSMenuItem {
@@ -537,6 +658,8 @@ private final class PinContentView: NSView {
                 endCropMode()
             } else if event.modifierFlags.contains(.shift) {
                 pinWindow.destroy()
+            } else if pinWindow.pinController?.closeSelection(triggeredBy: pinWindow) == true {
+                return
             } else {
                 pinWindow.close()
             }
@@ -583,6 +706,8 @@ private final class PinContentView: NSView {
             pinWindow.toggleGrayscale()
         case "i":
             pinWindow.toggleInverted()
+        case "b":
+            pinWindow.cycleBackground()
         case "c":
             beginCrop()
         default:
@@ -593,9 +718,13 @@ private final class PinContentView: NSView {
     override func cancelOperation(_ sender: Any?) {
         if isCropping {
             endCropMode()
-        } else {
-            window?.close()
+            return
         }
+        if let pinWindow = window as? PinWindow,
+           pinWindow.pinController?.closeSelection(triggeredBy: pinWindow) == true {
+            return
+        }
+        window?.close()
     }
 
     override func resetCursorRects() {

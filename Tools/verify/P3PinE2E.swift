@@ -64,6 +64,39 @@ final class PinHarness {
         pasteboard.setString(string, forType: .string)
     }
 
+    private func putTransparentImage(width: Int, height: Int) {
+        let ctx = CGContext(
+            data: nil, width: width, height: height,
+            bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )!
+        ctx.clear(CGRect(x: 0, y: 0, width: width, height: height))
+        let image = NSImage(
+            cgImage: ctx.makeImage()!,
+            size: NSSize(width: width, height: height)
+        )
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        _ = pasteboard.writeObjects([image])
+    }
+
+    private func shiftClick(_ window: PinWindow) {
+        guard let view = window.contentView,
+              let event = NSEvent.mouseEvent(
+                  with: .leftMouseDown,
+                  location: CGPoint(x: 20, y: 15),
+                  modifierFlags: .shift,
+                  timestamp: ProcessInfo.processInfo.systemUptime,
+                  windowNumber: window.windowNumber,
+                  context: nil,
+                  eventNumber: 0,
+                  clickCount: 1,
+                  pressure: 1
+              ) else { return }
+        view.mouseDown(with: event)
+    }
+
     private func allPinWindows() -> [PinWindow] {
         NSApp.windows.compactMap { $0 as? PinWindow }
     }
@@ -720,6 +753,117 @@ final class PinHarness {
         pump()
     }
 
+    private func runMultiSelect() {
+        controller.closeAll()
+        pump()
+        guard let first = pinFreshWindow(), let second = pinFreshWindow() else {
+            fail("PIN-MULTI-SELECT", "没有新建两张贴图")
+            return
+        }
+        shiftClick(first)
+        shiftClick(second)
+        pump(0.1)
+        if controller.selectedPinCount == 2,
+           first.isMultiSelected,
+           second.isMultiSelected {
+            pass("PIN-MULTI-SELECT", "Shift 点击两张贴图后多选集合为 2")
+        } else {
+            fail("PIN-MULTI-SELECT", "多选集合 \(controller.selectedPinCount)")
+        }
+    }
+
+    private func runMultiDrag() {
+        guard controller.selectedPinCount == 2 else {
+            fail("PIN-MULTI-DRAG", "多选集合不是 2")
+            return
+        }
+        let windows = visiblePinWindows()
+        guard windows.count == 2, let moverView = windows[0].contentView else {
+            fail("PIN-MULTI-DRAG", "可见贴图不是 2 张")
+            return
+        }
+        let mover = windows[0]
+        let other = windows[1]
+        let moverOrigin = mover.frame.origin
+        let otherOrigin = other.frame.origin
+        guard let down = mouseDragEvent(.leftMouseDown, at: CGPoint(x: 20, y: 15), window: mover),
+              let drag = mouseDragEvent(.leftMouseDragged, at: CGPoint(x: 40, y: 30), window: mover),
+              let up = mouseDragEvent(.leftMouseUp, at: CGPoint(x: 40, y: 30), window: mover) else {
+            fail("PIN-MULTI-DRAG", "构造拖动事件失败")
+            return
+        }
+        moverView.mouseDown(with: down)
+        moverView.mouseDragged(with: drag)
+        moverView.mouseUp(with: up)
+        pump(0.1)
+
+        let moverDelta = CGPoint(
+            x: mover.frame.minX - moverOrigin.x,
+            y: mover.frame.minY - moverOrigin.y
+        )
+        let otherDelta = CGPoint(
+            x: other.frame.minX - otherOrigin.x,
+            y: other.frame.minY - otherOrigin.y
+        )
+        if moverDelta != .zero, moverDelta == otherDelta {
+            pass("PIN-MULTI-DRAG", "拖动一张后两张位移一致 \(Int(moverDelta.x)),\(Int(moverDelta.y))")
+        } else {
+            fail("PIN-MULTI-DRAG", "位移 \(moverDelta) / \(otherDelta)")
+        }
+    }
+
+    private func runMultiEscape() {
+        guard controller.selectedPinCount == 2,
+              let window = visiblePinWindows().first,
+              let view = window.contentView,
+              let event = keyEvent(keyCode: 53, characters: "\u{1b}", window: window) else {
+            fail("PIN-MULTI-ESC", "多选集合不是 2 或没有窗口")
+            return
+        }
+        view.keyDown(with: event)
+        pump(0.1)
+        if visiblePinWindows().isEmpty, controller.selectedPinCount == 0 {
+            pass("PIN-MULTI-ESC", "Esc 关闭整组后窗口数为 0")
+        } else {
+            fail("PIN-MULTI-ESC", "Esc 后可见 \(visiblePinWindows().count) 个")
+        }
+    }
+
+    private func runBackground() {
+        controller.closeAll()
+        pump()
+        let before = Set(allPinWindows().map(\.windowNumber))
+        putTransparentImage(width: 40, height: 30)
+        guard controller.pinFromPasteboard() else {
+            fail("PIN-BACKGROUND", "透明图没有贴出窗口")
+            return
+        }
+        pump()
+        guard let window = allPinWindows().first(where: { !before.contains($0.windowNumber) }) else {
+            fail("PIN-BACKGROUND", "找不到新建的透明贴图")
+            return
+        }
+        guard window.background == .transparent else {
+            fail("PIN-BACKGROUND", "默认背景不是透明：\(window.background.rawValue)")
+            return
+        }
+        window.setBackground(.darkCheckerboard)
+        pump(0.1)
+        let pixel = sampledPixel(of: window, atRelative: CGPoint(x: 0.1, y: 0.1))
+        if window.background == .darkCheckerboard,
+           let pixel,
+           pixel.r < 90, pixel.g < 90, pixel.b < 90 {
+            pass(
+                "PIN-BACKGROUND",
+                "切暗色棋盘后背景为 \(window.background.rawValue)，像素 \(pixel.r),\(pixel.g),\(pixel.b)"
+            )
+        } else {
+            fail("PIN-BACKGROUND", "background=\(window.background.rawValue) pixel=\(String(describing: pixel))")
+        }
+        window.close()
+        pump()
+    }
+
     func runAll() {
         runFirstPin()
         runSecondPin()
@@ -742,6 +886,10 @@ final class PinHarness {
         runPassthrough()
         runGroupSwitch()
         runSolo()
+        runMultiSelect()
+        runMultiDrag()
+        runMultiEscape()
+        runBackground()
         controller.closeAll()
         print("SUMMARY passes=\(passes) failures=\(failures)")
         exit(failures == 0 ? 0 : 1)

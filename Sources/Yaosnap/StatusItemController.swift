@@ -12,6 +12,8 @@ struct PinGroupMenuState {
     let groups: [Group]
     let activeID: Int
     let soloActive: Bool
+    let selectedCount: Int
+    let visibleCount: Int
 }
 
 @MainActor
@@ -29,6 +31,9 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private let onRenamePinGroup: @MainActor (Int, String) -> Bool
     private let onDeletePinGroup: @MainActor (Int) -> Bool
     private let onToggleSolo: @MainActor () -> Void
+    private let onSelectAllPins: @MainActor () -> Void
+    private let onClearPinSelection: @MainActor () -> Void
+    private let onJoinSelectionToGroup: @MainActor () -> Bool
     private let onOpenSettings: @MainActor () -> Void
     private let onActiveWindow: @MainActor () -> Void
     private let onRepeatLastRegion: @MainActor () -> Void
@@ -48,6 +53,9 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         onRenamePinGroup: @escaping @MainActor (Int, String) -> Bool,
         onDeletePinGroup: @escaping @MainActor (Int) -> Bool,
         onToggleSolo: @escaping @MainActor () -> Void,
+        onSelectAllPins: @escaping @MainActor () -> Void = {},
+        onClearPinSelection: @escaping @MainActor () -> Void = {},
+        onJoinSelectionToGroup: @escaping @MainActor () -> Bool = { false },
         onOpenSettings: @escaping @MainActor () -> Void,
         onActiveWindow: @escaping @MainActor () -> Void = {},
         onRepeatLastRegion: @escaping @MainActor () -> Void = {},
@@ -66,6 +74,9 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         self.onRenamePinGroup = onRenamePinGroup
         self.onDeletePinGroup = onDeletePinGroup
         self.onToggleSolo = onToggleSolo
+        self.onSelectAllPins = onSelectAllPins
+        self.onClearPinSelection = onClearPinSelection
+        self.onJoinSelectionToGroup = onJoinSelectionToGroup
         self.onOpenSettings = onOpenSettings
         self.onActiveWindow = onActiveWindow
         self.onRepeatLastRegion = onRepeatLastRegion
@@ -206,6 +217,30 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         )
         menu.addItem(soloItem)
 
+        let selectAllItem = NSMenuItem(
+            title: "全选贴图",
+            action: #selector(selectAllPinsTriggered),
+            keyEquivalent: ""
+        )
+        selectAllItem.isEnabled = state.visibleCount > 0
+        menu.addItem(selectAllItem)
+
+        let clearSelectionItem = NSMenuItem(
+            title: "取消多选",
+            action: #selector(clearPinSelectionTriggered),
+            keyEquivalent: ""
+        )
+        clearSelectionItem.isEnabled = state.selectedCount > 0
+        menu.addItem(clearSelectionItem)
+
+        let joinSelectionItem = NSMenuItem(
+            title: "选中贴图加入当前分组",
+            action: #selector(joinSelectionTriggered),
+            keyEquivalent: ""
+        )
+        joinSelectionItem.isEnabled = state.selectedCount > 0
+        menu.addItem(joinSelectionItem)
+
         menu.addItem(.separator())
         let settingsItem = NSMenuItem(
             title: "设置…",
@@ -344,6 +379,18 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     @objc private func soloTriggered() {
         onToggleSolo()
+    }
+
+    @objc private func selectAllPinsTriggered() {
+        onSelectAllPins()
+    }
+
+    @objc private func clearPinSelectionTriggered() {
+        onClearPinSelection()
+    }
+
+    @objc private func joinSelectionTriggered() {
+        if !onJoinSelectionToGroup() { NSSound.beep() }
     }
 
     @objc private func settingsTriggered() {
