@@ -6,10 +6,16 @@ final class StatusItemController: NSObject {
     private let menu = NSMenu()
     private let onSnip: @MainActor () -> Void
     private let onPin: @MainActor () -> Void
+    private let onTogglePassthrough: @MainActor () -> Void
 
-    init(onSnip: @escaping @MainActor () -> Void, onPin: @escaping @MainActor () -> Void) {
+    init(
+        onSnip: @escaping @MainActor () -> Void,
+        onPin: @escaping @MainActor () -> Void,
+        onTogglePassthrough: @escaping @MainActor () -> Void
+    ) {
         self.onSnip = onSnip
         self.onPin = onPin
+        self.onTogglePassthrough = onTogglePassthrough
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         super.init()
         if let button = statusItem.button {
@@ -34,6 +40,16 @@ final class StatusItemController: NSObject {
         let pinItem = NSMenuItem(title: "贴图", action: #selector(pinTriggered), keyEquivalent: "")
         pinItem.image = NSImage(systemSymbolName: "pin", accessibilityDescription: "贴图")
         menu.addItem(pinItem)
+        let passthroughItem = NSMenuItem(
+            title: "切换贴图穿透",
+            action: #selector(passthroughTriggered),
+            keyEquivalent: ""
+        )
+        passthroughItem.image = NSImage(
+            systemSymbolName: "cursorarrow",
+            accessibilityDescription: "切换贴图穿透"
+        )
+        menu.addItem(passthroughItem)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "退出 Yaosnap", action: #selector(quit), keyEquivalent: "q"))
         for item in menu.items where item.action != nil {
@@ -67,6 +83,10 @@ final class StatusItemController: NSObject {
 
     @objc private func pinTriggered() {
         onPin()
+    }
+
+    @objc private func passthroughTriggered() {
+        onTogglePassthrough()
     }
 
     @objc private func quit() {

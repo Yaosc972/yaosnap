@@ -5,7 +5,10 @@ import YaosnapCore
 @MainActor
 final class PinWindow: NSWindow {
     private let pinView = PinContentView(frame: .zero)
+    let pasteImage: PasteImage
     private(set) var transform: PinTransform = .identity
+    /// Shift+Esc 销毁的贴图不进恢复列表，普通关闭才进。
+    private(set) var canRestore = true
     /// 初始适配到屏幕 80% 后的尺寸。transform.scale 从 1 起，首次变换才不会跳回原图尺寸。
     let basePointSize: CGSize
 
@@ -23,6 +26,7 @@ final class PinWindow: NSWindow {
             height: max(1, floor(source.height * fit))
         )
         basePointSize = size
+        self.pasteImage = pasteImage
         var origin: CGPoint
         if let requestedTopLeft {
             // 窗口 frame 的原点是左下角，而请求给的是左上角。
@@ -46,17 +50,46 @@ final class PinWindow: NSWindow {
             backing: .buffered,
             defer: false
         )
+        configureWindow()
+
+        pinView.baseSize = size
+        pinView.image = NSImage(cgImage: pasteImage.image, size: pasteImage.pointSize)
+    }
+
+    /// 从恢复列表重建。frame 与 transform 都取关闭时的原值，尺寸不再重新适配屏幕。
+    init(pasteImage: PasteImage, restoring entry: PinRestoreEntry) {
+        basePointSize = entry.basePointSize
+        self.pasteImage = pasteImage
+        super.init(
+            contentRect: entry.frame,
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        configureWindow()
+        transform = entry.transform
+        alphaValue = entry.transform.opacity
+        pinView.baseSize = entry.basePointSize
+        pinView.image = NSImage(cgImage: pasteImage.image, size: pasteImage.pointSize)
+        pinView.transform = entry.transform
+        pinView.needsDisplay = true
+    }
+
+    private func configureWindow() {
         level = .floating
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         isOpaque = false
         backgroundColor = .clear
         hasShadow = true
         isReleasedWhenClosed = false
-
-        pinView.baseSize = size
-        pinView.image = NSImage(cgImage: pasteImage.image, size: pasteImage.pointSize)
         contentView = pinView
         makeFirstResponder(pinView)
+    }
+
+    /// 销毁：关闭且不留下可恢复的副本。
+    func destroy() {
+        canRestore = false
+        close()
     }
 
     override var canBecomeKey: Bool { true }
@@ -282,8 +315,11 @@ private final class PinContentView: NSView {
             return
         }
         if event.keyCode == 53 {
-            // Shift+Esc 的销毁本批也走 close，windowWillClose 已把窗口移出控制器列表；恢复列表下一批再做。
-            pinWindow.close()
+            if event.modifierFlags.contains(.shift) {
+                pinWindow.destroy()
+            } else {
+                pinWindow.close()
+            }
             return
         }
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)

@@ -27,14 +27,23 @@ final class PinHarness {
         RunLoop.current.run(until: Date().addingTimeInterval(seconds))
     }
 
+    private var imageSerial = 0
+
     private func makeImage(width: Int, height: Int) -> CGImage {
+        imageSerial += 1
         let ctx = CGContext(
             data: nil, width: width, height: height,
             bitsPerComponent: 8, bytesPerRow: 0,
             space: CGColorSpaceCreateDeviceRGB(),
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
         )!
-        ctx.setFillColor(CGColor(srgbRed: 0.9, green: 0.3, blue: 0.2, alpha: 1))
+        // 每次生成不同像素，剪贴板内容才算真的变了，不会误触关闭贴图的恢复。
+        ctx.setFillColor(CGColor(
+            srgbRed: 0.9,
+            green: min(1, 0.3 + CGFloat(imageSerial) * 0.01),
+            blue: 0.2,
+            alpha: 1
+        ))
         ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
         return ctx.makeImage()!
     }
@@ -420,6 +429,59 @@ final class PinHarness {
         pump()
     }
 
+    private func runRestoreClosed() {
+        guard let window = pinFreshWindow() else {
+            fail("PIN-RESTORE", "没有新建贴图窗口")
+            return
+        }
+        window.setScale(1.5)
+        pump(0.1)
+        let frame = window.frame
+        let transform = window.transform
+        window.close()
+        pump()
+
+        // 不再写剪贴板：内容与上次贴出相同，贴图键应该恢复而不是新建。
+        let before = Set(allPinWindows().map(\.windowNumber))
+        let pinned = controller.pinFromPasteboard()
+        pump()
+        guard pinned, let restored = allPinWindows().first(where: { !before.contains($0.windowNumber) }) else {
+            fail("PIN-RESTORE", "剪贴板未变时没有恢复关闭的贴图")
+            return
+        }
+        if restored.frame == frame, restored.transform == transform {
+            pass("PIN-RESTORE", "关闭后贴图键恢复原位置与变换")
+        } else {
+            fail("PIN-RESTORE", "恢复后 frame \(restored.frame) transform \(restored.transform)")
+        }
+    }
+
+    private func runPassthrough() {
+        guard let window = pinFreshWindow() else {
+            fail("PIN-PASSTHROUGH", "没有新建贴图窗口")
+            return
+        }
+        let center = CGPoint(x: window.frame.midX, y: window.frame.midY)
+        _ = controller.togglePassthrough(at: center)
+        pump(0.05)
+        guard window.ignoresMouseEvents else {
+            fail("PIN-PASSTHROUGH", "切换后 ignoresMouseEvents 仍为 false")
+            return
+        }
+        if visiblePinWindows().contains(where: { $0 !== window && $0.ignoresMouseEvents }) {
+            fail("PIN-PASSTHROUGH", "穿透切换影响了光标未覆盖的贴图")
+            return
+        }
+
+        _ = controller.togglePassthrough(at: center)
+        pump(0.05)
+        if window.ignoresMouseEvents {
+            fail("PIN-PASSTHROUGH", "再次切换后仍为穿透")
+        } else {
+            pass("PIN-PASSTHROUGH", "切换后穿透，再切换恢复可点击")
+        }
+    }
+
     func runAll() {
         runFirstPin()
         runSecondPin()
@@ -436,6 +498,8 @@ final class PinHarness {
         runOpacity()
         runMiddleReset()
         runControlW()
+        runRestoreClosed()
+        runPassthrough()
         controller.closeAll()
         print("SUMMARY passes=\(passes) failures=\(failures)")
         exit(failures == 0 ? 0 : 1)

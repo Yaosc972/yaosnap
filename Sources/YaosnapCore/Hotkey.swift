@@ -23,4 +23,7 @@ public struct Hotkey: Equatable, Codable {
 
     /// Shift+F3，隐藏 / 显示所有贴图。
     public static let shiftF3 = Hotkey(keyCode: 99, modifiers: UInt32(shiftKey))
+
+    /// kVK_ANSI_T = 17，Control+Shift，切换光标下贴图的鼠标穿透。
+    public static let ctrlShiftT = Hotkey(keyCode: 17, modifiers: UInt32(controlKey | shiftKey))
 }

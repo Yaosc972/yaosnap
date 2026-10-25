@@ -22,7 +22,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItemController = StatusItemController(
             onSnip: snipController.start,
-            onPin: { [pinController] in pinController.pinFromPasteboard() }
+            onPin: { [pinController] in pinController.pinFromPasteboard() },
+            onTogglePassthrough: { [pinController] in pinController.togglePassthrough() }
         )
         NotificationCenter.default.addObserver(
             self, selector: #selector(handleSnipEscape(_:)), name: .snipEscapePressed, object: nil)
@@ -53,7 +54,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let ok3 = hotkeyManager.register(.f3, handler: pinHandler)
         let ok4 = hotkeyManager.register(.shiftF3, handler: hidePinsHandler)
-        print("[hotkey] register F3 -> \(ok3), Shift+F3 -> \(ok4)")
+        let passthroughHandler: () -> Void = { [pinController] in
+            MainActor.assumeIsolated { _ = pinController.togglePassthrough() }
+        }
+        let ok5 = hotkeyManager.register(.ctrlShiftT, handler: passthroughHandler)
+        print("[hotkey] register F3 -> \(ok3), Shift+F3 -> \(ok4), Ctrl+Shift+T -> \(ok5)")
         if !ok, !ok2 {
             let alert = NSAlert()
             alert.messageText = "F1 热键注册失败"

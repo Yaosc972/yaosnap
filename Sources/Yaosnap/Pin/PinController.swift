@@ -4,7 +4,12 @@ import YaosnapCore
 /// 持有所有贴图窗口。窗口关闭时由 windowWillClose 回收。
 @MainActor
 final class PinController: NSObject, NSWindowDelegate {
+    /// 与 Snipaste 默认值一致，可按需调大。
+    private static let restoreCapacity = 1
+
     private var pinned: [PinWindow] = []
+    private var restoreList = PinRestoreList<PinRestoreEntry>(capacity: PinController.restoreCapacity)
+    private var lastPinned: PasteImage?
 
     @discardableResult
     func pinFromPasteboard() -> Bool {
@@ -13,6 +18,12 @@ final class PinController: NSObject, NSWindowDelegate {
             print("[pin] 剪贴板没有可贴的内容")
             NSSound.beep()
             return false
+        }
+        // 剪贴板自上次贴图后没变时，贴图键用于恢复最近关闭的那张，而不是重复贴一份。
+        if PasteImage.sameContent(image, lastPinned), let entry = restoreList.takeMostRecent() {
+            restore(entry)
+            print("[pin] restored kind=\(content.kind) size=\(Int(image.pointSize.width))x\(Int(image.pointSize.height))")
+            return true
         }
         guard let screen = screenUnderMouse() else {
             print("[pin] 找不到可用屏幕")
@@ -65,11 +76,44 @@ final class PinController: NSObject, NSWindowDelegate {
         for window in windows { window.close() }
     }
 
+    /// 切换光标下最上层贴图的鼠标穿透；光标下没有贴图时取消全部穿透。
+    /// 穿透中的窗口仍占据屏幕区域，再次触发热键会命中并切回可点击。
+    @discardableResult
+    func togglePassthrough(at point: CGPoint? = nil) -> Bool {
+        let location = point ?? NSEvent.mouseLocation
+        // NSApp.windows 从前往后排列；翻转成从底到顶，命中规则才和真实叠放一致。
+        let stack = Array(NSApp.windows.compactMap { $0 as? PinWindow }.reversed())
+        let index = PinHitTest.topmostIndex(
+            of: location,
+            in: stack.map(\.frame),
+            visible: stack.map(\.isVisible)
+        )
+        let states = PinPassthrough.toggled(
+            index: index,
+            states: stack.map(\.ignoresMouseEvents)
+        )
+        for (window, ignoresMouse) in zip(stack, states) {
+            window.ignoresMouseEvents = ignoresMouse
+        }
+        print("[pin] passthrough hit=\(index.map(String.init) ?? "none")")
+        return index != nil
+    }
+
     // MARK: - NSWindowDelegate
 
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? PinWindow else { return }
         pinned.removeAll { $0 === window }
+        guard window.canRestore else { return }
+        restoreList.record(
+            PinRestoreEntry(
+                image: window.pasteImage,
+                transform: window.transform,
+                frame: window.frame,
+                basePointSize: window.basePointSize
+            ),
+            kind: .closed
+        )
     }
 
     /// 拖到屏幕外时把整个窗口钳回可见区域。
@@ -85,12 +129,22 @@ final class PinController: NSObject, NSWindowDelegate {
     }
 
     private func present(_ image: PasteImage, on screen: NSScreen, at topLeft: CGPoint?) {
+        lastPinned = image
         let window = PinWindow(
             pasteImage: image,
             screen: screen,
             cascadeIndex: pinned.count,
             topLeft: topLeft
         )
+        window.delegate = self
+        pinned.append(window)
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func restore(_ entry: PinRestoreEntry) {
+        lastPinned = entry.image
+        let window = PinWindow(pasteImage: entry.image, restoring: entry)
         window.delegate = self
         pinned.append(window)
         window.makeKeyAndOrderFront(nil)
