@@ -126,6 +126,11 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate, N
     let restoreCapacityField = NSTextField()
     let restoreCapacityStepper = NSStepper()
     let autoSelectCheckbox = NSButton(checkboxWithTitle: "创建后自动选中", target: nil, action: nil)
+    let hotCornerCheckbox = NSButton(checkboxWithTitle: "启用", target: nil, action: nil)
+    private(set) var hotCornerBoxes: [ScreenCorner: NSButton] = [:]
+    let dwellField = NSTextField()
+    let whiteboardCheckbox = NSButton(checkboxWithTitle: "启用", target: nil, action: nil)
+    let whiteboardColorWell = NSColorWell()
     let resetButton = NSButton(title: "恢复默认", target: nil, action: nil)
 
     init(store: SettingsStore, settings: Settings, onChange: @escaping (Settings) -> Void) {
@@ -241,6 +246,55 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate, N
         autoSelectCheckbox.action = #selector(autoSelectToggled)
         rows.append([autoSelectTitle, autoSelectCheckbox])
 
+        let cornerTitle = NSTextField(labelWithString: "触发角")
+        cornerTitle.alignment = .right
+        hotCornerCheckbox.target = self
+        hotCornerCheckbox.action = #selector(hotCornersToggled)
+        let cornerBoxes = [ScreenCorner.topLeft, .topRight, .bottomLeft, .bottomRight].map { corner in
+            let box = NSButton(checkboxWithTitle: corner.title, target: self, action: #selector(hotCornerToggled(_:)))
+            hotCornerBoxes[corner] = box
+            return box
+        }
+        let cornerStack = NSStackView(views: [hotCornerCheckbox] + cornerBoxes)
+        cornerStack.orientation = .horizontal
+        cornerStack.alignment = .centerY
+        cornerStack.spacing = 8
+        rows.append([cornerTitle, cornerStack])
+
+        let dwellTitle = NSTextField(labelWithString: "停留时长")
+        dwellTitle.alignment = .right
+        dwellField.alignment = .right
+        dwellField.target = self
+        dwellField.action = #selector(dwellCommitted)
+        dwellField.delegate = self
+        let dwellFormatter = NumberFormatter()
+        dwellFormatter.allowsFloats = false
+        dwellFormatter.minimum = NSNumber(value: HotCornerSettings.dwellRange.lowerBound)
+        dwellFormatter.maximum = NSNumber(value: HotCornerSettings.dwellRange.upperBound)
+        dwellField.formatter = dwellFormatter
+        dwellField.widthAnchor.constraint(equalToConstant: 56).isActive = true
+        let dwellStack = NSStackView(views: [
+            dwellField,
+            NSTextField(labelWithString: "毫秒（默认 500）"),
+        ])
+        dwellStack.orientation = .horizontal
+        dwellStack.alignment = .centerY
+        dwellStack.spacing = 8
+        rows.append([dwellTitle, dwellStack])
+
+        let whiteboardTitle = NSTextField(labelWithString: "白板模式")
+        whiteboardTitle.alignment = .right
+        whiteboardCheckbox.target = self
+        whiteboardCheckbox.action = #selector(whiteboardToggled)
+        rows.append([whiteboardTitle, whiteboardCheckbox])
+
+        let whiteboardColorTitle = NSTextField(labelWithString: "白板背景色")
+        whiteboardColorTitle.alignment = .right
+        whiteboardColorWell.target = self
+        whiteboardColorWell.action = #selector(whiteboardColorChanged)
+        whiteboardColorWell.widthAnchor.constraint(equalToConstant: 56).isActive = true
+        rows.append([whiteboardColorTitle, whiteboardColorWell])
+
         let grid = NSGridView(views: rows)
         grid.column(at: 0).xPlacement = .trailing
         grid.columnSpacing = 12
@@ -280,6 +334,18 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate, N
         restoreCapacityField.integerValue = settings.restoreCapacity
         restoreCapacityStepper.integerValue = settings.restoreCapacity
         autoSelectCheckbox.state = settings.autoSelectOnCreation ? .on : .off
+        hotCornerCheckbox.state = settings.hotCorners.enabled ? .on : .off
+        for (corner, box) in hotCornerBoxes {
+            box.state = settings.hotCorners.corners.contains(corner) ? .on : .off
+        }
+        dwellField.integerValue = settings.hotCorners.dwellMilliseconds
+        whiteboardCheckbox.state = settings.whiteboard.enabled ? .on : .off
+        whiteboardColorWell.color = NSColor(
+            srgbRed: settings.whiteboard.color.r,
+            green: settings.whiteboard.color.g,
+            blue: settings.whiteboard.color.b,
+            alpha: settings.whiteboard.color.a
+        )
         showRegistrationFailures([])
     }
 
@@ -293,7 +359,7 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate, N
     }
 
     private func apply() {
-        settings.clampRestoreCapacity()
+        settings.clamp()
         store.save(settings)
         onChange(settings)
     }
@@ -335,6 +401,47 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate, N
         apply()
     }
 
+    @objc private func hotCornersToggled() {
+        settings.hotCorners.enabled = hotCornerCheckbox.state == .on
+        apply()
+    }
+
+    @objc private func hotCornerToggled(_ sender: NSButton) {
+        guard let corner = hotCornerBoxes.first(where: { $0.value === sender })?.key else { return }
+        if sender.state == .on {
+            settings.hotCorners.corners.insert(corner)
+        } else {
+            settings.hotCorners.corners.remove(corner)
+        }
+        apply()
+    }
+
+    @objc private func dwellCommitted() {
+        let typed = dwellField.integerValue
+        // 空输入或 0 保持当前值，不把「没填」当成 0 毫秒。
+        settings.hotCorners.dwellMilliseconds = typed == 0
+            ? settings.hotCorners.dwellMilliseconds : typed
+        settings.hotCorners.clampDwell()
+        dwellField.integerValue = settings.hotCorners.dwellMilliseconds
+        apply()
+    }
+
+    @objc private func whiteboardToggled() {
+        settings.whiteboard.enabled = whiteboardCheckbox.state == .on
+        apply()
+    }
+
+    @objc private func whiteboardColorChanged() {
+        let color = whiteboardColorWell.color.usingColorSpace(.sRGB) ?? .white
+        settings.whiteboard.color = RGBAColor(
+            r: color.redComponent,
+            g: color.greenComponent,
+            b: color.blueComponent,
+            a: color.alphaComponent
+        )
+        apply()
+    }
+
     @objc private func resetToDefaults() {
         settings = .standard
         refreshControls()
@@ -342,8 +449,12 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate, N
     }
 
     func controlTextDidEndEditing(_ obj: Notification) {
-        guard (obj.object as? NSTextField) === restoreCapacityField else { return }
-        restoreCapacityCommitted()
+        guard let field = obj.object as? NSTextField else { return }
+        if field === restoreCapacityField {
+            restoreCapacityCommitted()
+        } else if field === dwellField {
+            dwellCommitted()
+        }
     }
 
     /// 窗口关闭时若还在录制，热键会停在注销状态，这里负责恢复注册。

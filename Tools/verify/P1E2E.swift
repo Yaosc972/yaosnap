@@ -727,6 +727,136 @@ final class Harness {
         endSession()
     }
 
+    // MARK: - 白板与历史菜单
+
+    func runWhiteboardExport() {
+        let wiring = ObserverWiring()
+        let board = wiring.controller
+        let suite = "yaosnap.p1.whiteboard"
+        guard let defaults = UserDefaults(suiteName: suite) else {
+            fail("WHITEBOARD-EXPORT", "无法创建测试 UserDefaults suite")
+            return
+        }
+        defaults.removePersistentDomain(forName: suite)
+        var settings = Settings.standard
+        settings.whiteboard.enabled = true
+        settings.whiteboard.color = .white
+        board.settingsStore = SettingsStore(defaults: defaults)
+        board.settingsStore.save(settings)
+
+        board.start()
+        pump(0.4)
+        guard let window = visibleOverlayWindows.first,
+              let view = window.contentView as? OverlayView else {
+            fail("WHITEBOARD-EXPORT", "start 后没有可见覆盖窗口")
+            board.cancel()
+            return
+        }
+        drag(view, window: window, from: CGPoint(x: 100, y: 100), to: CGPoint(x: 300, y: 200))
+        NSPasteboard.general.clearContents()
+        keyDown(36, characters: "\r", in: window, view: view)
+
+        guard let image = pasteboardImage(),
+              let bytes = srgbBytes(image, width: image.width, height: image.height) else {
+            fail("WHITEBOARD-EXPORT", "剪贴板没有可读取的图像")
+            board.cancel()
+            return
+        }
+        let samples = [
+            (0, 0),
+            (image.width - 1, 0),
+            (0, image.height - 1),
+            (image.width - 1, image.height - 1),
+            (image.width / 2, image.height / 2),
+        ]
+        let allWhite = samples.allSatisfy { point in
+            let offset = (point.1 * image.width + point.0) * 4
+            return abs(Int(bytes[offset]) - 255) <= 2
+                && abs(Int(bytes[offset + 1]) - 255) <= 2
+                && abs(Int(bytes[offset + 2]) - 255) <= 2
+        }
+        if allWhite {
+            pass("WHITEBOARD-EXPORT", "\(image.width)x\(image.height) 采样点为纯白")
+        } else {
+            fail("WHITEBOARD-EXPORT", "导出图背景不是纯白")
+        }
+        if board.historyCount == 1 {
+            pass("WHITEBOARD-HISTORY", "白板导出进入同一份历史")
+        } else {
+            fail("WHITEBOARD-HISTORY", "historyCount=\(board.historyCount)，期望 1")
+        }
+
+        board.cancel()
+        NSPasteboard.general.clearContents()
+        pump(0.15)
+    }
+
+    func runHistoryMenu() {
+        let expected = min(controller.historyCount, CaptureHistoryMenu.limit)
+        let status = makeStatusController(reading: { self.controller.historySnapshot })
+        status.menuNeedsUpdate(status.menu)
+        guard let historyItem = status.menu.items.first(where: { $0.title == "截图历史" }),
+              let submenu = historyItem.submenu else {
+            fail("HISTORY-MENU", "菜单里没有截图历史子菜单")
+            return
+        }
+        if submenu.items.count == expected,
+           submenu.items.count == controller.historyCount,
+           historyItem.isEnabled == (expected > 0) {
+            pass("HISTORY-MENU", "\(submenu.items.count) 条与 historyCount=\(controller.historyCount) 一致")
+        } else {
+            fail("HISTORY-MENU", "子菜单 \(submenu.items.count) 条，期望 \(expected)，historyCount=\(controller.historyCount)")
+        }
+
+        let empty = SnipController()
+        let emptyStatus = makeStatusController(reading: { empty.historySnapshot })
+        emptyStatus.menuNeedsUpdate(emptyStatus.menu)
+        if let item = emptyStatus.menu.items.first(where: { $0.title == "截图历史" }),
+           item.submenu?.items.isEmpty == true,
+           !item.isEnabled {
+            pass("HISTORY-MENU-EMPTY", "历史为空时菜单项禁用")
+        } else {
+            fail("HISTORY-MENU-EMPTY", "历史为空时菜单项未禁用")
+        }
+
+        controller.startReplayingHistory(at: 0)
+        pump(0.4)
+        guard let window = visibleOverlayWindows.first,
+              let view = window.contentView as? OverlayView else {
+            fail("HISTORY-REPLAY", "startReplayingHistory 后没有可见覆盖窗口")
+            return
+        }
+        if view.historyIndex == 1 {
+            pass("HISTORY-REPLAY", "会话直接停在最新历史 historyIndex=1")
+        } else {
+            fail("HISTORY-REPLAY", "historyIndex=\(view.historyIndex)，期望 1")
+        }
+        endSession()
+    }
+
+    private func makeStatusController(
+        reading history: @escaping @MainActor () -> [CaptureHistoryEntry]
+    ) -> StatusItemController {
+        StatusItemController(
+            onSnip: {},
+            onPin: {},
+            onTogglePassthrough: {},
+            historyItems: {
+                CaptureHistoryMenu.items(from: history())
+            },
+            onReplayHistory: { _ in },
+            pinGroupState: {
+                PinGroupMenuState(groups: [], activeID: 0, soloActive: false)
+            },
+            onSelectPinGroup: { _ in },
+            onCreatePinGroup: { _ in true },
+            onRenamePinGroup: { _, _ in true },
+            onDeletePinGroup: { _ in true },
+            onToggleSolo: {},
+            onOpenSettings: {}
+        )
+    }
+
     // MARK: - 主流程
 
     func runAll() {
@@ -745,6 +875,8 @@ final class Harness {
         runEscape()
         runActionBar()
         runMaskAndHover()
+        runWhiteboardExport()
+        runHistoryMenu()
 
         print("SUMMARY passes=\(passes) failures=\(failures)")
         exit(failures == 0 ? 0 : 1)

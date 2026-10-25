@@ -94,6 +94,47 @@ final class SettingsHarness {
               "自动选中写回 \(store.load().autoSelectOnCreation)")
         check("auto-select-callback", lastChange?.autoSelectOnCreation == !selectBefore, "变更回调收到新值")
 
+        let cornerBefore = store.load().hotCorners.enabled
+        controller.hotCornerCheckbox.performClick(nil)
+        check("hot-corner-toggle", store.load().hotCorners.enabled == !cornerBefore,
+              "触发角开关写回 \(store.load().hotCorners.enabled)")
+
+        guard let topLeft = controller.hotCornerBoxes[.topLeft] else {
+            fail("hot-corner-boxes", "缺少左上角复选框")
+            return summarize()
+        }
+        let hadTopLeft = store.load().hotCorners.corners.contains(.topLeft)
+        topLeft.performClick(nil)
+        check("hot-corner-select", store.load().hotCorners.corners.contains(.topLeft) == !hadTopLeft,
+              "左上角开关写回 \(store.load().hotCorners.corners.contains(.topLeft))")
+
+        controller.dwellField.stringValue = "750"
+        if let action = controller.dwellField.action {
+            NSApp.sendAction(action, to: controller.dwellField.target, from: controller.dwellField)
+        }
+        check("dwell-write", store.load().hotCorners.dwellMilliseconds == 750,
+              "停留时长写回 \(store.load().hotCorners.dwellMilliseconds)")
+
+        let whiteboardBefore = store.load().whiteboard.enabled
+        controller.whiteboardCheckbox.performClick(nil)
+        check("whiteboard-toggle", store.load().whiteboard.enabled == !whiteboardBefore,
+              "白板开关写回 \(store.load().whiteboard.enabled)")
+
+        controller.whiteboardColorWell.color = NSColor(srgbRed: 0.1, green: 0.2, blue: 0.3, alpha: 1)
+        if let action = controller.whiteboardColorWell.action {
+            NSApp.sendAction(
+                action,
+                to: controller.whiteboardColorWell.target,
+                from: controller.whiteboardColorWell
+            )
+        }
+        let boardColor = store.load().whiteboard.color
+        check("whiteboard-color",
+              abs(boardColor.r - 0.1) < 0.01
+                && abs(boardColor.g - 0.2) < 0.01
+                && abs(boardColor.b - 0.3) < 0.01,
+              "白板背景色写回 r=\(boardColor.r) g=\(boardColor.g) b=\(boardColor.b)")
+
         controller.restoreCapacityField.stringValue = "7"
         if let action = controller.restoreCapacityField.action {
             NSApp.sendAction(

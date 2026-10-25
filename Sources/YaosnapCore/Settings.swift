@@ -39,6 +39,8 @@ public struct Settings: Equatable, Codable {
     public var quickSaveDirectory: String?
     public var restoreCapacity: Int
     public var autoSelectOnCreation: Bool
+    public var hotCorners: HotCornerSettings
+    public var whiteboard: WhiteboardSettings
 
     public init(
         snipHotkey: Hotkey = .ctrlShiftA,
@@ -47,7 +49,9 @@ public struct Settings: Equatable, Codable {
         passthroughHotkey: Hotkey = .ctrlShiftT,
         quickSaveDirectory: String? = nil,
         restoreCapacity: Int = Settings.defaultRestoreCapacity,
-        autoSelectOnCreation: Bool = true
+        autoSelectOnCreation: Bool = true,
+        hotCorners: HotCornerSettings = .standard,
+        whiteboard: WhiteboardSettings = .standard
     ) {
         self.snipHotkey = snipHotkey
         self.pinHotkey = pinHotkey
@@ -56,6 +60,34 @@ public struct Settings: Equatable, Codable {
         self.quickSaveDirectory = quickSaveDirectory
         self.restoreCapacity = restoreCapacity
         self.autoSelectOnCreation = autoSelectOnCreation
+        self.hotCorners = hotCorners
+        self.whiteboard = whiteboard
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case snipHotkey
+        case pinHotkey
+        case togglePinsHotkey
+        case passthroughHotkey
+        case quickSaveDirectory
+        case restoreCapacity
+        case autoSelectOnCreation
+        case hotCorners
+        case whiteboard
+    }
+
+    /// 新字段缺失时用默认值，避免升级后整份旧设置反序列化失败。
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        snipHotkey = try container.decode(Hotkey.self, forKey: .snipHotkey)
+        pinHotkey = try container.decode(Hotkey.self, forKey: .pinHotkey)
+        togglePinsHotkey = try container.decode(Hotkey.self, forKey: .togglePinsHotkey)
+        passthroughHotkey = try container.decode(Hotkey.self, forKey: .passthroughHotkey)
+        quickSaveDirectory = try container.decodeIfPresent(String.self, forKey: .quickSaveDirectory)
+        restoreCapacity = try container.decode(Int.self, forKey: .restoreCapacity)
+        autoSelectOnCreation = try container.decode(Bool.self, forKey: .autoSelectOnCreation)
+        hotCorners = try container.decodeIfPresent(HotCornerSettings.self, forKey: .hotCorners) ?? .standard
+        whiteboard = try container.decodeIfPresent(WhiteboardSettings.self, forKey: .whiteboard) ?? .standard
     }
 
     public static let standard = Settings()
@@ -89,6 +121,11 @@ public struct Settings: Equatable, Codable {
             Self.restoreCapacityRange.upperBound
         )
     }
+
+    public mutating func clamp() {
+        clampRestoreCapacity()
+        hotCorners.clampDwell()
+    }
 }
 
 /// 设置持久化。UserDefaults 注入便于测试用独立 suite，不碰真实偏好。
@@ -106,13 +143,13 @@ public struct SettingsStore {
               var settings = try? JSONDecoder().decode(Settings.self, from: data) else {
             return .standard
         }
-        settings.clampRestoreCapacity()
+        settings.clamp()
         return settings
     }
 
     public func save(_ settings: Settings) {
         var normalized = settings
-        normalized.clampRestoreCapacity()
+        normalized.clamp()
         guard let data = try? JSONEncoder().encode(normalized) else { return }
         defaults.set(data, forKey: Self.defaultsKey)
     }

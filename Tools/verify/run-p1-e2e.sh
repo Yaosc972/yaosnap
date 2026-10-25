@@ -17,6 +17,7 @@ swiftc -O -target "$(uname -m)-apple-macos12.0" \
     Sources/Yaosnap/Annotate/AnnotateToolbar.swift \
     Sources/Yaosnap/Annotate/AnnotationCanvas.swift \
     Sources/Yaosnap/Annotate/ToolStyleStore.swift \
+    Sources/Yaosnap/StatusItemController.swift \
     Tools/verify/P1E2E.swift \
     "$PWD/.build/release/YaosnapCore.o" \
     -o /tmp/yaosnap-verify/build/p1harness

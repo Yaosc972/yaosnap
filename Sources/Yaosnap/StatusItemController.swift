@@ -1,4 +1,5 @@
 import AppKit
+import YaosnapCore
 
 /// 菜单展示所需的分组快照，由 PinController 提供。
 struct PinGroupMenuState {
@@ -16,10 +17,12 @@ struct PinGroupMenuState {
 @MainActor
 final class StatusItemController: NSObject, NSMenuDelegate {
     private let statusItem: NSStatusItem
-    private let menu = NSMenu()
+    let menu = NSMenu()
     private let onSnip: @MainActor () -> Void
     private let onPin: @MainActor () -> Void
     private let onTogglePassthrough: @MainActor () -> Void
+    private let historyItems: @MainActor () -> [CaptureHistoryMenu.Item]
+    private let onReplayHistory: @MainActor (Int) -> Void
     private let pinGroupState: @MainActor () -> PinGroupMenuState
     private let onSelectPinGroup: @MainActor (Int) -> Void
     private let onCreatePinGroup: @MainActor (String) -> Bool
@@ -32,6 +35,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         onSnip: @escaping @MainActor () -> Void,
         onPin: @escaping @MainActor () -> Void,
         onTogglePassthrough: @escaping @MainActor () -> Void,
+        historyItems: @escaping @MainActor () -> [CaptureHistoryMenu.Item],
+        onReplayHistory: @escaping @MainActor (Int) -> Void,
         pinGroupState: @escaping @MainActor () -> PinGroupMenuState,
         onSelectPinGroup: @escaping @MainActor (Int) -> Void,
         onCreatePinGroup: @escaping @MainActor (String) -> Bool,
@@ -43,6 +48,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         self.onSnip = onSnip
         self.onPin = onPin
         self.onTogglePassthrough = onTogglePassthrough
+        self.historyItems = historyItems
+        self.onReplayHistory = onReplayHistory
         self.pinGroupState = pinGroupState
         self.onSelectPinGroup = onSelectPinGroup
         self.onCreatePinGroup = onCreatePinGroup
@@ -86,6 +93,16 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         snipItem.image = menuIcon
             ?? NSImage(systemSymbolName: "camera.viewfinder", accessibilityDescription: "截图")
         menu.addItem(snipItem)
+
+        let history = historyItems()
+        let historyItem = NSMenuItem(title: "截图历史", action: nil, keyEquivalent: "")
+        historyItem.image = NSImage(
+            systemSymbolName: "clock.arrow.circlepath",
+            accessibilityDescription: "截图历史"
+        )
+        historyItem.submenu = makeHistoryMenu(history)
+        historyItem.isEnabled = !history.isEmpty
+        menu.addItem(historyItem)
 
         let pinItem = NSMenuItem(title: "贴图", action: #selector(pinTriggered), keyEquivalent: "")
         pinItem.image = NSImage(systemSymbolName: "pin", accessibilityDescription: "贴图")
@@ -135,6 +152,22 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         for item in menu.items where item.action != nil {
             item.target = self
         }
+    }
+
+    private func makeHistoryMenu(_ items: [CaptureHistoryMenu.Item]) -> NSMenu {
+        let submenu = NSMenu()
+        submenu.autoenablesItems = false
+        for item in items {
+            let entry = NSMenuItem(
+                title: item.title,
+                action: #selector(historySelected(_:)),
+                keyEquivalent: ""
+            )
+            entry.representedObject = item.index
+            entry.target = self
+            submenu.addItem(entry)
+        }
+        return submenu
     }
 
     private func makeGroupMenu(_ state: PinGroupMenuState) -> NSMenu {
@@ -211,6 +244,11 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     @objc private func snipTriggered() {
         onSnip()
+    }
+
+    @objc private func historySelected(_ sender: NSMenuItem) {
+        guard let index = sender.representedObject as? Int else { return }
+        onReplayHistory(index)
     }
 
     @objc private func pinTriggered() {

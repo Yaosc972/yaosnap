@@ -170,7 +170,12 @@ final class OverlayView: NSView {
     /// 待导出标注。控制器在复制 / 保存时按 displayID 来取。
     var annotations: [Annotation] { canvas?.annotations ?? [] }
 
-    init(shot: DisplayShot, history: [CaptureHistoryEntry] = [], pickColorMode: Bool = false) {
+    init(
+        shot: DisplayShot,
+        history: [CaptureHistoryEntry] = [],
+        pickColorMode: Bool = false,
+        initialHistoryIndex: Int = 0
+    ) {
         self.shot = shot
         self.history = history
         self.pickColorMode = pickColorMode
@@ -189,6 +194,9 @@ final class OverlayView: NSView {
             height: shot.bounds.height
         ))
         addSubview(toolbar)
+        // 从菜单历史进入时直接停在该张；0 仍是本次实时冻结帧。
+        historyIndex = min(max(initialHistoryIndex, 0), history.count)
+        if historyIndex > 0 { applyHistoryImage() }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }

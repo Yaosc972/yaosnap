@@ -10,6 +10,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let settingsStore = SettingsStore()
     private var settings = Settings.standard
     private var settingsWindowController: SettingsWindowController?
+    private lazy var hotCornerMonitor = HotCornerMonitor(
+        isBusy: { [weak self] in self?.snipController.isActive ?? true },
+        onTrigger: { [weak self] in
+            guard let self, !self.snipController.isActive else { return }
+            print("[hotcorner] triggered")
+            self.snipController.start()
+        }
+    )
     private lazy var commandRouter = AppCommandRouter(
         snipController: snipController,
         pinController: pinController
@@ -27,6 +35,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             onSnip: snipController.start,
             onPin: { [pinController] in pinController.pinFromPasteboard() },
             onTogglePassthrough: { [pinController] in pinController.togglePassthrough() },
+            historyItems: { [snipController] in
+                CaptureHistoryMenu.items(from: snipController.historySnapshot)
+            },
+            onReplayHistory: { [snipController] index in
+                snipController.startReplayingHistory(at: index)
+            },
             pinGroupState: { [pinController] in Self.menuState(from: pinController) },
             onSelectPinGroup: { [pinController] id in pinController.activateGroup(id) },
             onCreatePinGroup: { [pinController] name in pinController.addGroup(named: name) },
@@ -81,6 +95,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         snipController.quickSaveDirectory = settings.quickSaveDirectory
             .map { URL(fileURLWithPath: $0) }
         pinController.setRestoreCapacity(settings.restoreCapacity)
+        hotCornerMonitor.apply(settings.hotCorners)
     }
 
     private func registerHotkeys() {

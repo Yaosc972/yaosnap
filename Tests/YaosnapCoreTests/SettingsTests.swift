@@ -44,8 +44,25 @@ struct SettingsTests {
         #expect(loaded == settings)
     }
 
-    @Test func hotkeyStructureSurvivesJSON() throws {
-        let hotkey = Hotkey(keyCode: 17, modifiers: 0x1200)
+    @Test func legacySettingsWithoutNewFieldsKeepExistingValues() throws {
+        let legacy: [String: Any] = [
+            "snipHotkey": ["keyCode": 7, "modifiers": 0x1200],
+            "pinHotkey": ["keyCode": 99, "modifiers": 0x0200],
+            "togglePinsHotkey": ["keyCode": 45, "modifiers": 0x0900],
+            "passthroughHotkey": ["keyCode": 17, "modifiers": 0x1200],
+            "restoreCapacity": 5,
+            "autoSelectOnCreation": false,
+        ]
+        let data = try JSONSerialization.data(withJSONObject: legacy)
+        let decoded = try JSONDecoder().decode(Settings.self, from: data)
+
+        #expect(decoded.restoreCapacity == 5)
+        #expect(!decoded.autoSelectOnCreation)
+        #expect(decoded.hotCorners == .standard)
+        #expect(decoded.whiteboard == .standard)
+    }
+
+    @Test func hotkeyStructureSurvivesJSON() throws {        let hotkey = Hotkey(keyCode: 17, modifiers: 0x1200)
         let data = try JSONEncoder().encode(hotkey)
         let decoded = try JSONDecoder().decode(Hotkey.self, from: data)
         #expect(decoded.keyCode == 17)

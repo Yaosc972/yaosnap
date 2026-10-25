@@ -28,7 +28,10 @@ final class SnipController {
     private var history: [CaptureHistoryEntry] = []
     private static let historyLimit = 10
     var historyCount: Int { history.count }
+    /// 菜单栏与验收读取的历史快照，与 `,` `.` 回放共用这一份。
+    var historySnapshot: [CaptureHistoryEntry] { history }
     var latestCapture: CaptureHistoryEntry? { history.first }
+    var isActive: Bool { !windows.isEmpty }
     /// 当前待输出选区，绑定提交它的屏幕。输出请求必须带同一 displayID。
     private var pendingRegion: PendingRegion?
     private var saveJob: SaveJob?
@@ -41,14 +44,20 @@ final class SnipController {
     private var isCrosshairActive = false
 
     func start() {
-        start(pickColor: false)
+        start(pickColor: false, replayIndex: nil)
     }
 
     func startPickColor() {
-        start(pickColor: true)
+        start(pickColor: true, replayIndex: nil)
     }
 
-    private func start(pickColor: Bool) {
+    /// 从菜单历史进入：会话直接停在选中的那张，index 0 为最新。
+    func startReplayingHistory(at index: Int) {
+        guard history.indices.contains(index) else { return }
+        start(pickColor: false, replayIndex: index + 1)
+    }
+
+    private func start(pickColor: Bool, replayIndex: Int?) {
         print("[snip] start called\(pickColor ? " (pick-color)" : "")")
         guard windows.isEmpty else { return }
         guard ScreenCaptureService.hasPermission() else {
@@ -57,11 +66,18 @@ final class SnipController {
             showPermissionAlert()
             return
         }
-        let captures = ScreenCaptureService.captureAllDisplays()
+        let settings = settingsStore.load()
+        let captures = preparedCaptures(settings: settings)
         guard !captures.isEmpty else {
             showCaptureEmptyAlert()
             return
         }
+
+        // 键盘落在鼠标所在屏，历史重放也只在该屏生效，其余屏保持实时画面。
+        let mouse = NSEvent.mouseLocation
+        let keyDisplayID = NSScreen.screens.first { $0.frame.contains(mouse) }
+            .flatMap { $0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber }
+            .map(\.uint32Value)
 
         shots = []
         pendingRegion = nil
@@ -74,8 +90,14 @@ final class SnipController {
                 continue
             }
             let window = SnipOverlayWindow(screen: screen)
-            let view = OverlayView(shot: shot, history: history, pickColorMode: pickColor)
-            view.autoSelectOnCreation = settingsStore.load().autoSelectOnCreation
+            let initialHistory = shot.displayID == keyDisplayID ? replayIndex ?? 0 : 0
+            let view = OverlayView(
+                shot: shot,
+                history: history,
+                pickColorMode: pickColor,
+                initialHistoryIndex: initialHistory
+            )
+            view.autoSelectOnCreation = settings.autoSelectOnCreation
             if pickColor {
                 view.onPickColor = { [weak self] in self?.cancel() }
             }
@@ -95,9 +117,27 @@ final class SnipController {
         setCrosshair(true)
         NSApp.activate(ignoringOtherApps: true)
         // 键盘事件交给鼠标所在屏的覆盖层，多屏时 Esc / Enter 落在用户正在看的屏。
-        let mouse = NSEvent.mouseLocation
         let keyWindow = windows.first { $0.screen?.frame.contains(mouse) == true } ?? windows.first
         keyWindow?.makeKey()
+    }
+
+    /// 白板模式只替换冻结帧，像素尺寸保持不变，裁剪与多屏几何不用改。
+    private func preparedCaptures(settings: Settings) -> [DisplayShot] {
+        let shots = ScreenCaptureService.captureAllDisplays()
+        guard settings.whiteboard.enabled else { return shots }
+        return shots.map { shot in
+            guard let solid = WhiteboardImage.make(
+                width: shot.image.width,
+                height: shot.image.height,
+                color: settings.whiteboard.color
+            ) else { return shot }
+            return DisplayShot(
+                displayID: shot.displayID,
+                image: solid,
+                bounds: shot.bounds,
+                scale: shot.scale
+            )
+        }
     }
 
     func cancel() {
