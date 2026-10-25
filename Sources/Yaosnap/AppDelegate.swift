@@ -23,7 +23,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItemController = StatusItemController(
             onSnip: snipController.start,
             onPin: { [pinController] in pinController.pinFromPasteboard() },
-            onTogglePassthrough: { [pinController] in pinController.togglePassthrough() }
+            onTogglePassthrough: { [pinController] in pinController.togglePassthrough() },
+            pinGroupState: { [pinController] in Self.menuState(from: pinController) },
+            onSelectPinGroup: { [pinController] id in pinController.activateGroup(id) },
+            onCreatePinGroup: { [pinController] name in pinController.addGroup(named: name) },
+            onRenamePinGroup: { [pinController] id, name in pinController.renameGroup(id, to: name) },
+            onDeletePinGroup: { [pinController] id in pinController.deleteGroup(id) },
+            onToggleSolo: { [pinController] in pinController.toggleSoloForCurrentPin() }
         )
         NotificationCenter.default.addObserver(
             self, selector: #selector(handleSnipEscape(_:)), name: .snipEscapePressed, object: nil)
@@ -81,5 +87,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func handleSnipSave(_ notification: Notification) {
         snipController.savePendingImage(notification)
+    }
+
+    private static func menuState(from controller: PinController) -> PinGroupMenuState {
+        PinGroupMenuState(
+            groups: controller.pinGroups.map {
+                PinGroupMenuState.Group(id: $0.id, name: $0.name, isDefault: $0.isDefault)
+            },
+            activeID: controller.activePinGroupID,
+            soloActive: controller.soloPinID != nil
+        )
     }
 }

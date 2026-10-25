@@ -482,6 +482,84 @@ final class PinHarness {
         }
     }
 
+    private func runGroupSwitch() {
+        controller.closeAll()
+        pump()
+        guard let defaultPin = pinFreshWindow(), let secondPin = pinFreshWindow() else {
+            fail("PIN-GROUP-SWITCH", "没有新建贴图窗口")
+            return
+        }
+        guard controller.addGroup(named: "工作"),
+              let workID = controller.pinGroups.first(where: { $0.name == "工作" })?.id else {
+            fail("PIN-GROUP-SWITCH", "新建分组失败")
+            return
+        }
+        guard controller.activateGroup(workID) else {
+            fail("PIN-GROUP-SWITCH", "切换分组失败")
+            return
+        }
+        let afterSwitch = visiblePinWindows()
+        if afterSwitch.isEmpty {
+            pass("PIN-GROUP-SWITCH", "切到空分组后原组贴图全部隐藏")
+        } else {
+            fail("PIN-GROUP-SWITCH", "切组后仍有 \(afterSwitch.count) 个可见贴图")
+        }
+
+        guard controller.activateGroup(PinBoard.defaultGroupID) else {
+            fail("PIN-GROUP-RESTORE", "切回默认组失败")
+            return
+        }
+        let restored = visiblePinWindows()
+        if restored.count == 2,
+           restored.contains(where: { $0 === defaultPin }),
+           restored.contains(where: { $0 === secondPin }) {
+            pass("PIN-GROUP-RESTORE", "切回默认组后两张贴图恢复可见")
+        } else {
+            fail("PIN-GROUP-RESTORE", "切回后可见 \(restored.count) 个")
+        }
+
+        controller.deleteGroup(workID)
+        pump()
+    }
+
+    private func runSolo() {
+        controller.closeAll()
+        pump()
+        guard let solo = pinFreshWindow(), let other = pinFreshWindow() else {
+            fail("PIN-SOLO", "没有新建贴图窗口")
+            return
+        }
+        guard controller.toggleSolo(pinID: solo.pinID) else {
+            fail("PIN-SOLO", "开启 Solo 失败")
+            return
+        }
+        pump(0.1)
+        let soloVisible = visiblePinWindows()
+        if soloVisible.count == 1, soloVisible[0] === solo {
+            pass("PIN-SOLO", "Solo 后只显示目标贴图")
+        } else {
+            fail("PIN-SOLO", "Solo 后可见 \(soloVisible.count) 个，期望 1")
+        }
+
+        guard controller.toggleSolo(pinID: solo.pinID) else {
+            fail("PIN-SOLO-EXIT", "退出 Solo 失败")
+            return
+        }
+        pump(0.1)
+        let afterExit = visiblePinWindows()
+        if afterExit.count == 2,
+           afterExit.contains(where: { $0 === solo }),
+           afterExit.contains(where: { $0 === other }) {
+            pass("PIN-SOLO-EXIT", "退出 Solo 后两张贴图恢复可见")
+        } else {
+            fail("PIN-SOLO-EXIT", "退出后可见 \(afterExit.count) 个，期望 2")
+        }
+
+        solo.close()
+        other.close()
+        pump()
+    }
+
     func runAll() {
         runFirstPin()
         runSecondPin()
@@ -500,6 +578,8 @@ final class PinHarness {
         runControlW()
         runRestoreClosed()
         runPassthrough()
+        runGroupSwitch()
+        runSolo()
         controller.closeAll()
         print("SUMMARY passes=\(passes) failures=\(failures)")
         exit(failures == 0 ? 0 : 1)

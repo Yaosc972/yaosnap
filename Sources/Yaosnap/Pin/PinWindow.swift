@@ -6,6 +6,8 @@ import YaosnapCore
 final class PinWindow: NSWindow {
     private let pinView = PinContentView(frame: .zero)
     let pasteImage: PasteImage
+    /// 控制器分配的身份，分组与 Solo 只按它记账，不用窗口对象。
+    let pinID: Int
     private(set) var transform: PinTransform = .identity
     /// Shift+Esc 销毁的贴图不进恢复列表，普通关闭才进。
     private(set) var canRestore = true
@@ -13,7 +15,13 @@ final class PinWindow: NSWindow {
     let basePointSize: CGSize
 
     /// topLeft 使用主屏左上角为原点的屏幕坐标（y 向下），与 CLI 的 --pos 一致。
-    init(pasteImage: PasteImage, screen: NSScreen, cascadeIndex: Int, topLeft requestedTopLeft: CGPoint? = nil) {
+    init(
+        pasteImage: PasteImage,
+        pinID: Int,
+        screen: NSScreen,
+        cascadeIndex: Int,
+        topLeft requestedTopLeft: CGPoint? = nil
+    ) {
         let visible = screen.visibleFrame
         let source = pasteImage.pointSize
         let fit = min(
@@ -27,6 +35,7 @@ final class PinWindow: NSWindow {
         )
         basePointSize = size
         self.pasteImage = pasteImage
+        self.pinID = pinID
         var origin: CGPoint
         if let requestedTopLeft {
             // 窗口 frame 的原点是左下角，而请求给的是左上角。
@@ -57,9 +66,10 @@ final class PinWindow: NSWindow {
     }
 
     /// 从恢复列表重建。frame 与 transform 都取关闭时的原值，尺寸不再重新适配屏幕。
-    init(pasteImage: PasteImage, restoring entry: PinRestoreEntry) {
+    init(pasteImage: PasteImage, pinID: Int, restoring entry: PinRestoreEntry) {
         basePointSize = entry.basePointSize
         self.pasteImage = pasteImage
+        self.pinID = pinID
         super.init(
             contentRect: entry.frame,
             styleMask: [.borderless],

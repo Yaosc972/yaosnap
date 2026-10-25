@@ -10,6 +10,10 @@ final class PinController: NSObject, NSWindowDelegate {
     private var pinned: [PinWindow] = []
     private var restoreList = PinRestoreList<PinRestoreEntry>(capacity: PinController.restoreCapacity)
     private var lastPinned: PasteImage?
+    private var groups = PinBoard()
+    private var nextPinID = 1
+    /// 进入 Solo 前的可见集合，退出时按它恢复，而不是假定「全组可见」。
+    private var visibleBeforeSolo: Set<Int> = []
 
     @discardableResult
     func pinFromPasteboard() -> Bool {
@@ -50,24 +54,122 @@ final class PinController: NSObject, NSWindowDelegate {
     }
 
     func showAll() {
-        for window in pinned { window.orderFront(nil) }
-        pinned.last?.makeKey()
+        var last: PinWindow?
+        for window in pinned where groups.shouldShow(pinID: window.pinID) {
+            window.orderFront(nil)
+            last = window
+        }
+        last?.makeKey()
     }
 
     func hideAll() {
         for window in pinned { window.orderOut(nil) }
     }
 
-    /// 只要还有可见窗口就全部隐藏，否则全部显示。
+    /// 只要还有可见窗口就全部隐藏，否则把当前分组重新显示出来。
     @discardableResult
     func toggleVisibility() -> Bool {
         if pinned.contains(where: \.isVisible) {
-            for window in pinned { window.orderOut(nil) }
+            hideAll()
             return false
         }
-        for window in pinned { window.orderFront(nil) }
-        pinned.last?.makeKey()
+        showAll()
         return true
+    }
+
+    // MARK: - 分组与 Solo
+
+    var pinGroups: [PinBoard.Group] { groups.groups }
+    var activePinGroupID: Int { groups.activeGroupID }
+    var soloPinID: Int? { groups.soloPinID }
+
+    @discardableResult
+    func addGroup(named name: String) -> Bool {
+        groups.addGroup(named: name) != nil
+    }
+
+    @discardableResult
+    func renameGroup(_ id: Int, to name: String) -> Bool {
+        groups.renameGroup(id: id, to: name)
+    }
+
+    @discardableResult
+    func deleteGroup(_ id: Int) -> Bool {
+        guard id != PinBoard.defaultGroupID, groups.group(id: id) != nil else { return false }
+        groups.deleteGroup(id: id)
+        if groups.soloPinID == nil { visibleBeforeSolo = [] }
+        applyVisibility()
+        return true
+    }
+
+    /// 切组只显示该组贴图，并让 Solo 让位：用户要看的是整组。
+    @discardableResult
+    func activateGroup(_ id: Int) -> Bool {
+        guard groups.activateGroup(id: id) else { return false }
+        visibleBeforeSolo = []
+        applyVisibility()
+        return true
+    }
+
+    /// 对指定贴图切换 Solo。同一时间只有一张贴图能处于 Solo，切换目标即接管。
+    @discardableResult
+    func toggleSolo(pinID: Int) -> Bool {
+        guard let window = pinned.first(where: { $0.pinID == pinID }) else { return false }
+        if groups.soloPinID == pinID {
+            groups.endSolo()
+            restoreAfterSolo()
+            return true
+        }
+        if groups.soloPinID == nil {
+            visibleBeforeSolo = Set(pinned.filter(\.isVisible).map(\.pinID))
+        }
+        guard groups.beginSolo(pinID: pinID) else { return false }
+        applyVisibility()
+        window.makeKey()
+        return true
+    }
+
+    /// 菜单入口：当前贴图取 key window，退而求其次取最上层可见贴图。
+    @discardableResult
+    func toggleSoloForCurrentPin() -> Bool {
+        let current = (NSApp.keyWindow as? PinWindow)
+            ?? pinned.last(where: \.isVisible)
+            ?? pinned.last
+        guard let current else {
+            print("[pin] solo 失败：没有贴图")
+            NSSound.beep()
+            return false
+        }
+        let wasSolo = groups.soloPinID == current.pinID
+        let ok = toggleSolo(pinID: current.pinID)
+        print("[pin] solo \(wasSolo ? "off" : "on") pin=\(current.pinID) ok=\(ok)")
+        return ok
+    }
+
+    private func applyVisibility() {
+        var last: PinWindow?
+        for window in pinned {
+            if groups.shouldShow(pinID: window.pinID) {
+                window.orderFront(nil)
+                last = window
+            } else {
+                window.orderOut(nil)
+            }
+        }
+        last?.makeKey()
+    }
+
+    private func restoreAfterSolo() {
+        let previous = visibleBeforeSolo
+        visibleBeforeSolo = []
+        for window in pinned {
+            if previous.contains(window.pinID), groups.shouldShow(pinID: window.pinID) {
+                window.orderFront(nil)
+            } else {
+                window.orderOut(nil)
+            }
+        }
+        pinned.last(where: \.isVisible)?.makeKey()
     }
 
     func closeAll() {
@@ -104,13 +206,18 @@ final class PinController: NSObject, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? PinWindow else { return }
         pinned.removeAll { $0 === window }
+        let groupID = groups.groupID(of: window.pinID)
+        let wasSolo = groups.soloPinID == window.pinID
+        groups.forget(pinID: window.pinID)
+        if wasSolo { visibleBeforeSolo = [] }
         guard window.canRestore else { return }
         restoreList.record(
             PinRestoreEntry(
                 image: window.pasteImage,
                 transform: window.transform,
                 frame: window.frame,
-                basePointSize: window.basePointSize
+                basePointSize: window.basePointSize,
+                groupID: groupID
             ),
             kind: .closed
         )
@@ -130,8 +237,16 @@ final class PinController: NSObject, NSWindowDelegate {
 
     private func present(_ image: PasteImage, on screen: NSScreen, at topLeft: CGPoint?) {
         lastPinned = image
+        // 贴一张新图是想看到它：Solo 退出并把原可见集合还回去。
+        if groups.soloPinID != nil {
+            groups.endSolo()
+            restoreAfterSolo()
+        }
+        let pinID = allocatePinID()
+        groups.assign(pinID: pinID, toGroup: groups.activeGroupID)
         let window = PinWindow(
             pasteImage: image,
+            pinID: pinID,
             screen: screen,
             cascadeIndex: pinned.count,
             topLeft: topLeft
@@ -144,11 +259,25 @@ final class PinController: NSObject, NSWindowDelegate {
 
     private func restore(_ entry: PinRestoreEntry) {
         lastPinned = entry.image
-        let window = PinWindow(pasteImage: entry.image, restoring: entry)
+        if groups.soloPinID != nil {
+            groups.endSolo()
+            restoreAfterSolo()
+        }
+        let pinID = allocatePinID()
+        // 恢复回到关闭时的分组，组已删则 assign 落到默认组。
+        groups.assign(pinID: pinID, toGroup: entry.groupID)
+        groups.activateGroup(id: groups.groupID(of: pinID))
+        let window = PinWindow(pasteImage: entry.image, pinID: pinID, restoring: entry)
         window.delegate = self
         pinned.append(window)
-        window.makeKeyAndOrderFront(nil)
+        applyVisibility()
+        window.makeKey()
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func allocatePinID() -> Int {
+        defer { nextPinID += 1 }
+        return nextPinID
     }
 
     /// Snipaste 的 --pos 以主屏左上角为原点、y 向下；AppKit 以左下角为原点、y 向上。

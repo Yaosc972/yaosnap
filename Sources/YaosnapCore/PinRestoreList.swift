@@ -13,12 +13,21 @@ public struct PinRestoreEntry {
     public let transform: PinTransform
     public let frame: CGRect
     public let basePointSize: CGSize
+    /// 恢复时回到原分组，避免关闭再恢复把贴图跨组搬走。
+    public let groupID: Int
 
-    public init(image: PasteImage, transform: PinTransform, frame: CGRect, basePointSize: CGSize) {
+    public init(
+        image: PasteImage,
+        transform: PinTransform,
+        frame: CGRect,
+        basePointSize: CGSize,
+        groupID: Int
+    ) {
         self.image = image
         self.transform = transform
         self.frame = frame
         self.basePointSize = basePointSize
+        self.groupID = groupID
     }
 }
 
