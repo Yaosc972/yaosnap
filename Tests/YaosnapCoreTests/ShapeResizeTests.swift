@@ -51,6 +51,11 @@ struct ShapeResizeTests {
             #expect(!shape.supportsResizeHandles, "\(shape.kind.rawValue) 不应支持包围盒缩放")
             #expect(shape.resized(to: box) == shape, "\(shape.kind.rawValue) 的几何不应被缩放改动")
         }
+
+        // 放大镜目前只支持拖拽创建，尚未接二次缩放，几何保持原样。
+        let magnify = Shape.magnify(box, zoom: 2)
+        #expect(!magnify.supportsResizeHandles)
+        #expect(magnify.resized(to: CGRect(x: 0, y: 0, width: 40, height: 30)) == magnify)
     }
 
     /// 圆角矩形缩放时半径保持原值，只在渲染层按新短边钳制。
@@ -66,7 +71,7 @@ struct ShapeResizeTests {
         #expect(LineStyle.dotted.next == .solid)
         #expect(LineStyle.solid.dashPattern(lineWidth: 5) == nil)
 
-        for kind in [ShapeKind.rect, .roundedRect, .ellipse, .line, .arrow, .polyline] {
+        for kind in [ShapeKind.rect, .roundedRect, .ellipse, .line, .arrow, .polyline, .magnify] {
             #expect(kind.supportsLineStyle, "\(kind.rawValue) 应支持线型")
         }
         for kind in [ShapeKind.brush, .marker, .mosaic, .blur, .text, .serial, .eraser] {

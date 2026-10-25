@@ -23,6 +23,7 @@ struct AnnotationTests {
             .marker([CGPoint(x: 2, y: 2), CGPoint(x: 8, y: 8)]),
             .mosaic([CGPoint(x: 4, y: 4)]),
             .blur([CGPoint(x: 4, y: 4), CGPoint(x: 9, y: 6)]),
+            .magnify(CGRect(x: 10, y: 20, width: 80, height: 60), zoom: 2.5),
             .text("Hi", origin: CGPoint(x: 6, y: 8), fontSize: 22, rotation: 0.5),
             .serial(value: 3, center: CGPoint(x: 20, y: 30), radius: 14),
         ]
@@ -88,6 +89,7 @@ struct AnnotationTests {
             (.marker([]), .marker),
             (.mosaic([]), .mosaic),
             (.blur([]), .blur),
+            (.magnify(.zero, zoom: 2), .magnify),
             (.text("", origin: .zero, fontSize: 14, rotation: 0), .text),
             (.serial(value: 1, center: .zero, radius: 10), .serial),
         ]

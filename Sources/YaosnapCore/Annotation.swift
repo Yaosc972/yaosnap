@@ -79,6 +79,7 @@ public enum ShapeKind: String, Codable, CaseIterable {
     case marker
     case mosaic
     case blur
+    case magnify
     case text
     case serial
     case eraser
@@ -96,6 +97,8 @@ public enum Shape: Equatable, Codable {
     case marker([CGPoint])
     case mosaic([CGPoint])
     case blur([CGPoint])
+    /// 放大镜：rect 是镜框，镜内显示 rect 中心 1/zoom 区域的放大画面。
+    case magnify(CGRect, zoom: CGFloat)
     /// origin 为文本基线起点，画布点坐标。字号独立于 PenSize 的线条宽度。
     /// rotation 是绕未旋转包围盒中心的弧度，0 表示水平。
     case text(String, origin: CGPoint, fontSize: CGFloat, rotation: CGFloat)
@@ -114,6 +117,7 @@ public enum Shape: Equatable, Codable {
         case .marker: return .marker
         case .mosaic: return .mosaic
         case .blur: return .blur
+        case .magnify: return .magnify
         case .text: return .text
         case .serial: return .serial
         }
@@ -122,7 +126,8 @@ public enum Shape: Equatable, Codable {
     /// 画布坐标系下的包围盒。渲染裁剪与未来命中测试都用它。
     public var bounds: CGRect {
         switch self {
-        case .rect(let rect), .roundedRect(let rect, _), .ellipse(let rect):
+        case .rect(let rect), .roundedRect(let rect, _), .ellipse(let rect),
+             .magnify(let rect, _):
             return rect
         case .line(let from, let to), .arrow(let from, let to):
             return RectMath.normalizedRect(from: from, to: to)
@@ -155,7 +160,7 @@ public enum Shape: Equatable, Codable {
     /// 命中测试。面状形状按包围盒（外扩 tolerance）判断，线状按到路径的距离判断。
     public func contains(_ point: CGPoint, tolerance: CGFloat) -> Bool {
         switch self {
-        case .rect(let rect), .roundedRect(let rect, _):
+        case .rect(let rect), .roundedRect(let rect, _), .magnify(let rect, _):
             return rect.insetBy(dx: -tolerance, dy: -tolerance).contains(point)
         case .ellipse(let rect):
             // 按椭圆方程判断，包围盒四角不算命中。
@@ -199,6 +204,8 @@ public enum Shape: Equatable, Codable {
             return .roundedRect(rect.offsetBy(dx: delta.x, dy: delta.y), radius: radius)
         case .ellipse(let rect):
             return .ellipse(rect.offsetBy(dx: delta.x, dy: delta.y))
+        case .magnify(let rect, let zoom):
+            return .magnify(rect.offsetBy(dx: delta.x, dy: delta.y), zoom: zoom)
         case .line(let from, let to):
             return .line(from: moved(from), to: moved(to))
         case .arrow(let from, let to):

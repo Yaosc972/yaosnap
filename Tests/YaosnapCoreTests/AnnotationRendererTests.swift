@@ -618,4 +618,67 @@ struct AnnotationRendererTests {
         // 块色是红蓝均值 ≈ (127,0,127)
         #expect(a.r > 90 && a.r < 170 && a.b > 90 && a.b < 170 && a.g < 40)
     }
+
+    @Test func magnifyShowsScaledCenterRegionWithBorder() {
+        let side = 224
+        // 8px 绿 / 8px 蓝竖条纹，周期 16px。
+        let striped = PixelBuffer.solidImage(width: side, height: side, rects: stride(
+            from: 0, to: side, by: 16
+        ).flatMap { x in
+            [
+                (rect: CGRect(x: x, y: 0, width: 8, height: side), color: PixelBuffer.rgb(0, 1, 0)),
+                (rect: CGRect(x: x + 8, y: 0, width: 8, height: side), color: PixelBuffer.rgb(0, 0, 1)),
+            ]
+        })
+        // 镜框中心 (112, 112)，zoom 2 → 源区域 80..144，从绿条起点开始。
+        let rect = CGRect(x: 48, y: 48, width: 128, height: 128)
+        let annotation = Annotation(
+            shape: .magnify(rect, zoom: 2),
+            style: Style(color: red, pen: .p3)
+        )
+        let ctx = CGContext(
+            data: nil, width: side, height: side,
+            bitsPerComponent: 8, bytesPerRow: side * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )!
+        AnnotationRenderer.drawUpright(striped, in: CGRect(x: 0, y: 0, width: side, height: side), ctx: ctx)
+        AnnotationRenderer.draw(
+            [annotation], draft: nil,
+            input: RenderInput(
+                base: striped,
+                cropOriginPx: .zero,
+                canvasSize: CGSize(width: side, height: side),
+                scale: 1
+            ),
+            into: ctx
+        )
+        let bytes = PixelBuffer.srgbBytes(ctx.makeImage()!, width: side, height: side)!
+
+        // 相邻绿/蓝跳变的间距：镜外是原始 8px，镜内放大后应为 16px。
+        func edgeDeltas(_ range: ClosedRange<Int>, cy: Int) -> [Int] {
+            var edges: [Int] = []
+            var lastGreen: Bool?
+            for x in range {
+                let p = at(bytes, x: x, cy: cy, canvasSide: side)
+                let green = p.g > 200 && p.b < 60
+                let blue = p.b > 200 && p.g < 60
+                guard green || blue else { continue }
+                if let lastGreen, lastGreen != green { edges.append(x) }
+                lastGreen = green
+            }
+            return zip(edges, edges.dropFirst()).map { $1 - $0 }
+        }
+
+        let outside = edgeDeltas(0...40, cy: 20)
+        #expect(!outside.isEmpty, "镜外应能找到原始条纹")
+        #expect(outside.allSatisfy { abs($0 - 8) <= 1 }, "镜外条纹保持原始周期: \(outside)")
+
+        let inside = edgeDeltas(70...160, cy: 112)
+        #expect(!inside.isEmpty, "镜内应能看到被放大的条纹")
+        #expect(inside.allSatisfy { abs($0 - 16) <= 1 }, "镜内条纹周期应是原始的两倍: \(inside)")
+
+        #expect(isRed(at(bytes, x: 50, cy: 112, canvasSide: side)), "镜框左边界应为描边色")
+        #expect(!isRed(at(bytes, x: 112, cy: 112, canvasSide: side)), "镜面中心应是条纹而不是描边")
+    }
 }

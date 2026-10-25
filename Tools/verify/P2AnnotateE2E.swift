@@ -6,6 +6,22 @@ import ImageIO
 import UniformTypeIdentifiers
 import YaosnapCore
 
+/// 固定周期的黑白竖条纹，给放大镜用例提供可控的高频底图。
+/// 周期 16pt（8pt 黑 + 8pt 白），放大 2 倍后交界间距应从 8pt 变成 16pt。
+private final class StripePatternView: NSView {
+    override func draw(_ dirtyRect: NSRect) {
+        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
+        ctx.setFillColor(CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1))
+        ctx.fill(bounds)
+        ctx.setFillColor(CGColor(srgbRed: 0, green: 0, blue: 0, alpha: 1))
+        var x: CGFloat = 0
+        while x < bounds.width {
+            ctx.fill(CGRect(x: x, y: 0, width: 8, height: bounds.height))
+            x += 16
+        }
+    }
+}
+
 /// P2 标注第一批验收 harness。驱动真实 SnipController / OverlayView，
 /// 验证画矩形 → 复制 → 剪贴板与参考渲染一致、方向正确、状态机行为正确。
 @MainActor
@@ -2340,6 +2356,126 @@ final class AnnotateHarness {
     }
 
     /// 橡皮擦：划过两个矩形之一，标注数 2→1；一次撤销恢复被删标注。
+    /// 铺满主屏的黑白条纹窗口，只在本用例期间存在，给放大镜提供可控底图。
+    private func showStripeBackdrop() -> NSWindow? {
+        guard let screen = NSScreen.main ?? NSScreen.screens.first else { return nil }
+        let window = NSWindow(
+            contentRect: screen.frame,
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.level = .floating
+        window.isOpaque = true
+        window.backgroundColor = .white
+        window.contentView = StripePatternView(frame: CGRect(origin: .zero, size: screen.frame.size))
+        window.orderFrontRegardless()
+        pump(0.5)
+        return window
+    }
+
+    /// 放大镜：镜内显示中心区域放大 2 倍的画面，镜外保持原始纹理，框边界有描边。
+    private func runMagnifyTool() {
+        guard let backdrop = showStripeBackdrop() else {
+            fail("MAGNIFY", "无法创建条纹底图窗口")
+            return
+        }
+        guard let (window, view) = beginSession("MAGNIFY") else {
+            backdrop.close()
+            return
+        }
+        defer {
+            endSession()
+            backdrop.orderOut(nil)
+            backdrop.close()
+            pump(0.2)
+        }
+
+        let top = view.bounds.height
+        drag(view, window: window, from: CGPoint(x: 200, y: top - 460), to: CGPoint(x: 820, y: top - 120))
+        let selection = view.selectionRect
+        guard selection.width >= 500, selection.height >= 280 else {
+            fail("MAGNIFY", "选区异常 \(selection)")
+            return
+        }
+        guard tapTool(view, .magnify, id: "MAGNIFY") else { return }
+
+        // 镜框放画布左侧，右侧留出未覆盖的原始条纹做对照。
+        let box = CGRect(x: 40, y: 40, width: 240, height: 200)
+        press(view, window: window, path: [
+            CGPoint(x: selection.minX + box.minX, y: selection.minY + box.minY),
+            CGPoint(x: selection.minX + box.maxX, y: selection.minY + box.maxY),
+        ])
+        guard view.annotations.count == 1,
+              case .magnify(let rect, let zoom) = view.annotations[0].shape else {
+            fail("MAGNIFY", "放大镜标注未入列 annotations=\(view.annotations.count)")
+            return
+        }
+        if abs(rect.width - box.width) <= 1, abs(rect.height - box.height) <= 1, zoom == 2 {
+            pass("MAGNIFY", "拖拽创建放大镜 rect=\(rect) zoom=\(zoom)")
+        } else {
+            fail("MAGNIFY", "放大镜几何不符 rect=\(rect) zoom=\(zoom)")
+        }
+
+        guard let after = exportedBytes(view) else {
+            fail("MAGNIFY", "导出失败")
+            return
+        }
+        let scale = view.shot.scale
+        let widthPx = Int(selection.width * scale)
+        let heightPx = Int(selection.height * scale)
+        guard after.count == widthPx * heightPx * 4 else {
+            fail("MAGNIFY", "导出尺寸异常 \(after.count) 期望 \(widthPx * heightPx * 4)")
+            return
+        }
+
+        func pixel(atCanvasX x: CGFloat, y: CGFloat) -> (r: Int, g: Int, b: Int) {
+            let px = min(widthPx - 1, max(0, Int(x * scale)))
+            let py = min(heightPx - 1, max(0, Int((selection.height - y) * scale)))
+            return pixelColor(after, x: px, y: py, width: widthPx)
+        }
+
+        /// 沿一条水平线扫黑白跳变，返回相邻跳变的间距（像素）。
+        func stripePeriods(xRange: ClosedRange<CGFloat>, canvasY: CGFloat) -> [Int] {
+            var edges: [CGFloat] = []
+            var lastDark: Bool?
+            var x = xRange.lowerBound
+            while x <= xRange.upperBound {
+                let p = pixel(atCanvasX: x, y: canvasY)
+                let dark = (p.r * 299 + p.g * 587 + p.b * 114) / 1000 < 128
+                if let lastDark, lastDark != dark { edges.append(x) }
+                lastDark = dark
+                x += 1
+            }
+            return zip(edges, edges.dropFirst()).map { Int((($1 - $0) * scale).rounded()) }
+        }
+
+        let baseline = Int((8 * scale).rounded())
+        let outside = stripePeriods(xRange: (box.maxX + 20)...(box.maxX + 100), canvasY: box.midY)
+        if outside.isEmpty || !outside.allSatisfy({ abs($0 - baseline) <= 3 }) {
+            fail("MAGNIFY", "镜外条纹间距异常 \(outside) 期望约 \(baseline)")
+        } else {
+            pass("MAGNIFY", "镜外条纹间距 \(outside)")
+        }
+
+        let magnified = Int((16 * scale).rounded())
+        let inside = stripePeriods(xRange: (box.minX + 12)...(box.maxX - 12), canvasY: box.midY)
+        if inside.isEmpty || !inside.allSatisfy({ abs($0 - magnified) <= 3 }) {
+            fail("MAGNIFY", "镜内条纹间距异常 \(inside) 期望约 \(magnified)")
+        } else {
+            pass("MAGNIFY", "镜内条纹间距 \(inside)")
+        }
+
+        let border = pixel(atCanvasX: box.minX + 1.5, y: box.midY)
+        if border.r > 200, border.g < 130, border.b < 130 {
+            pass("MAGNIFY", "镜框边界描边色 \(border)")
+        } else {
+            fail("MAGNIFY", "镜框边界没有描边色 \(border)")
+        }
+
+        capture("p2-magnify.png")
+    }
+
     private func runEraserTool() {
         guard let (window, view) = beginSession("ERASER") else { return }
         drag(view, window: window, from: CGPoint(x: 150, y: 150), to: CGPoint(x: 750, y: 600))
@@ -2884,6 +3020,7 @@ final class AnnotateHarness {
         runRecognition()
         runSerialTool()
         runBlurTool()
+        runMagnifyTool()
         runEraserTool()
         runTextAnnotation()
         runMultilineText()

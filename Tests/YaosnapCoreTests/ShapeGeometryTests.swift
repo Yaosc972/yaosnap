@@ -8,6 +8,7 @@ struct ShapeGeometryTests {
         #expect(Shape.rect(rect).bounds == rect)
         #expect(Shape.roundedRect(rect, radius: 5).bounds == rect)
         #expect(Shape.ellipse(rect).bounds == rect)
+        #expect(Shape.magnify(rect, zoom: 2).bounds == rect)
     }
 
     // 正反向线段包围盒一致，归一化到最小角
@@ -59,16 +60,21 @@ struct ShapeGeometryTests {
         // 数组顺序即未来工具条顺序
         #expect(ShapeCatalog.entries.map(\.kind) == [
             .rect, .roundedRect, .ellipse, .line, .arrow, .polyline,
-            .brush, .marker, .mosaic, .blur, .text, .serial, .eraser,
+            .brush, .marker, .mosaic, .blur, .text, .serial, .eraser, .magnify,
         ])
-        #expect(ShapeCatalog.p2.count == 13)
+        #expect(ShapeCatalog.p2.count == 14)
         #expect(ShapeCatalog.entry(for: .rect)?.symbol == "rectangle")
         #expect(ShapeCatalog.entry(for: .polyline)?.symbol == "scribble")
         #expect(ShapeCatalog.entry(for: .mosaic) != nil)
         #expect(ShapeCatalog.entry(for: .text)?.shortcut == "T")
         #expect(ShapeCatalog.entry(for: .serial)?.shortcut == "N")
+        // 模糊保留既有 G；放大镜用 Z（Zoom），避免改动用户已形成的按键习惯。
         #expect(ShapeCatalog.entry(for: .blur)?.shortcut == "G")
+        #expect(ShapeCatalog.entry(for: .magnify)?.shortcut == "Z")
         #expect(ShapeCatalog.entry(for: .eraser)?.shortcut == "E")
+        // 工具快捷键必须唯一，否则按键会被目录里靠前的形状抢走。
+        let shortcuts = ShapeCatalog.p2.map(\.shortcut)
+        #expect(Set(shortcuts).count == shortcuts.count)
     }
 
     // MARK: - 命中测试
@@ -78,6 +84,7 @@ struct ShapeGeometryTests {
         let shapes: [Shape] = [
             .rect(rect),
             .roundedRect(rect, radius: 5),
+            .magnify(rect, zoom: 2),
         ]
         for shape in shapes {
             #expect(shape.contains(CGPoint(x: 25, y: 40), tolerance: 0))
@@ -141,6 +148,7 @@ struct ShapeGeometryTests {
             .rect(CGRect(x: 10, y: 20, width: 30, height: 40)),
             .roundedRect(CGRect(x: 10, y: 20, width: 30, height: 40), radius: 5),
             .ellipse(CGRect(x: 10, y: 20, width: 30, height: 40)),
+            .magnify(CGRect(x: 10, y: 20, width: 30, height: 40), zoom: 2),
             .line(from: CGPoint(x: 0, y: 0), to: CGPoint(x: 10, y: 20)),
             .arrow(from: CGPoint(x: 3, y: 4), to: CGPoint(x: -1, y: 9)),
             .polyline([CGPoint(x: 0, y: 0), CGPoint(x: 6, y: 9)]),

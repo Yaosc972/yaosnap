@@ -112,6 +112,8 @@ public enum AnnotationRenderer {
             drawMosaic(points, style: annotation.style, input: input, in: ctx)
         case .blur(let points):
             drawBlur(points, style: annotation.style, input: input, in: ctx)
+        case .magnify(let rect, let zoom):
+            drawMagnify(rect, zoom: zoom, style: annotation.style, input: input, in: ctx)
         case .serial(let value, let center, let radius):
             drawSerial(value: value, center: center, radius: radius, color: color, in: ctx)
         case .text(let string, let origin, let fontSize, let rotation):
@@ -367,6 +369,55 @@ public enum AnnotationRenderer {
         drawUpright(blurred, in: region, ctx: ctx)
         ctx.restoreGState()
     }
+
+    /// 放大镜：取镜框中心 1/zoom 区域的冻结帧像素，重新铺满镜框。
+    /// 采样源与马赛克一致，是原始冻结帧，已画标注不会进镜内。
+    private static func drawMagnify(
+        _ rect: CGRect,
+        zoom: CGFloat,
+        style: Style,
+        input: RenderInput,
+        in ctx: CGContext
+    ) {
+        guard rect.width > 0, rect.height > 0 else { return }
+        let factor = max(1, zoom)
+        let sampler = BaseSampler(
+            base: input.base,
+            cropOriginPx: input.cropOriginPx,
+            canvasSize: input.canvasSize,
+            scale: input.scale
+        )
+        let sourceWidth = rect.width / factor
+        let sourceHeight = rect.height / factor
+        let sourceRegion = CGRect(
+            x: rect.midX - sourceWidth / 2,
+            y: rect.midY - sourceHeight / 2,
+            width: sourceWidth,
+            height: sourceHeight
+        )
+        if let source = sampler.cropped(region: sourceRegion) {
+            let corner = min(Self.magnifyCorner, min(rect.width, rect.height) / 2)
+            ctx.saveGState()
+            ctx.addPath(CGPath(
+                roundedRect: rect, cornerWidth: corner, cornerHeight: corner, transform: nil
+            ))
+            ctx.clip()
+            drawUpright(source, in: rect, ctx: ctx)
+            ctx.restoreGState()
+        }
+
+        let lineWidth = style.pen.lineWidth
+        let inner = rect.insetBy(dx: lineWidth / 2, dy: lineWidth / 2)
+        guard inner.width > 0, inner.height > 0 else { return }
+        let innerCorner = min(Self.magnifyCorner, min(inner.width, inner.height) / 2)
+        stroke(ctx, color: style.color, lineWidth: lineWidth, lineStyle: style.lineStyle) {
+            $0.addPath(CGPath(
+                roundedRect: inner, cornerWidth: innerCorner, cornerHeight: innerCorner, transform: nil
+            ))
+        }
+    }
+
+    private static let magnifyCorner: CGFloat = 4
 
     /// 实心圆加居中白字。数字按位数缩字号，两位数也不会溢出圆外。
     private static func drawSerial(

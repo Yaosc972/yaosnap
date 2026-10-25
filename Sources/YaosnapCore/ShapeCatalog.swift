@@ -140,6 +140,14 @@ public enum ShapeCatalog {
             defaultStyle: Style(color: RGBAColor.palette[0], pen: .p3),
             phase: .p2
         ),
+        ShapeEntry(
+            kind: .magnify,
+            title: "放大镜",
+            symbol: "magnifyingglass",
+            shortcut: "Z",
+            defaultStyle: Style(color: RGBAColor.palette[0], pen: .p3),
+            phase: .p2
+        ),
     ]
 
     /// P2 阶段工具条应显示的条目。P5 形状入库时标 .p5，这里自动过滤。

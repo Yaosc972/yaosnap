@@ -386,7 +386,7 @@ final class OverlayView: NSView {
             switch toolStore.currentKind {
             case .brush, .marker, .mosaic, .blur:
                 appendDraftPoint(current)
-            case .rect, .roundedRect, .ellipse, .line, .arrow, .polyline:
+            case .rect, .roundedRect, .ellipse, .line, .arrow, .polyline, .magnify:
                 canvas.draft = makeDraft(origin: origin, current: current)
             case .serial, .text, .eraser:
                 break
@@ -1397,7 +1397,7 @@ final class OverlayView: NSView {
 
     private func isDraftValid(_ draft: Annotation) -> Bool {
         switch draft.shape {
-        case .rect(let rect), .roundedRect(let rect, _), .ellipse(let rect):
+        case .rect(let rect), .roundedRect(let rect, _), .ellipse(let rect), .magnify(let rect, _):
             return rect.width >= Self.minimumStrokeSide && rect.height >= Self.minimumStrokeSide
         case .line(let from, let to), .arrow(let from, let to):
             // 水平/垂直线的 bounds 有一边为 0，按位移判断
@@ -1625,6 +1625,12 @@ final class OverlayView: NSView {
             )
         case .ellipse:
             return Annotation(shape: .ellipse(RectMath.normalizedRect(from: origin, to: current)), style: style)
+        case .magnify:
+            // 倍率目前固定 2 倍；滚轮调倍率不在本批范围。
+            return Annotation(
+                shape: .magnify(RectMath.normalizedRect(from: origin, to: current), zoom: 2),
+                style: style
+            )
         case .line:
             return Annotation(shape: .line(from: origin, to: current), style: style)
         case .arrow:
@@ -1668,7 +1674,7 @@ final class OverlayView: NSView {
         case .marker(let points): updated = grown(points).map { .marker($0) }
         case .mosaic(let points): updated = grown(points).map { .mosaic($0) }
         case .blur(let points): updated = grown(points).map { .blur($0) }
-        case .rect, .roundedRect, .ellipse, .line, .arrow, .polyline: updated = nil
+        case .rect, .roundedRect, .ellipse, .line, .arrow, .polyline, .magnify: updated = nil
         case .text, .serial: updated = nil
         }
         if let updated {

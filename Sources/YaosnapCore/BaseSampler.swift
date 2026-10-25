@@ -67,6 +67,11 @@ public struct BaseSampler {
         )
     }
 
+    /// region 对应的原始底图像素图。放大镜拿它按倍率重新铺满镜框。
+    public func cropped(region: CGRect) -> CGImage? {
+        croppedPixels(region: region)?.image
+    }
+
     /// 画布点 region → 帧内像素矩形，并把裁剪结果取出来。
     private func croppedPixels(region: CGRect) -> (image: CGImage, pixelRect: CGRect)? {
         // 画布点（y 向上）→ 帧像素（y 向下）：顶部像素 = cropOrigin.y + (canvasHeight - region.maxY) * scale

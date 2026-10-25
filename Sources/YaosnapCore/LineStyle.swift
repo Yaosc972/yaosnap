@@ -30,7 +30,7 @@ extension ShapeKind {
     /// 自由笔画、填充类与文字不走描边路径，改线型对它们没有视觉意义。
     public var supportsLineStyle: Bool {
         switch self {
-        case .rect, .roundedRect, .ellipse, .line, .arrow, .polyline: return true
+        case .rect, .roundedRect, .ellipse, .line, .arrow, .polyline, .magnify: return true
         case .brush, .marker, .mosaic, .blur, .text, .serial, .eraser: return false
         }
     }
