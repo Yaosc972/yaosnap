@@ -476,6 +476,64 @@ struct AnnotationRendererTests {
         #expect(isWhite(at(bytes, x: 150, cy: 112, canvasSide: side)))
     }
 
+    /// 两端带头独立：.end 只有终点三角，.start 只有起点三角，.both 两端都有。
+    /// 采样点在头部底边附近、线体半宽之外，只有三角本身会覆盖那里。
+    @Test func arrowHeadsSelectsWhichEndsGetHeads() {
+        let side = 200
+        let from = CGPoint(x: 40, y: 100), to = CGPoint(x: 160, y: 100)
+        func render(_ heads: ArrowHeads) -> [UInt8] {
+            let annotation = Annotation(
+                shape: .arrow(from: from, to: to),
+                style: Style(color: red, pen: .p3, arrowHeads: heads)
+            )
+            return rendered(width: side, height: side) { ctx in
+                AnnotationRenderer.draw(
+                    [annotation], draft: nil,
+                    input: input(canvasSize: CGSize(width: side, height: side)),
+                    into: ctx
+                )
+            }
+        }
+        // 线宽 5 → 头长 22.5、底边半宽 5.61；cy=103 在线体半宽 2.5 之外。
+        func headInk(_ bytes: [UInt8], xRange: ClosedRange<Int>) -> Int {
+            xRange.filter { isRed(at(bytes, x: $0, cy: 103, canvasSide: side)) }.count
+        }
+        let startBand = 58...62
+        let endBand = 138...142
+
+        let endOnly = render(.end)
+        #expect(headInk(endOnly, xRange: endBand) > 0, ".end 终点应有三角头部")
+        #expect(headInk(endOnly, xRange: startBand) == 0, ".end 起点不应有三角头部")
+
+        let both = render(.both)
+        #expect(headInk(both, xRange: startBand) > 0, ".both 起点应有三角头部")
+        #expect(headInk(both, xRange: endBand) > 0, ".both 终点应有三角头部")
+        #expect(isRed(at(both, x: 100, cy: 100, canvasSide: side)), ".both 线体仍连着两端")
+
+        let startOnly = render(.start)
+        #expect(headInk(startOnly, xRange: startBand) > 0, ".start 起点应有三角头部")
+        #expect(headInk(startOnly, xRange: endBand) == 0, ".start 终点不应有三角头部")
+    }
+
+    /// 总长小于两端头长之和时只画头部，不构造反向或负长度的线体。
+    @Test func shortArrowWithBothHeadsDrawsHeadsOnly() {
+        let side = 200
+        let annotation = Annotation(
+            shape: .arrow(from: CGPoint(x: 100, y: 100), to: CGPoint(x: 120, y: 100)),
+            style: Style(color: red, pen: .p3, arrowHeads: .both)
+        )
+        let bytes = rendered(width: side, height: side) { ctx in
+            AnnotationRenderer.draw(
+                [annotation], draft: nil,
+                input: input(canvasSize: CGSize(width: side, height: side)),
+                into: ctx
+            )
+        }
+        // 两个头部分别从尖端伸出 22.5，覆盖中段与两个尖端附近。
+        #expect(isRed(at(bytes, x: 102, cy: 100, canvasSide: side)))
+        #expect(isRed(at(bytes, x: 118, cy: 100, canvasSide: side)))
+    }
+
     @Test func brushFollowsPointSequence() {
         let side = 200
         let annotation = Annotation(

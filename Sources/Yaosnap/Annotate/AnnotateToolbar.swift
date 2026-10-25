@@ -29,7 +29,7 @@ final class AnnotateToolbar: NSView {
         // 复杂表达式拆开，编译器在单表达式里推不动
         private static let toolRow: CGFloat = CGFloat(ShapeCatalog.p2.count) * buttonSide
             + CGFloat(ShapeCatalog.p2.count - 1) * spacing
-        private static let styleRow: CGFloat = buttonSide * 4 + spacing * 3
+        private static let styleRow: CGFloat = buttonSide * 5 + spacing * 4
         private static let actionRow: CGFloat = ratioLabelWidth + spacing
             + buttonSide * 6 + spacing * 5
         private static let separators: CGFloat = (separatorGap + separatorWidth + separatorGap) * 3
@@ -49,6 +49,7 @@ final class AnnotateToolbar: NSView {
     private(set) var penButton: HoverButton!
     private(set) var lineStyleButton: HoverButton!
     private(set) var backgroundButton: HoverButton!
+    private(set) var arrowHeadsButton: HoverButton!
     private(set) var textButton: HoverButton!
     private(set) var barcodeButton: HoverButton!
     private(set) var saveButton: HoverButton!
@@ -177,6 +178,8 @@ final class AnnotateToolbar: NSView {
         place(lineStyleButton)
         backgroundButton = makeHoverButton(symbol: nil, title: "背景", action: #selector(backgroundTapped))
         place(backgroundButton)
+        arrowHeadsButton = makeHoverButton(symbol: nil, title: "箭头", action: #selector(arrowHeadsTapped))
+        place(arrowHeadsButton)
         separator()
         ratioLabel = NSTextField(labelWithString: initialAspectRatio.title)
         ratioLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
@@ -280,7 +283,8 @@ final class AnnotateToolbar: NSView {
         4 + CGFloat(pen.rawValue - 1) * 3
     }
 
-    /// 刷新颜色/笔尖/线型/背景按钮，反映当前样式。非描边类形状禁用电线型按钮。
+    /// 刷新颜色/笔尖/线型/背景/箭头按钮，反映当前样式。
+    /// 非描边类形状禁用电线型按钮，非箭头形状禁用箭头按钮。
     private func refreshStyleButtons() {
         colorButton.image = Self.dotImage(diameter: 16, color: Self.nsColor(currentStyle.color))
         penButton.image = Self.dotImage(
@@ -291,6 +295,19 @@ final class AnnotateToolbar: NSView {
         lineStyleButton.isEnabled = selectedKind.supportsLineStyle
         backgroundButton.attributedTitle = Self.backgroundTitle(
             BackgroundCycle.of(currentStyle.background)
+        )
+        arrowHeadsButton.attributedTitle = Self.arrowHeadsTitle(currentStyle.arrowHeads)
+        arrowHeadsButton.isEnabled = selectedKind == .arrow
+    }
+
+    /// 箭头按钮无图标，用箭头符号表示两端带头方式。
+    private static func arrowHeadsTitle(_ heads: ArrowHeads) -> NSAttributedString {
+        NSAttributedString(
+            string: heads.title,
+            attributes: [
+                .foregroundColor: NSColor.white,
+                .font: NSFont.systemFont(ofSize: 11, weight: .medium),
+            ]
         )
     }
 
@@ -496,6 +513,12 @@ final class AnnotateToolbar: NSView {
     @objc private func backgroundTapped() {
         let next = BackgroundCycle.of(currentStyle.background).next
         currentStyle.background = next.color(textColor: currentStyle.color)
+        refreshStyleButtons()
+        onStyleChange?(currentStyle)
+    }
+
+    @objc private func arrowHeadsTapped() {
+        currentStyle.arrowHeads = currentStyle.arrowHeads.next
         refreshStyleButtons()
         onStyleChange?(currentStyle)
     }

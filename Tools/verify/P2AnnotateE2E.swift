@@ -266,6 +266,19 @@ final class AnnotateHarness {
         return true
     }
 
+    /// 工具条箭头带头按钮点击入口。
+    @discardableResult
+    private func tapArrowHeads(_ view: OverlayView, id: String) -> Bool {
+        guard let bar = view.subviews.compactMap({ $0 as? AnnotateToolbar }).first,
+              let button = bar.arrowHeadsButton else {
+            fail(id, "工具条上找不到箭头按钮")
+            return false
+        }
+        button.performClick(nil)
+        pump(0.1)
+        return true
+    }
+
     /// 打开颜色弹层并点选第 index 个色块。
     private func pickColor(_ view: OverlayView, _ index: Int, id: String) -> Bool {
         guard let bar = view.subviews.compactMap({ $0 as? AnnotateToolbar }).first else {
@@ -2586,6 +2599,69 @@ final class AnnotateHarness {
         endSession()
     }
 
+    /// 箭头按钮点一次从终点箭头切到双向，导出后两端头部都有实心像素。
+    private func runArrowHeads() {
+        guard let (window, view) = beginSession("ARROW-HEADS") else { return }
+        drag(view, window: window, from: CGPoint(x: 150, y: 150), to: CGPoint(x: 750, y: 600))
+        let selection = view.selectionRect
+        guard !selection.isEmpty,
+              tapTool(view, .arrow, id: "ARROW-HEADS"),
+              let bar = view.subviews.compactMap({ $0 as? AnnotateToolbar }).first else {
+            fail("ARROW-HEADS", "选区或箭头工具未就绪")
+            endSession()
+            return
+        }
+        guard bar.currentStyle.arrowHeads == .end,
+              tapArrowHeads(view, id: "ARROW-HEADS"),
+              bar.currentStyle.arrowHeads == .both else {
+            fail("ARROW-HEADS", "首次点击应把箭头样式从 end 切到 both，实际 \(bar.currentStyle.arrowHeads)")
+            endSession()
+            return
+        }
+
+        let from = CGPoint(x: selection.minX + 60, y: selection.minY + 250)
+        let to = CGPoint(x: selection.minX + 380, y: selection.minY + 250)
+        press(view, window: window, path: [from, to])
+        guard let annotation = view.annotations.last,
+              annotation.shape.kind == .arrow,
+              annotation.style.arrowHeads == .both else {
+            fail("ARROW-HEADS", "标注样式未写成 both：\(view.annotations.last?.style.arrowHeads as Any)")
+            endSession()
+            return
+        }
+
+        let cropRectPx = RectMath.imageRect(
+            fromViewRect: view.selectionRect,
+            viewHeight: view.bounds.height,
+            scale: view.shot.scale
+        )
+        guard let bytes = exportedBytes(view) else {
+            fail("ARROW-HEADS", "导出失败")
+            endSession()
+            return
+        }
+        let px = Int(view.shot.scale)
+        let width = Int(cropRectPx.width)
+        let height = Int(cropRectPx.height)
+        func pixel(atCanvasX x: Int, canvasY y: Int) -> (r: Int, g: Int, b: Int) {
+            let offset = ((height - 1 - y * px) * width + x * px) * 4
+            return (Int(bytes[offset]), Int(bytes[offset + 1]), Int(bytes[offset + 2]))
+        }
+        let isAnnotationColor = { (p: (r: Int, g: Int, b: Int)) in
+            p.r > 180 && p.g < 130 && p.b < 130
+        }
+        // 头长 22.5。cy=253 在线体半宽 2.5 之外，只有三角底边附近会覆盖。
+        let startHead = pixel(atCanvasX: 80, canvasY: 253)
+        let endHead = pixel(atCanvasX: 360, canvasY: 253)
+        let midLine = pixel(atCanvasX: 220, canvasY: 250)
+        if isAnnotationColor(startHead), isAnnotationColor(endHead), isAnnotationColor(midLine) {
+            pass("ARROW-HEADS", "双向箭头两端头部与线体都有实心像素 start=\(startHead) end=\(endHead)")
+        } else {
+            fail("ARROW-HEADS", "双向箭头缺头部 start=\(startHead) end=\(endHead) mid=\(midLine)")
+        }
+        endSession()
+    }
+
     /// 选中矩形拖右上角控制点，包围盒按对角固定放大；一次拖动压一步撤销。
     private func runShapeResizeHandle() {
         guard let (window, view) = beginSession("RESIZE") else { return }
@@ -2833,6 +2909,7 @@ final class AnnotateHarness {
         runMagnifierAndColorSampling()
         runArrowNudge()
         runLineStyleDash()
+        runArrowHeads()
         runShapeResizeHandle()
         runWhiteboardMode()
 

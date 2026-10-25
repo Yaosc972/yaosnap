@@ -60,6 +60,22 @@ struct AnnotationTests {
         #expect(try JSONDecoder().decode(Style.self, from: data) == withBackground)
     }
 
+    /// 旧存档没有 arrowHeads 键，解码后按终点带头处理，保持既有箭头外观。
+    @Test func legacyStyleWithoutArrowHeadsDecodesEnd() throws {
+        let json = #"{"color":{"r":1,"g":0,"b":0,"a":1},"pen":3,"lineStyle":"solid"}"#
+        let decoded = try JSONDecoder().decode(Style.self, from: Data(json.utf8))
+        #expect(decoded.arrowHeads == .end)
+    }
+
+    @Test func arrowHeadsRoundTrips() throws {
+        for heads in ArrowHeads.allCases {
+            let style = Style(color: RGBAColor(r: 1, g: 0, b: 0), pen: .p3, arrowHeads: heads)
+            let data = try JSONEncoder().encode(style)
+            let decoded = try JSONDecoder().decode(Style.self, from: data)
+            #expect(decoded.arrowHeads == heads, "\(heads) 编解码后应相等")
+        }
+    }
+
     @Test func kindDerivation() {
         let cases: [(Shape, ShapeKind)] = [
             (.rect(.zero), .rect),

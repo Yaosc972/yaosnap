@@ -90,6 +90,7 @@ public enum AnnotationRenderer {
                 color: color,
                 lineWidth: lineWidth,
                 lineStyle: annotation.style.lineStyle,
+                heads: annotation.style.arrowHeads,
                 in: ctx
             )
         case .polyline(let points):
@@ -224,32 +225,68 @@ public enum AnnotationRenderer {
         ))
     }
 
-    /// 箭头 = 圆头直线 + 填充三角头部。头长 4.5 倍线宽、张角 28°，
-    /// 线体画到头部底边为止，避免圆头从三角下方露出。线型只作用于线体，头部始终实心。
+    /// 箭头 = 圆头直线 + 填充三角头部。头长 4.5 倍线宽、张角 28°。
+    /// 线体两端按带头内缩到头部底边，避免圆头从三角下方露出。
+    /// 线型只作用于线体，头部始终实心。
     private static func drawArrow(
         from: CGPoint,
         to: CGPoint,
         color: RGBAColor,
         lineWidth: CGFloat,
         lineStyle: LineStyle,
+        heads: ArrowHeads,
         in ctx: CGContext
     ) {
         let angle = atan2(to.y - from.y, to.x - from.x)
         let headLength = lineWidth * 4.5
-        let halfBase = headLength * tan(.pi * 14 / 180)
-        let base = CGPoint(x: to.x - headLength * cos(angle), y: to.y - headLength * sin(angle))
-        let perpX = -sin(angle), perpY = cos(angle)
+        let length = hypot(to.x - from.x, to.y - from.y)
+        let startInset = heads.hasStart ? headLength : 0
+        let endInset = heads.hasEnd ? headLength : 0
 
-        if hypot(to.x - from.x, to.y - from.y) > headLength {
+        // 总长不足两端头长之和时只画头部，不构造反向或负长度的线体。
+        if length > startInset + endInset {
+            let bodyStart = CGPoint(
+                x: from.x + cos(angle) * startInset,
+                y: from.y + sin(angle) * startInset
+            )
+            let bodyEnd = CGPoint(
+                x: to.x - cos(angle) * endInset,
+                y: to.y - sin(angle) * endInset
+            )
             stroke(ctx, color: color, lineWidth: lineWidth, lineStyle: lineStyle) {
-                $0.move(to: from)
-                $0.addLine(to: base)
+                $0.move(to: bodyStart)
+                $0.addLine(to: bodyEnd)
             }
         }
+        if heads.hasEnd {
+            fillArrowHead(vertex: to, angle: angle, color: color, lineWidth: lineWidth, in: ctx)
+        }
+        if heads.hasStart {
+            // 起点头从 to 指向 from，与线体方向相反。
+            fillArrowHead(vertex: from, angle: angle + .pi, color: color, lineWidth: lineWidth, in: ctx)
+        }
+    }
+
+    /// 一个实心三角头：vertex 是尖端，angle 是尖端朝向。
+    private static func fillArrowHead(
+        vertex: CGPoint,
+        angle: CGFloat,
+        color: RGBAColor,
+        lineWidth: CGFloat,
+        in ctx: CGContext
+    ) {
+        let headLength = lineWidth * 4.5
+        let halfBase = headLength * tan(.pi * 14 / 180)
+        let base = CGPoint(
+            x: vertex.x - headLength * cos(angle),
+            y: vertex.y - headLength * sin(angle)
+        )
+        let perpX = -sin(angle), perpY = cos(angle)
+
         ctx.setBlendMode(.normal)
         ctx.setFillColor(color.cgColor)
         ctx.beginPath()
-        ctx.move(to: to)
+        ctx.move(to: vertex)
         ctx.addLine(to: CGPoint(x: base.x + perpX * halfBase, y: base.y + perpY * halfBase))
         ctx.addLine(to: CGPoint(x: base.x - perpX * halfBase, y: base.y - perpY * halfBase))
         ctx.closePath()

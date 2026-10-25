@@ -273,36 +273,73 @@ public enum Shape: Equatable, Codable {
     }
 }
 
+/// 箭头两端哪一端带头。单值三态，避免两个「带头」布尔互相失步。
+/// Snipaste 对应独立的 start/end 两个样式：both = 双向，start = 反向。
+public enum ArrowHeads: String, CaseIterable, Codable, Sendable {
+    /// 默认：只有终点带头。
+    case end
+    /// 两端都带头。
+    case both
+    /// 只有起点带头，即反向箭头。
+    case start
+
+    public var title: String {
+        switch self {
+        case .end: return "→"
+        case .both: return "↔"
+        case .start: return "←"
+        }
+    }
+
+    /// 工具条按钮的循环顺序。
+    public var next: ArrowHeads {
+        switch self {
+        case .end: return .both
+        case .both: return .start
+        case .start: return .end
+        }
+    }
+
+    public var hasStart: Bool { self != .end }
+    public var hasEnd: Bool { self != .start }
+}
+
 public struct Style: Equatable, Codable {
     public var color: RGBAColor
     public var pen: PenSize
     public var lineStyle: LineStyle
     /// 文字背景填充，nil 不铺底。与文字色并列的独立属性，只有文字形状消费它。
     public var background: RGBAColor?
+    /// 箭头两端带头方式，只有箭头形状消费它。
+    public var arrowHeads: ArrowHeads
 
     public init(
         color: RGBAColor,
         pen: PenSize,
         lineStyle: LineStyle = .solid,
-        background: RGBAColor? = nil
+        background: RGBAColor? = nil,
+        arrowHeads: ArrowHeads = .end
     ) {
         self.color = color
         self.pen = pen
         self.lineStyle = lineStyle
         self.background = background
+        self.arrowHeads = arrowHeads
     }
 
     private enum CodingKeys: String, CodingKey {
-        case color, pen, lineStyle, background
+        case color, pen, lineStyle, background, arrowHeads
     }
 
-    /// 旧数据没有 lineStyle / background 字段，缺省按实线、无背景解码，保持既有标注外观。
+    /// 旧数据没有 lineStyle / background / arrowHeads 字段，缺省按实线、无背景、终点箭头解码，
+    /// 保持既有标注外观。
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         color = try container.decode(RGBAColor.self, forKey: .color)
         pen = try container.decode(PenSize.self, forKey: .pen)
         lineStyle = try container.decodeIfPresent(LineStyle.self, forKey: .lineStyle) ?? .solid
         background = try container.decodeIfPresent(RGBAColor.self, forKey: .background)
+        arrowHeads = try container.decodeIfPresent(ArrowHeads.self, forKey: .arrowHeads) ?? .end
     }
 }
 
