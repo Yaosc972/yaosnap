@@ -27,9 +27,10 @@ final class SnipController {
 
     private var windows: [SnipOverlayWindow] = []
     private var shots: [DisplayShot] = []
-    /// 最近成功输出的截图，只保留内存副本，供新会话回放。
+    /// 最近成功输出的截图，按时间倒序；启动时从磁盘载入，输出时同步写盘。
     private var history: [CaptureHistoryEntry] = []
-    private static let historyLimit = 10
+    private let historyStore: CaptureHistoryStore
+    private static let historyLimit = CaptureHistoryMenu.limit
     var historyCount: Int { history.count }
     /// 菜单栏与验收读取的历史快照，与 `,` `.` 回放共用这一份。
     var historySnapshot: [CaptureHistoryEntry] { history }
@@ -56,6 +57,20 @@ final class SnipController {
     var settingsStore = SettingsStore()
     /// 十字光标是否生效。保存面板等场景需要临时恢复箭头。
     private var isCrosshairActive = false
+
+    /// 默认读写真实的 Application Support；验收 harness 注入临时目录，避免读到用户历史。
+    init(historyStore: CaptureHistoryStore? = nil) {
+        let store = historyStore ?? CaptureHistoryStore(
+            directory: CaptureHistoryStore.defaultDirectory(),
+            limit: Self.historyLimit
+        )
+        self.historyStore = store
+        if let loaded = try? store.load() {
+            self.history = Array(loaded.prefix(Self.historyLimit))
+        } else {
+            self.history = []
+        }
+    }
 
     func start() {
         // 延时中再次触发视为取消，这是 Snipaste 的取舍：第二次按键不该再排一个延时。
@@ -264,6 +279,10 @@ final class SnipController {
             window.makeKeyAndOrderFront(nil)
             windows.append(window)
             shots.append(shot)
+            // 回放同样要等冻结帧入列：自动选中的提交通知会按 displayID 回查。
+            if initialHistory > 0 {
+                view.selectReplayedHistory()
+            }
             // 预置选区必须等 shots 入列：提交通知会按 displayID 回查冻结帧。
             if let initialRegion, initialRegion.displayID == shot.displayID {
                 let clamped = RectMath.clamp(initialRegion.rect, to: shot.bounds)
@@ -726,14 +745,32 @@ final class SnipController {
         )
     }
 
-    /// 最近成功输出的截图按时间倒序保留，最多 10 张。
+    /// 最近成功输出的截图按时间倒序保留，最多 10 张；内存与磁盘同步。
     private func remember(_ image: CGImage, displaySize: CGSize, region: CaptureRegion?) {
-        history.insert(
-            CaptureHistoryEntry(image: image, displaySize: displaySize, region: region),
-            at: 0
+        let entry = CaptureHistoryEntry(
+            image: image,
+            displaySize: displaySize,
+            region: region
         )
+        history.insert(entry, at: 0)
         if history.count > Self.historyLimit {
             history.removeLast(history.count - Self.historyLimit)
+        }
+        // 写盘失败不回滚内存：本次会话仍可回放，下次启动才少这一张。
+        do {
+            try historyStore.append(entry)
+        } catch {
+            print("[snip] warning: 历史写盘失败: \(error.localizedDescription)")
+        }
+    }
+
+    /// 菜单「清空历史」：内存与磁盘一起清空，下次刷新菜单即为空。
+    func clearHistory() {
+        history.removeAll()
+        do {
+            try historyStore.clear()
+        } catch {
+            print("[snip] warning: 清空历史失败: \(error.localizedDescription)")
         }
     }
 

@@ -9,7 +9,10 @@ import YaosnapCore
 /// 用真实通知链路驱动 start / 拖拽 / 按键 / 复制 / 保存，并截图留证。
 @MainActor
 final class ObserverWiring {
-    let controller = SnipController()
+    let controller = SnipController(historyStore: CaptureHistoryStore(
+        directory: FileManager.default.temporaryDirectory
+            .appendingPathComponent("yaosnap-p1-history-\(UUID().uuidString)", isDirectory: true)
+    ))
     /// 记录通知是否真的被接线，防止 AppDelegate 与 harness 同时漏注册同一类事件。
     private(set) var textRecognizeRequests = 0
     private(set) var barcodeScanRequests = 0
@@ -865,23 +868,30 @@ final class Harness {
             fail("HISTORY-MENU", "菜单里没有截图历史子菜单")
             return
         }
-        if submenu.items.count == expected,
-           submenu.items.count == controller.historyCount,
-           historyItem.isEnabled == (expected > 0) {
-            pass("HISTORY-MENU", "\(submenu.items.count) 条与 historyCount=\(controller.historyCount) 一致")
+        let entries = submenu.items.filter { !$0.isSeparatorItem }
+        if entries.count == expected + 1,
+           entries.last?.title == "清空历史",
+           entries.last?.isEnabled == (expected > 0),
+           historyItem.isEnabled {
+            pass("HISTORY-MENU", "\(expected) 条历史 + 清空历史，与 historyCount=\(controller.historyCount) 一致")
         } else {
-            fail("HISTORY-MENU", "子菜单 \(submenu.items.count) 条，期望 \(expected)，historyCount=\(controller.historyCount)")
+            fail("HISTORY-MENU", "子菜单 \(entries.count) 项，期望 \(expected + 1)（含清空历史），historyCount=\(controller.historyCount)")
         }
 
-        let empty = SnipController()
+        let empty = SnipController(historyStore: CaptureHistoryStore(
+            directory: FileManager.default.temporaryDirectory
+                .appendingPathComponent("yaosnap-p1-empty-\(UUID().uuidString)", isDirectory: true)
+        ))
         let emptyStatus = makeStatusController(reading: { empty.historySnapshot })
         emptyStatus.menuNeedsUpdate(emptyStatus.menu)
         if let item = emptyStatus.menu.items.first(where: { $0.title == "截图历史" }),
-           item.submenu?.items.isEmpty == true,
-           !item.isEnabled {
-            pass("HISTORY-MENU-EMPTY", "历史为空时菜单项禁用")
+           item.isEnabled,
+           item.submenu?.items.filter({ !$0.isSeparatorItem }).count == 1,
+           item.submenu?.items.last?.title == "清空历史",
+           item.submenu?.items.last?.isEnabled == false {
+            pass("HISTORY-MENU-EMPTY", "历史为空时清空历史项禁用")
         } else {
-            fail("HISTORY-MENU-EMPTY", "历史为空时菜单项未禁用")
+            fail("HISTORY-MENU-EMPTY", "历史为空时清空历史项未禁用")
         }
 
         controller.startReplayingHistory(at: 0)
@@ -896,11 +906,44 @@ final class Harness {
         } else {
             fail("HISTORY-REPLAY", "historyIndex=\(view.historyIndex)，期望 1")
         }
+        let latest = controller.historySnapshot.first
+        let selected = view.selectionRect
+        let expectsRatio = (latest?.displaySize.height ?? 0) > 0
+            ? (latest?.displaySize.width ?? 0) / (latest?.displaySize.height ?? 1)
+            : selected.width / max(selected.height, 1)
+        let actualRatio = selected.width / max(selected.height, 1)
+        if !selected.isEmpty, abs(actualRatio - expectsRatio) < 0.02 {
+            pass("HISTORY-REPLAY-SELECTION", "回放图自动选中且保持宽高比 \(selected.width)×\(selected.height)")
+        } else {
+            fail("HISTORY-REPLAY-SELECTION", "selection=\(selected) 宽高比 \(actualRatio)，期望 \(expectsRatio)")
+        }
         endSession()
+
+        let clearedStatus = makeStatusController(
+            reading: { self.controller.historySnapshot },
+            onClearHistory: { self.controller.clearHistory() }
+        )
+        clearedStatus.menuNeedsUpdate(clearedStatus.menu)
+        let historyMenu = clearedStatus.menu.items
+            .first(where: { $0.title == "截图历史" })?.submenu
+        let clearIndex = historyMenu?.items.firstIndex(where: { $0.title == "清空历史" })
+        if let historyMenu, let clearIndex {
+            historyMenu.performActionForItem(at: clearIndex)
+        }
+        clearedStatus.menuNeedsUpdate(clearedStatus.menu)
+        if controller.historyCount == 0,
+           let item = clearedStatus.menu.items.first(where: { $0.title == "截图历史" }),
+           item.submenu?.items.filter({ !$0.isSeparatorItem }).count == 1,
+           item.submenu?.items.last?.isEnabled == false {
+            pass("HISTORY-CLEAR", "菜单清空历史后内存为空且菜单项禁用")
+        } else {
+            fail("HISTORY-CLEAR", "清空历史后仍有 \(controller.historyCount) 条")
+        }
     }
 
     private func makeStatusController(
-        reading history: @escaping @MainActor () -> [CaptureHistoryEntry]
+        reading history: @escaping @MainActor () -> [CaptureHistoryEntry],
+        onClearHistory: @escaping @MainActor () -> Void = {}
     ) -> StatusItemController {
         StatusItemController(
             onSnip: {},
@@ -910,6 +953,7 @@ final class Harness {
                 CaptureHistoryMenu.items(from: history())
             },
             onReplayHistory: { _ in },
+            onClearHistory: onClearHistory,
             pinGroupState: {
                 PinGroupMenuState(
                     groups: [],

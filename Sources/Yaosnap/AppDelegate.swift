@@ -48,6 +48,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             onReplayHistory: { [snipController] index in
                 snipController.startReplayingHistory(at: index)
             },
+            onClearHistory: { [snipController] in
+                snipController.clearHistory()
+            },
             pinGroupState: { [pinController] in Self.menuState(from: pinController) },
             onSelectPinGroup: { [pinController] id in pinController.activateGroup(id) },
             onCreatePinGroup: { [pinController] name in pinController.addGroup(named: name) },

@@ -132,6 +132,22 @@ public enum RectMath {
         )
     }
 
+    /// 图像只占画布一部分时的换算（回放历史按等比缩放居中显示）。
+    /// `displayedIn` 是图像在视图坐标系里的显示矩形，选区先减去它的原点再乘缩放。
+    public static func imageRect(
+        fromViewRect viewRect: CGRect,
+        displayedIn displayedRect: CGRect,
+        scaleX: CGFloat,
+        scaleY: CGFloat
+    ) -> CGRect {
+        CGRect(
+            x: (viewRect.minX - displayedRect.minX) * scaleX,
+            y: (displayedRect.maxY - viewRect.maxY) * scaleY,
+            width: viewRect.width * scaleX,
+            height: viewRect.height * scaleY
+        )
+    }
+
     /// 方向键微调：平移 1pt，或向指定方向扩 / 缩 1pt。
     /// 结果始终落在 bounds 内，缩小时两边都不小于 minimumSide。
     /// 给了 aspectRatio 时扩 / 缩保持该比例，平移不受影响。

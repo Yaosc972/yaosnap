@@ -25,6 +25,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private let onTogglePassthrough: @MainActor () -> Void
     private let historyItems: @MainActor () -> [CaptureHistoryMenu.Item]
     private let onReplayHistory: @MainActor (Int) -> Void
+    private let onClearHistory: @MainActor () -> Void
     private let pinGroupState: @MainActor () -> PinGroupMenuState
     private let onSelectPinGroup: @MainActor (Int) -> Void
     private let onCreatePinGroup: @MainActor (String) -> Bool
@@ -47,6 +48,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         onTogglePassthrough: @escaping @MainActor () -> Void,
         historyItems: @escaping @MainActor () -> [CaptureHistoryMenu.Item],
         onReplayHistory: @escaping @MainActor (Int) -> Void,
+        onClearHistory: @escaping @MainActor () -> Void = {},
         pinGroupState: @escaping @MainActor () -> PinGroupMenuState,
         onSelectPinGroup: @escaping @MainActor (Int) -> Void,
         onCreatePinGroup: @escaping @MainActor (String) -> Bool,
@@ -68,6 +70,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         self.onTogglePassthrough = onTogglePassthrough
         self.historyItems = historyItems
         self.onReplayHistory = onReplayHistory
+        self.onClearHistory = onClearHistory
         self.pinGroupState = pinGroupState
         self.onSelectPinGroup = onSelectPinGroup
         self.onCreatePinGroup = onCreatePinGroup
@@ -178,7 +181,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             accessibilityDescription: "截图历史"
         )
         historyItem.submenu = makeHistoryMenu(history)
-        historyItem.isEnabled = !history.isEmpty
+        // 子菜单始终可打开：历史为空时仍要能看到并理解「清空历史」为何禁用。
+        historyItem.isEnabled = true
         menu.addItem(historyItem)
 
         let pinItem = NSMenuItem(title: "贴图", action: #selector(pinTriggered), keyEquivalent: "")
@@ -268,6 +272,15 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             entry.target = self
             submenu.addItem(entry)
         }
+        submenu.addItem(.separator())
+        let clear = NSMenuItem(
+            title: "清空历史",
+            action: #selector(clearHistorySelected),
+            keyEquivalent: ""
+        )
+        clear.target = self
+        clear.isEnabled = !items.isEmpty
+        submenu.addItem(clear)
         return submenu
     }
 
@@ -367,6 +380,10 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     @objc private func historySelected(_ sender: NSMenuItem) {
         guard let index = sender.representedObject as? Int else { return }
         onReplayHistory(index)
+    }
+
+    @objc private func clearHistorySelected() {
+        onClearHistory()
     }
 
     @objc private func pinTriggered() {

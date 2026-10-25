@@ -118,6 +118,8 @@ final class OverlayView: NSView {
     private let frozenImage: NSImage
     /// 当前显示的图像。回放历史时换成历史截图，翻回 index 0 恢复实时冻结帧。
     private var activeImage: NSImage
+    /// 当前图像在视图里的显示矩形。实时帧铺满 bounds；历史帧按等比缩放居中。
+    private var activeImageRect: CGRect
     private var activeSource: CGImage
     private var activeScaleX: CGFloat
     private var activeScaleY: CGFloat
@@ -219,6 +221,12 @@ final class OverlayView: NSView {
         )
         frozenImage = frozen
         activeImage = frozen
+        activeImageRect = NSRect(
+            x: 0,
+            y: 0,
+            width: shot.bounds.width,
+            height: shot.bounds.height
+        )
         activeSource = shot.image
         activeScaleX = shot.scale
         activeScaleY = shot.scale
@@ -282,7 +290,11 @@ final class OverlayView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         // 用 NSImage 绘制，避免 CGImage 直接进 CGContext 时的上下翻转。
-        activeImage.draw(in: bounds)
+        // 历史帧只占画面中间一块，周围保留本次实时冻结帧作为参照。
+        if activeImageRect != bounds {
+            frozenImage.draw(in: bounds)
+        }
+        activeImage.draw(in: activeImageRect)
         // 白板底图就是用户要导出的背景：纯色不应被遮罩压暗，透明要让实时桌面透出。
         if !whiteboardMode {
             drawMask()
@@ -947,7 +959,8 @@ final class OverlayView: NSView {
             image: activeSource,
             canvasSize: bounds.size,
             scaleX: activeScaleX,
-            scaleY: activeScaleY
+            scaleY: activeScaleY,
+            origin: activeImageRect.origin
         )
         guard let color = sampler.color(at: cursor) else {
             NSSound.beep()
@@ -1120,28 +1133,69 @@ final class OverlayView: NSView {
     }
 
     /// index 0 是本次实时冻结帧，1... 是历史（1 为最新）。
+    /// 切到历史后自动选中回放图，按 Enter 即可复制或继续标注；翻回实时帧则清空选区。
     private func stepHistory(_ delta: Int) {
         let next = min(max(historyIndex + delta, 0), history.count)
         guard next != historyIndex else { return }
         historyIndex = next
-        applyHistoryImage()
         resetSelection()
+        applyHistoryImage()
+        if historyIndex > 0 {
+            applyInitialSelection(activeImageRect)
+        }
         needsDisplay = true
     }
 
     private func applyHistoryImage() {
         guard historyIndex > 0 else {
             activeImage = frozenImage
+            activeImageRect = bounds
             activeSource = shot.image
             activeScaleX = shot.scale
             activeScaleY = shot.scale
             return
         }
         let entry = history[historyIndex - 1]
-        activeImage = NSImage(cgImage: entry.image, size: bounds.size)
+        let rect = Self.fittedImageRect(for: entry, in: bounds)
+        activeImageRect = rect
+        activeImage = NSImage(cgImage: entry.image, size: rect.size)
         activeSource = entry.image
-        activeScaleX = bounds.width > 0 ? CGFloat(entry.image.width) / bounds.width : 1
-        activeScaleY = bounds.height > 0 ? CGFloat(entry.image.height) / bounds.height : 1
+        activeScaleX = rect.width > 0
+            ? CGFloat(entry.image.width) / rect.width
+            : 1
+        activeScaleY = rect.height > 0
+            ? CGFloat(entry.image.height) / rect.height
+            : 1
+    }
+
+    /// 历史图等比缩放并在屏幕居中。直接用像素宽高定比例，保证 x/y 同一缩放因子，
+    /// 即使导出时加了阴影边距也不会被拉伸；displaySize 仍用于剪贴板点尺寸等场景。
+    private static func fittedImageRect(
+        for entry: CaptureHistoryEntry,
+        in bounds: CGRect
+    ) -> CGRect {
+        let imageSize = CGSize(
+            width: entry.image.width,
+            height: entry.image.height
+        )
+        guard imageSize.width > 0, imageSize.height > 0,
+              bounds.width > 0, bounds.height > 0 else { return bounds }
+        let scale = min(bounds.width / imageSize.width, bounds.height / imageSize.height)
+        let fitted = CGRect(
+            x: bounds.midX - imageSize.width * scale / 2,
+            y: bounds.midY - imageSize.height * scale / 2,
+            width: imageSize.width * scale,
+            height: imageSize.height * scale
+        ).integral.intersection(bounds)
+        return fitted.isEmpty ? bounds : fitted
+    }
+
+    /// 控制器在窗口与冻结帧入列后调用：菜单回放进入时直接选中历史图。
+    /// 不能在 init 里选中，提交通知需要回查已入列的 shots。
+    func selectReplayedHistory() {
+        guard historyIndex > 0 else { return }
+        applyInitialSelection(activeImageRect)
+        needsDisplay = true
     }
 
     private func resetSelection() {
@@ -1411,7 +1465,7 @@ final class OverlayView: NSView {
                 SnipNotificationKey.sourceImage: activeSource,
                 SnipNotificationKey.cropRectPx: RectMath.imageRect(
                     fromViewRect: selectionRect,
-                    viewHeight: bounds.height,
+                    displayedIn: activeImageRect,
                     scaleX: activeScaleX,
                     scaleY: activeScaleY
                 ),
@@ -1422,7 +1476,7 @@ final class OverlayView: NSView {
     private func cropOriginPx(for rect: CGRect) -> CGPoint {
         let imageRect = RectMath.imageRect(
             fromViewRect: rect,
-            viewHeight: bounds.height,
+            displayedIn: activeImageRect,
             scaleX: activeScaleX,
             scaleY: activeScaleY
         )
@@ -2084,7 +2138,8 @@ final class OverlayView: NSView {
             image: activeSource,
             canvasSize: bounds.size,
             scaleX: activeScaleX,
-            scaleY: activeScaleY
+            scaleY: activeScaleY,
+            origin: activeImageRect.origin
         )
         guard let sample = sampler.magnified(
             at: cursor,

@@ -26,7 +26,10 @@ private final class StripePatternView: NSView {
 /// 验证画矩形 → 复制 → 剪贴板与参考渲染一致、方向正确、状态机行为正确。
 @MainActor
 final class AnnotateObserverWiring {
-    let controller = SnipController()
+    let controller = SnipController(historyStore: CaptureHistoryStore(
+        directory: FileManager.default.temporaryDirectory
+            .appendingPathComponent("yaosnap-p2-history-\(UUID().uuidString)", isDirectory: true)
+    ))
 
     init() {
         let center = NotificationCenter.default
@@ -2154,7 +2157,7 @@ final class AnnotateHarness {
             return
         }
         keyDown(47, characters: ".", in: replayWindow, view: replayView)
-        guard replayView.historyIndex == 1, replayView.selectionRect.isEmpty else {
+        guard replayView.historyIndex == 1, !replayView.selectionRect.isEmpty else {
             fail(
                 "HISTORY-REPLAY",
                 "按 . 后 index=\(replayView.historyIndex) selection=\(replayView.selectionRect)"
@@ -2171,7 +2174,7 @@ final class AnnotateHarness {
             return
         }
 
-        pass("HISTORY-REPLAY", "复制后历史数 1，. 切到历史并重置选区，, 翻回当前")
+        pass("HISTORY-REPLAY", "复制后历史数 1，. 切到历史并自动选中，, 翻回当前")
         endSession()
     }
 
