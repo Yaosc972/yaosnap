@@ -24,6 +24,8 @@ final class AppCommandRouter {
         switch request.command {
         case .snip:
             snipController.start()
+        case .delayedSnip(let seconds):
+            snipController.startDelayed(seconds: seconds)
         case .clipboard:
             snipController.copyLatestCapture()
         case .save(let path):

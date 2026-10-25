@@ -15,6 +15,8 @@ private func message(for error: Error) -> String {
         return "多余的参数：\(argument)"
     case .invalidNumber(let value):
         return "坐标必须是数字：\(value)"
+    case .invalidDelay(let value):
+        return "延时时长必须是 1 到 60 的整数秒：\(value)"
     }
 }
 

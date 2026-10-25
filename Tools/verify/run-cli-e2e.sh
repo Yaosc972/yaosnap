@@ -25,7 +25,7 @@ case "$OUT" in
     *) fail "help prints usage" ;;
 esac
 
-for ARGS in "bogus" "-o" "--pos 1" "--pos left 2"; do
+for ARGS in "bogus" "-o" "--pos 1" "--pos left 2" "--delay 0" "--delay 61"; do
     "$BIN" $ARGS >/dev/null 2>&1
     CODE=$?
     [ "$CODE" -ne 0 ] && pass "invalid args '$ARGS' exits $CODE" || fail "invalid args '$ARGS' exits 0"

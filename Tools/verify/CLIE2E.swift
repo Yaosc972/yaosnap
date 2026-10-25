@@ -18,6 +18,7 @@ func check(_ condition: Bool, _ label: String) {
 // 这里编译 Core 即可覆盖 app 收到的每种 URL 形态。
 let urlCases: [(CommandLineCommand, String)] = [
     (.snip, "yaosnap://snip"),
+    (.delayedSnip(seconds: 3), "yaosnap://snip?delay=3"),
     (.clipboard, "yaosnap://clipboard"),
     (.save(path: "/tmp/a.png"), "yaosnap://save?path=/tmp/a.png"),
     (.quickSave, "yaosnap://quick-save"),
@@ -37,6 +38,8 @@ for (command, expected) in urlCases {
 let argumentCases: [([String], String)] = [
     ([], "yaosnap://snip"),
     (["snip"], "yaosnap://snip"),
+    (["--delay", "1"], "yaosnap://snip?delay=1"),
+    (["snip", "--delay", "60"], "yaosnap://snip?delay=60"),
     (["-o", "clipboard"], "yaosnap://clipboard"),
     (["snip", "-o", "clipboard"], "yaosnap://clipboard"),
     (["-o", "quick-save"], "yaosnap://quick-save"),
@@ -64,6 +67,8 @@ let rejected: [([String], String)] = [
     (["--pos", "1"], "missing y"),
     (["--pos", "left", "2"], "non numeric x"),
     (["-o", "clipboard", "extra"], "extra argument"),
+    (["--delay", "0"], "delay below range"),
+    (["--delay", "61"], "delay above range"),
 ]
 
 for (arguments, label) in rejected {

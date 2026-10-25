@@ -7,12 +7,21 @@ public struct WindowCandidate: Equatable {
     public let ownerName: String
     public let layer: Int
     public let windowID: Int
+    /// 仅活动窗口选择需要再次核对归属；吸附候选已由 `onScreenWindows` 排除自身。
+    public let ownerPID: pid_t
 
-    public init(bounds: CGRect, ownerName: String, layer: Int, windowID: Int) {
+    public init(
+        bounds: CGRect,
+        ownerName: String,
+        layer: Int,
+        windowID: Int,
+        ownerPID: pid_t = 0
+    ) {
         self.bounds = bounds
         self.ownerName = ownerName
         self.layer = layer
         self.windowID = windowID
+        self.ownerPID = ownerPID
     }
 }
 
@@ -34,7 +43,13 @@ public enum WindowDetector {
                 let windowID = info[kCGWindowNumber as String] as? Int
             else { return nil }
             let owner = info[kCGWindowOwnerName as String] as? String ?? ""
-            return WindowCandidate(bounds: bounds, ownerName: owner, layer: layer, windowID: windowID)
+            return WindowCandidate(
+                bounds: bounds,
+                ownerName: owner,
+                layer: layer,
+                windowID: windowID,
+                ownerPID: ownerPID
+            )
         }
     }
 

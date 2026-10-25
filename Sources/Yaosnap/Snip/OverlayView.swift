@@ -1188,6 +1188,17 @@ final class OverlayView: NSView {
         updateActionBar()
     }
 
+    /// 控制器在窗口入列后调用：活动窗口截屏 / 重复上次区域直接带着选区进会话。
+    func applyInitialSelection(_ viewRect: CGRect) {
+        guard case .idle = phase, selectionRect.isEmpty, !pickColorMode else { return }
+        let clamped = RectMath.clamp(viewRect, to: bounds)
+        guard clamped.width >= Self.minimumSelectionSide,
+              clamped.height >= Self.minimumSelectionSide else { return }
+        selectionRect = clamped
+        commitSelection()
+        needsDisplay = true
+    }
+
     /// 把当前选区连同实际输出源交给控制器。方向键调整后也会重新发布。
     private func publishSelection() {
         NotificationCenter.default.post(

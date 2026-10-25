@@ -27,6 +27,12 @@ public struct Hotkey: Equatable, Codable {
     /// kVK_ANSI_T = 17，Control+Shift，切换光标下贴图的鼠标穿透。
     public static let ctrlShiftT = Hotkey(keyCode: 17, modifiers: UInt32(controlKey | shiftKey))
 
+    /// kVK_ANSI_W = 13，Control+Shift，截取活动窗口。
+    public static let ctrlShiftW = Hotkey(keyCode: 13, modifiers: UInt32(controlKey | shiftKey))
+
+    /// kVK_ANSI_R = 15，Control+Shift，重复上次区域。
+    public static let ctrlShiftR = Hotkey(keyCode: 15, modifiers: UInt32(controlKey | shiftKey))
+
     /// 设置窗口按下组合键时用 Carbon 掩码判断，避免 NSEvent 与 Carbon 位序混淆。
     private var hasCommand: Bool { modifiers & UInt32(cmdKey) != 0 }
     private var hasControl: Bool { modifiers & UInt32(controlKey) != 0 }

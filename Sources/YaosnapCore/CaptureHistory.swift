@@ -7,11 +7,19 @@ public struct CaptureHistoryEntry {
     public let image: CGImage
     public let displaySize: CGSize
     public let createdAt: Date
+    /// 选区在源屏上的位置，重复上次区域时使用。
+    public let region: CaptureRegion?
 
-    public init(image: CGImage, displaySize: CGSize, createdAt: Date = Date()) {
+    public init(
+        image: CGImage,
+        displaySize: CGSize,
+        createdAt: Date = Date(),
+        region: CaptureRegion? = nil
+    ) {
         self.image = image
         self.displaySize = displaySize
         self.createdAt = createdAt
+        self.region = region
     }
 
     public var scaleX: CGFloat {

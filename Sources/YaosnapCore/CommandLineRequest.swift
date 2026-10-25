@@ -3,6 +3,7 @@ import Foundation
 /// 命令行请求的领域形状。每个 case 自带所需参数，避免用字符串字典传递未校验的查询项。
 public enum CommandLineCommand: Equatable, Sendable {
     case snip
+    case delayedSnip(seconds: Int)
     case clipboard
     case save(path: String)
     case quickSave
@@ -57,7 +58,14 @@ public struct CommandLineRequest: Equatable, Sendable {
 
         switch host {
         case "snip":
-            command = .snip
+            if let raw = value("delay") {
+                guard let seconds = DelayCapture.seconds(from: raw) else {
+                    throw CommandLineRequestError.invalidParameter("delay")
+                }
+                command = .delayedSnip(seconds: seconds)
+            } else {
+                command = .snip
+            }
         case "clipboard":
             command = .clipboard
         case "save":
@@ -85,6 +93,9 @@ public struct CommandLineRequest: Equatable, Sendable {
         switch command {
         case .snip:
             components.host = "snip"
+        case .delayedSnip(let seconds):
+            components.host = "snip"
+            components.queryItems = [URLQueryItem(name: "delay", value: String(seconds))]
         case .clipboard:
             components.host = "clipboard"
         case .save(let path):

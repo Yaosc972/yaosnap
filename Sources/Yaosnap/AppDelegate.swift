@@ -5,6 +5,7 @@ import YaosnapCore
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItemController: StatusItemController?
     private let hotkeyManager = HotkeyManager()
+    private let fixedHotkeyManager = HotkeyManager()
     private let snipController = SnipController()
     private let pinController = PinController()
     private let settingsStore = SettingsStore()
@@ -47,7 +48,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             onRenamePinGroup: { [pinController] id, name in pinController.renameGroup(id, to: name) },
             onDeletePinGroup: { [pinController] id in pinController.deleteGroup(id) },
             onToggleSolo: { [pinController] in pinController.toggleSoloForCurrentPin() },
-            onOpenSettings: { [weak self] in self?.showSettings() }
+            onOpenSettings: { [weak self] in self?.showSettings() },
+            onActiveWindow: { [snipController] in snipController.startActiveWindow() },
+            onRepeatLastRegion: { [snipController] in snipController.repeatLastRegion() },
+            onDelaySnip: { [snipController] in snipController.startDelayed(seconds: $0) },
+            onCancelDelay: { [snipController] in snipController.cancelDelay() },
+            delayRemaining: { [snipController] in snipController.delayRemainingSeconds }
         )
         NotificationCenter.default.addObserver(
             self, selector: #selector(handleSnipEscape(_:)), name: .snipEscapePressed, object: nil)
@@ -61,6 +67,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settings = settingsStore.load()
         applyRuntimeSettings()
         registerHotkeys()
+        registerFixedHotkeys()
     }
 
     private func showSettings() {
@@ -74,8 +81,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let self else { return }
                 if recording {
                     self.hotkeyManager.unregisterAll()
+                    self.fixedHotkeyManager.unregisterAll()
                 } else {
                     self.registerHotkeys()
+                    self.registerFixedHotkeys()
                 }
             }
             settingsWindowController = controller
@@ -112,6 +121,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .joined(separator: ", ")
         print("[hotkey] registered \(summary) failures=\(failures.map(\.rawValue).sorted())")
         settingsWindowController?.showRegistrationFailures(failures)
+    }
+
+    /// 固定快捷键不走设置项，单独一个注册器，避免设置保存时被整批重注册牵连。
+    private func registerFixedHotkeys() {
+        fixedHotkeyManager.unregisterAll()
+        let activeWindow = fixedHotkeyManager.register(.ctrlShiftW) { [snipController] in
+            MainActor.assumeIsolated { snipController.startActiveWindow() }
+        }
+        let repeatRegion = fixedHotkeyManager.register(.ctrlShiftR) { [snipController] in
+            MainActor.assumeIsolated { snipController.repeatLastRegion() }
+        }
+        print("[hotkey] fixed activeWindow=\(activeWindow) repeatRegion=\(repeatRegion)")
     }
 
     private static func handler(

@@ -13,6 +13,8 @@ final class SnipController {
         let sourceImage: CGImage
         let cropRectPx: CGRect
         let scale: CGFloat
+        /// 选区在源屏上的位置，成功输出后写进历史供重复上次区域使用。
+        let region: CaptureRegion?
     }
 
     /// 打开保存面板时的快照。面板期间其他屏仍可提交，保存只能写这里的内容。
@@ -20,6 +22,7 @@ final class SnipController {
         let panel: NSSavePanel
         let image: CGImage
         let displaySize: CGSize
+        let region: CaptureRegion?
     }
 
     private var windows: [SnipOverlayWindow] = []
@@ -38,26 +41,142 @@ final class SnipController {
     /// 快捷保存根目录。验收 harness 注入临时目录，生产用 ~/Pictures/Yaosnap。
     var quickSaveDirectory: URL?
 
+    /// 延时截屏只跑计时器，到点才抓帧开会话，期间不显示覆盖层。
+    private var delayDeadline: Date?
+    private var delayTimer: Timer?
+
+    var delayRemainingSeconds: Int? {
+        guard let delayDeadline else { return nil }
+        return max(0, Int(ceil(delayDeadline.timeIntervalSinceNow)))
+    }
+
     /// 设置存储。验收 harness 可换成独立 suite 的实例。
     var settingsStore = SettingsStore()
     /// 十字光标是否生效。保存面板等场景需要临时恢复箭头。
     private var isCrosshairActive = false
 
     func start() {
-        start(pickColor: false, replayIndex: nil)
+        // 延时中再次触发视为取消，这是 Snipaste 的取舍：第二次按键不该再排一个延时。
+        if delayDeadline != nil {
+            cancelDelay()
+            return
+        }
+        startSession(pickColor: false, replayIndex: nil, initialRegion: nil)
     }
 
     func startPickColor() {
-        start(pickColor: true, replayIndex: nil)
+        startSession(pickColor: true, replayIndex: nil, initialRegion: nil)
     }
 
     /// 从菜单历史进入：会话直接停在选中的那张，index 0 为最新。
     func startReplayingHistory(at index: Int) {
         guard history.indices.contains(index) else { return }
-        start(pickColor: false, replayIndex: index + 1)
+        startSession(pickColor: false, replayIndex: index + 1, initialRegion: nil)
     }
 
-    private func start(pickColor: Bool, replayIndex: Int?) {
+    func startDelayed(seconds: Int) {
+        guard DelayCapture.range.contains(seconds) else {
+            NSSound.beep()
+            return
+        }
+        guard windows.isEmpty else { return }
+        if delayDeadline != nil {
+            cancelDelay()
+            return
+        }
+        print("[snip] delay \(seconds)s")
+        delayDeadline = Date().addingTimeInterval(TimeInterval(seconds))
+        let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.delayTick() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        delayTimer = timer
+    }
+
+    func cancelDelay() {
+        guard delayDeadline != nil || delayTimer != nil else { return }
+        delayTimer?.invalidate()
+        delayTimer = nil
+        delayDeadline = nil
+        print("[snip] delay cancelled")
+    }
+
+    private func delayTick() {
+        guard let deadline = delayDeadline, Date() >= deadline else { return }
+        delayTimer?.invalidate()
+        delayTimer = nil
+        delayDeadline = nil
+        startSession(pickColor: false, replayIndex: nil, initialRegion: nil)
+    }
+
+    /// 用最顶层普通窗口的矩形开会话；拿不到候选时提示音而不是回退全屏。
+    func startActiveWindow() {
+        guard windows.isEmpty else { return }
+        let all = WindowDetector.onScreenWindows(ownPID: getpid())
+        guard let window = ActiveWindow.pick(from: all, ownPID: getpid()),
+              let region = makeRegion(containing: window.bounds) else {
+            print("[snip] 没有可用的活动窗口")
+            NSSound.beep()
+            return
+        }
+        print("[snip] active window \(window.ownerName) rect=\(window.bounds)")
+        startSession(pickColor: false, replayIndex: nil, initialRegion: region)
+    }
+
+    /// 上次选区映射到鼠标所在屏；没有历史或映射为空时提示音。
+    func repeatLastRegion() {
+        guard windows.isEmpty else { return }
+        guard let last = history.first?.region,
+              let displayID = displayUnderMouse() else {
+            print("[snip] 重复上次区域失败：没有历史选区")
+            NSSound.beep()
+            return
+        }
+        let bounds = CGDisplayBounds(displayID)
+        let mapped = RepeatRegion.map(last, onto: bounds)
+        guard !mapped.isEmpty else {
+            NSSound.beep()
+            return
+        }
+        print("[snip] repeat last region \(mapped)")
+        startSession(
+            pickColor: false,
+            replayIndex: nil,
+            initialRegion: CaptureRegion(displayID: displayID, rect: mapped, displayBounds: bounds)
+        )
+    }
+
+    private func displayUnderMouse() -> CGDirectDisplayID? {
+        let mouse = NSEvent.mouseLocation
+        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(mouse) }) ?? NSScreen.main,
+              let number = screen.deviceDescription[
+                NSDeviceDescriptionKey("NSScreenNumber")
+              ] as? NSNumber else { return nil }
+        return number.uint32Value
+    }
+
+    /// 窗口矩形可能带阴影、跨屏或贴边；取重叠面积最大的屏并裁到屏内。
+    private func makeRegion(containing rect: CGRect) -> CaptureRegion? {
+        var best: (id: CGDirectDisplayID, bounds: CGRect, area: CGFloat)?
+        for screen in NSScreen.screens {
+            guard let number = screen.deviceDescription[
+                NSDeviceDescriptionKey("NSScreenNumber")
+            ] as? NSNumber else { continue }
+            let id = CGDirectDisplayID(number.uint32Value)
+            let bounds = CGDisplayBounds(id)
+            let overlap = rect.intersection(bounds)
+            let area = overlap.isNull ? 0 : overlap.width * overlap.height
+            if area > (best?.area ?? 0) {
+                best = (id, bounds, area)
+            }
+        }
+        guard let best else { return nil }
+        let clamped = RectMath.clamp(rect, to: best.bounds)
+        guard !clamped.isEmpty else { return nil }
+        return CaptureRegion(displayID: best.id, rect: clamped, displayBounds: best.bounds)
+    }
+
+    private func startSession(pickColor: Bool, replayIndex: Int?, initialRegion: CaptureRegion?) {
         print("[snip] start called\(pickColor ? " (pick-color)" : "")")
         guard windows.isEmpty else { return }
         guard ScreenCaptureService.hasPermission() else {
@@ -106,6 +225,15 @@ final class SnipController {
             window.makeKeyAndOrderFront(nil)
             windows.append(window)
             shots.append(shot)
+            // 预置选区必须等 shots 入列：提交通知会按 displayID 回查冻结帧。
+            if let initialRegion, initialRegion.displayID == shot.displayID {
+                let clamped = RectMath.clamp(initialRegion.rect, to: shot.bounds)
+                view.applyInitialSelection(RectMath.toViewRect(
+                    globalRect: clamped,
+                    displayBounds: shot.bounds,
+                    viewHeight: shot.bounds.height
+                ))
+            }
         }
         if windows.count != captures.count {
             print("[snip] warning: 捕获 \(captures.count) 屏，实际覆盖 \(windows.count) 屏")
@@ -185,12 +313,25 @@ final class SnipController {
         let cropRectPx = info[.cropRectPx] as? CGRect
             ?? RectMath.imageRect(fromViewRect: viewRect, viewHeight: viewHeight, scale: shot.scale)
         let outputScale = viewRect.width > 0 ? cropRectPx.width / viewRect.width : scale
+        let displayBounds = shots.first { $0.displayID == displayID }?.bounds
+        let region = displayBounds.map {
+            CaptureRegion(
+                displayID: displayID,
+                rect: RectMath.toGlobalRect(
+                    viewRect: viewRect,
+                    displayBounds: $0,
+                    viewHeight: viewHeight
+                ),
+                displayBounds: $0
+            )
+        }
         pendingRegion = PendingRegion(
             displayID: displayID,
             viewRect: viewRect,
             sourceImage: sourceImage,
             cropRectPx: cropRectPx,
-            scale: outputScale
+            scale: outputScale,
+            region: region
         )
     }
 
@@ -206,7 +347,7 @@ final class SnipController {
             return
         }
         print("[snip] copied")
-        remember(image, displaySize: pending.viewRect.size)
+        remember(image, displaySize: pending.viewRect.size, region: pending.region)
         cancel()
     }
 
@@ -218,7 +359,7 @@ final class SnipController {
             return
         }
         if notification.userInfo?[.quickSave] as? Bool == true {
-            quickSave(image, displaySize: pending.viewRect.size)
+            quickSave(image, displaySize: pending.viewRect.size, region: pending.region)
             return
         }
         let parent = overlayWindow(for: pending.displayID) ?? NSApp.keyWindow ?? windows.first
@@ -235,7 +376,8 @@ final class SnipController {
         saveJob = SaveJob(
             panel: panel,
             image: image,
-            displaySize: pending.viewRect.size
+            displaySize: pending.viewRect.size,
+            region: pending.region
         )
         // 保存面板里需要可见鼠标
         setCrosshair(false)
@@ -336,7 +478,7 @@ final class SnipController {
         do {
             try data.write(to: url)
             print("[snip] saved to \(url.path)")
-            remember(job.image, displaySize: job.displaySize)
+            remember(job.image, displaySize: job.displaySize, region: job.region)
             cancel()
         } catch {
             print("[snip] error: 写入 \(url.path) 失败: \(error.localizedDescription)")
@@ -351,7 +493,7 @@ final class SnipController {
     }
 
     /// ⌘ + 保存按钮：直接写快捷保存目录，成功路径与面板保存一致，只是不弹面板。
-    private func quickSave(_ image: CGImage, displaySize: CGSize) {
+    private func quickSave(_ image: CGImage, displaySize: CGSize, region: CaptureRegion?) {
         guard let data = ImageOutput.pngData(from: image) else {
             print("[snip] error: PNG 编码失败")
             NSSound.beep()
@@ -362,7 +504,7 @@ final class SnipController {
         do {
             let url = try store.write(data)
             print("[snip] quick saved to \(url.path)")
-            remember(image, displaySize: displaySize)
+            remember(image, displaySize: displaySize, region: region)
             NSSound(named: "Glass")?.play()
             cancel()
         } catch {
@@ -490,8 +632,11 @@ final class SnipController {
     }
 
     /// 最近成功输出的截图按时间倒序保留，最多 10 张。
-    private func remember(_ image: CGImage, displaySize: CGSize) {
-        history.insert(CaptureHistoryEntry(image: image, displaySize: displaySize), at: 0)
+    private func remember(_ image: CGImage, displaySize: CGSize, region: CaptureRegion?) {
+        history.insert(
+            CaptureHistoryEntry(image: image, displaySize: displaySize, region: region),
+            at: 0
+        )
         if history.count > Self.historyLimit {
             history.removeLast(history.count - Self.historyLimit)
         }

@@ -10,6 +10,7 @@ public enum CommandLineParseError: Error, Equatable, Sendable {
     case missingValue(String)
     case extraArgument(String)
     case invalidNumber(String)
+    case invalidDelay(String)
 }
 
 /// 解析 Snipaste 风格的命令行参数。纯函数，不做 I/O，也不启动 app。
@@ -17,6 +18,7 @@ public enum CommandLineParser {
     public static let usage = """
     用法：
       snip                         启动截图
+      snip --delay N               延时 N 秒截屏（1-60）
       snip -o clipboard            最近截图复制到剪贴板
       snip -o quick-save           最近截图存入快捷保存文件夹
       snip -o FILE_NAME            最近截图保存到指定文件
@@ -44,6 +46,17 @@ public enum CommandLineParser {
         }
 
         switch arguments[0] {
+        case "--delay":
+            guard arguments.count >= 2, !arguments[1].isEmpty else {
+                throw CommandLineParseError.missingValue("--delay N")
+            }
+            guard arguments.count == 2 else {
+                throw CommandLineParseError.extraArgument(arguments[2])
+            }
+            guard let seconds = DelayCapture.seconds(from: arguments[1]) else {
+                throw CommandLineParseError.invalidDelay(arguments[1])
+            }
+            return .request(CommandLineRequest(command: .delayedSnip(seconds: seconds)))
         case "-o":
             guard arguments.count >= 2, !arguments[1].isEmpty else {
                 throw CommandLineParseError.missingValue("-o")

@@ -30,6 +30,11 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private let onDeletePinGroup: @MainActor (Int) -> Bool
     private let onToggleSolo: @MainActor () -> Void
     private let onOpenSettings: @MainActor () -> Void
+    private let onActiveWindow: @MainActor () -> Void
+    private let onRepeatLastRegion: @MainActor () -> Void
+    private let onDelaySnip: @MainActor (Int) -> Void
+    private let onCancelDelay: @MainActor () -> Void
+    private let delayRemaining: @MainActor () -> Int?
 
     init(
         onSnip: @escaping @MainActor () -> Void,
@@ -43,7 +48,12 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         onRenamePinGroup: @escaping @MainActor (Int, String) -> Bool,
         onDeletePinGroup: @escaping @MainActor (Int) -> Bool,
         onToggleSolo: @escaping @MainActor () -> Void,
-        onOpenSettings: @escaping @MainActor () -> Void
+        onOpenSettings: @escaping @MainActor () -> Void,
+        onActiveWindow: @escaping @MainActor () -> Void = {},
+        onRepeatLastRegion: @escaping @MainActor () -> Void = {},
+        onDelaySnip: @escaping @MainActor (Int) -> Void = { _ in },
+        onCancelDelay: @escaping @MainActor () -> Void = {},
+        delayRemaining: @escaping @MainActor () -> Int? = { nil }
     ) {
         self.onSnip = onSnip
         self.onPin = onPin
@@ -57,6 +67,11 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         self.onDeletePinGroup = onDeletePinGroup
         self.onToggleSolo = onToggleSolo
         self.onOpenSettings = onOpenSettings
+        self.onActiveWindow = onActiveWindow
+        self.onRepeatLastRegion = onRepeatLastRegion
+        self.onDelaySnip = onDelaySnip
+        self.onCancelDelay = onCancelDelay
+        self.delayRemaining = delayRemaining
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         super.init()
         if let button = statusItem.button {
@@ -93,6 +108,57 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         snipItem.image = menuIcon
             ?? NSImage(systemSymbolName: "camera.viewfinder", accessibilityDescription: "截图")
         menu.addItem(snipItem)
+
+        let activeWindowItem = NSMenuItem(
+            title: "截取活动窗口",
+            action: #selector(activeWindowTriggered),
+            keyEquivalent: "w"
+        )
+        activeWindowItem.keyEquivalentModifierMask = [.control, .shift]
+        activeWindowItem.image = NSImage(
+            systemSymbolName: "macwindow",
+            accessibilityDescription: "截取活动窗口"
+        )
+        menu.addItem(activeWindowItem)
+
+        let repeatItem = NSMenuItem(
+            title: "重复上次区域",
+            action: #selector(repeatLastRegionTriggered),
+            keyEquivalent: "r"
+        )
+        repeatItem.keyEquivalentModifierMask = [.control, .shift]
+        repeatItem.image = NSImage(
+            systemSymbolName: "arrow.counterclockwise",
+            accessibilityDescription: "重复上次区域"
+        )
+        menu.addItem(repeatItem)
+
+        if let remaining = delayRemaining() {
+            let cancelItem = NSMenuItem(
+                title: "取消延时截屏（剩余 \(remaining) 秒）",
+                action: #selector(cancelDelayTriggered),
+                keyEquivalent: ""
+            )
+            cancelItem.image = NSImage(
+                systemSymbolName: "timer",
+                accessibilityDescription: "取消延时截屏"
+            )
+            menu.addItem(cancelItem)
+        } else {
+            for seconds in [3, 5] {
+                let delayItem = NSMenuItem(
+                    title: "延时 \(seconds) 秒截屏",
+                    action: #selector(delayTriggered(_:)),
+                    keyEquivalent: ""
+                )
+                delayItem.representedObject = seconds
+                delayItem.image = NSImage(
+                    systemSymbolName: "timer",
+                    accessibilityDescription: "延时截屏"
+                )
+                menu.addItem(delayItem)
+            }
+        }
 
         let history = historyItems()
         let historyItem = NSMenuItem(title: "截图历史", action: nil, keyEquivalent: "")
@@ -244,6 +310,23 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     @objc private func snipTriggered() {
         onSnip()
+    }
+
+    @objc private func activeWindowTriggered() {
+        onActiveWindow()
+    }
+
+    @objc private func repeatLastRegionTriggered() {
+        onRepeatLastRegion()
+    }
+
+    @objc private func delayTriggered(_ sender: NSMenuItem) {
+        guard let seconds = sender.representedObject as? Int else { return }
+        onDelaySnip(seconds)
+    }
+
+    @objc private func cancelDelayTriggered() {
+        onCancelDelay()
     }
 
     @objc private func historySelected(_ sender: NSMenuItem) {
