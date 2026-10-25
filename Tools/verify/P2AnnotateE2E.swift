@@ -1318,6 +1318,184 @@ final class AnnotateHarness {
         endSession()
     }
 
+    /// 框选多选、Shift 增删、整组拖动 / 删除 / 一次撤销恢复。
+    private func runMultiSelect() {
+        guard let (window, view) = beginSession("MULTI-SELECT") else { return }
+        drag(view, window: window, from: CGPoint(x: 150, y: 150), to: CGPoint(x: 750, y: 600))
+        let selection = view.selectionRect
+        func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            CGPoint(x: selection.minX + x, y: selection.minY + y)
+        }
+        let firstRect = CGRect(x: 40, y: 40, width: 100, height: 80)
+        let secondRect = CGRect(x: 250, y: 40, width: 100, height: 80)
+        press(view, window: window, path: [point(40, 40), point(140, 120)])
+        press(view, window: window, path: [point(250, 40), point(350, 120)])
+        guard view.annotations.count == 2,
+              tapSelect(view, id: "MULTI-MARQUEE"),
+              let canvas = view.subviews.compactMap({ $0 as? AnnotationCanvas }).first else {
+            fail("MULTI-MARQUEE", "前置画两个矩形或切选择工具失败 annotations=\(view.annotations.count)")
+            endSession()
+            return
+        }
+        let firstID = view.annotations[0].id
+        let secondID = view.annotations[1].id
+
+        press(view, window: window, path: [point(20, 20), point(380, 160)])
+        guard canvas.selectedIDs == [firstID, secondID] else {
+            fail("MULTI-MARQUEE", "框选后 selectedIDs=\(canvas.selectedIDs) 期望两个矩形")
+            endSession()
+            return
+        }
+        pass("MULTI-MARQUEE", "框选相交两个矩形，canvas.selectedIDs 数量为 2")
+
+        press(view, window: window, path: [point(90, 80)], modifierFlags: .shift)
+        guard canvas.selectedIDs == [secondID] else {
+            fail("MULTI-SHIFT-CLICK", "Shift 点第一个后 selectedIDs=\(canvas.selectedIDs)")
+            endSession()
+            return
+        }
+        press(view, window: window, path: [point(90, 80)], modifierFlags: .shift)
+        guard canvas.selectedIDs == [firstID, secondID] else {
+            fail("MULTI-SHIFT-CLICK", "再次 Shift 点第一个后 selectedIDs=\(canvas.selectedIDs)")
+            endSession()
+            return
+        }
+        pass("MULTI-SHIFT-CLICK", "Shift 点击可移除与追加单个标注")
+
+        press(view, window: window, path: [point(400, 300)])
+        guard canvas.selectedIDs.isEmpty else {
+            fail("MULTI-SHIFT-MARQUEE", "空白单击后 selectedIDs=\(canvas.selectedIDs) 应为空")
+            endSession()
+            return
+        }
+        press(view, window: window, path: [point(20, 20), point(160, 140)], modifierFlags: .shift)
+        guard canvas.selectedIDs == [firstID] else {
+            fail("MULTI-SHIFT-MARQUEE", "Shift 框选第一个后 selectedIDs=\(canvas.selectedIDs)")
+            endSession()
+            return
+        }
+        press(view, window: window, path: [point(240, 20), point(380, 160)], modifierFlags: .shift)
+        guard canvas.selectedIDs == [firstID, secondID] else {
+            fail("MULTI-SHIFT-MARQUEE", "Shift 追加框选第二个后 selectedIDs=\(canvas.selectedIDs)")
+            endSession()
+            return
+        }
+        pass("MULTI-SHIFT-MARQUEE", "Shift 拖动空白在已有集合上追加框选")
+
+        press(view, window: window, path: [point(90, 80), point(120, 110)])
+        let movedFirst = firstRect.offsetBy(dx: 30, dy: 30)
+        let movedSecond = secondRect.offsetBy(dx: 30, dy: 30)
+        guard case .rect(let firstMoved) = view.annotations[0].shape,
+              case .rect(let secondMoved) = view.annotations[1].shape,
+              firstMoved == movedFirst,
+              secondMoved == movedSecond else {
+            fail("MULTI-DRAG", "拖动后 annotations=\(view.annotations) 期望 \(movedFirst) / \(movedSecond)")
+            endSession()
+            return
+        }
+        pass("MULTI-DRAG", "拖动任一选中标注，两个矩形同步平移 (30,30)")
+
+        keyDown(6, characters: "z", in: window, view: view, modifierFlags: .command)
+        guard case .rect(let undoneFirst) = view.annotations[0].shape,
+              case .rect(let undoneSecond) = view.annotations[1].shape,
+              undoneFirst == firstRect,
+              undoneSecond == secondRect else {
+            fail("MULTI-DRAG-UNDO", "一次 ⌘Z 后 annotations=\(view.annotations) 应回到原位")
+            endSession()
+            return
+        }
+        keyDown(6, characters: "z", in: window, view: view, modifierFlags: [.command, .shift])
+        guard case .rect(let redoneFirst) = view.annotations[0].shape,
+              case .rect(let redoneSecond) = view.annotations[1].shape,
+              redoneFirst == movedFirst,
+              redoneSecond == movedSecond else {
+            fail("MULTI-DRAG-UNDO", "⌘⇧Z 后 annotations=\(view.annotations) 应回到平移后")
+            endSession()
+            return
+        }
+        pass("MULTI-DRAG-UNDO", "整组一次拖动只占一步撤销，重做同样整组恢复")
+
+        keyDown(51, characters: "\u{7f}", in: window, view: view)
+        guard view.annotations.isEmpty else {
+            fail("MULTI-DELETE-UNDO", "Delete 后应清空，实际 \(view.annotations.count)")
+            endSession()
+            return
+        }
+        keyDown(6, characters: "z", in: window, view: view, modifierFlags: .command)
+        guard view.annotations.count == 2,
+              case .rect(let restoredFirst) = view.annotations[0].shape,
+              case .rect(let restoredSecond) = view.annotations[1].shape,
+              restoredFirst == movedFirst,
+              restoredSecond == movedSecond else {
+            fail("MULTI-DELETE-UNDO", "一次撤销后 annotations=\(view.annotations)")
+            endSession()
+            return
+        }
+        pass("MULTI-DELETE-UNDO", "Delete 删除整组，一次 ⌘Z 恢复两个矩形")
+        endSession()
+    }
+
+    /// 整组复制粘贴与 Control 拖动克隆。
+    private func runMultiCopyClone() {
+        guard let (window, view) = beginSession("MULTI-COPY") else { return }
+        drag(view, window: window, from: CGPoint(x: 150, y: 150), to: CGPoint(x: 750, y: 600))
+        let selection = view.selectionRect
+        func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            CGPoint(x: selection.minX + x, y: selection.minY + y)
+        }
+        let firstRect = CGRect(x: 40, y: 40, width: 100, height: 80)
+        let secondRect = CGRect(x: 300, y: 40, width: 100, height: 80)
+        press(view, window: window, path: [point(40, 40), point(140, 120)])
+        press(view, window: window, path: [point(300, 40), point(400, 120)])
+        guard view.annotations.count == 2,
+              tapSelect(view, id: "MULTI-COPY-PASTE"),
+              let canvas = view.subviews.compactMap({ $0 as? AnnotationCanvas }).first else {
+            fail("MULTI-COPY-PASTE", "前置画两个矩形或切选择工具失败 annotations=\(view.annotations.count)")
+            endSession()
+            return
+        }
+        press(view, window: window, path: [point(20, 20), point(420, 160)])
+        guard canvas.selectedIDs.count == 2 else {
+            fail("MULTI-COPY-PASTE", "框选后 selectedIDs=\(canvas.selectedIDs)")
+            endSession()
+            return
+        }
+        keyDown(8, characters: "c", in: window, view: view, modifierFlags: [.command, .shift])
+        keyDown(9, characters: "v", in: window, view: view, modifierFlags: [.command, .shift])
+        let pastedFirst = firstRect.offsetBy(dx: 12, dy: 12)
+        let pastedSecond = secondRect.offsetBy(dx: 12, dy: 12)
+        guard view.annotations.count == 4,
+              case .rect(let pastedA) = view.annotations[2].shape,
+              case .rect(let pastedB) = view.annotations[3].shape,
+              pastedA == pastedFirst,
+              pastedB == pastedSecond,
+              canvas.selectedIDs == [view.annotations[2].id, view.annotations[3].id] else {
+            fail("MULTI-COPY-PASTE", "粘贴后 annotations=\(view.annotations) selectedIDs=\(canvas.selectedIDs)")
+            endSession()
+            return
+        }
+        pass("MULTI-COPY-PASTE", "⌘⇧C/⌘⇧V 整组粘贴出两个新矩形，整体偏移 (12,12)")
+
+        press(view, window: window, path: [point(102, 92), point(122, 112)], modifierFlags: .control)
+        let cloneFirst = pastedFirst.offsetBy(dx: 20, dy: 20)
+        let cloneSecond = pastedSecond.offsetBy(dx: 20, dy: 20)
+        guard view.annotations.count == 6,
+              case .rect(let keptA) = view.annotations[2].shape,
+              case .rect(let keptB) = view.annotations[3].shape,
+              case .rect(let cloneA) = view.annotations[4].shape,
+              case .rect(let cloneB) = view.annotations[5].shape,
+              keptA == pastedFirst,
+              keptB == pastedSecond,
+              cloneA == cloneFirst,
+              cloneB == cloneSecond else {
+            fail("MULTI-CTRL-CLONE", "Control 拖动后 annotations=\(view.annotations)")
+            endSession()
+            return
+        }
+        pass("MULTI-CTRL-CLONE", "Control 拖动整组克隆，原组不动，副本整体平移 (20,20)")
+        endSession()
+    }
+
     // MARK: - Snipaste 节奏（自动选中 / 右键）
 
     /// 画完形状立即选中，文字提交同样自动选中。
@@ -1336,10 +1514,10 @@ final class AnnotateHarness {
             return
         }
         let shapeID = view.annotations[0].id
-        if canvas.selectedID == shapeID {
-            pass("AUTO-SELECT", "画完后 canvas.selectedID 等于新标注 \(shapeID)")
+        if canvas.selectedIDs == [shapeID] {
+            pass("AUTO-SELECT", "画完后 canvas.selectedIDs 等于新标注 \(shapeID)")
         } else {
-            fail("AUTO-SELECT", "selectedID=\(String(describing: canvas.selectedID)) 期望 \(shapeID)")
+            fail("AUTO-SELECT", "selectedIDs=\(canvas.selectedIDs) 期望 [\(shapeID)]")
         }
 
         guard tapTool(view, .text, id: "AUTO-SELECT-TEXT") else {
@@ -1362,10 +1540,10 @@ final class AnnotateHarness {
             return
         }
         let textID = view.annotations[1].id
-        if canvas.selectedID == textID {
-            pass("AUTO-SELECT-TEXT", "文字提交后 canvas.selectedID 等于新标注 \(textID)")
+        if canvas.selectedIDs == [textID] {
+            pass("AUTO-SELECT-TEXT", "文字提交后 canvas.selectedIDs 等于新标注 \(textID)")
         } else {
-            fail("AUTO-SELECT-TEXT", "selectedID=\(String(describing: canvas.selectedID)) 期望 \(textID)")
+            fail("AUTO-SELECT-TEXT", "selectedIDs=\(canvas.selectedIDs) 期望 [\(textID)]")
         }
         endSession()
     }
@@ -1396,8 +1574,8 @@ final class AnnotateHarness {
               view.annotations[0].id == firstID,
               case .rect(let kept) = view.annotations[0].shape,
               kept == firstRect,
-              canvas.selectedID == view.annotations[1].id else {
-            fail("AUTO-SELECT-REDRAW", "annotations=\(view.annotations.count) 第一条=\(String(describing: view.annotations.first?.shape)) selectedID=\(String(describing: canvas.selectedID))")
+              canvas.selectedIDs == [view.annotations[1].id] else {
+            fail("AUTO-SELECT-REDRAW", "annotations=\(view.annotations.count) 第一条=\(String(describing: view.annotations.first?.shape)) selectedIDs=\(canvas.selectedIDs)")
             endSession()
             return
         }
@@ -2390,6 +2568,8 @@ final class AnnotateHarness {
         runDeleteSelection()
         runCopyPasteSelection()
         runControlDragCopy()
+        runMultiSelect()
+        runMultiCopyClone()
         runAutoSelectOnCreate()
         runDrawAgainAfterAutoSelect()
         runRightClickCancels()

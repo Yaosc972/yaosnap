@@ -20,7 +20,7 @@ final class AnnotationCanvas: NSView {
         didSet { needsDisplay = true }
     }
     /// 二次编辑选中的标注。高亮只画在预览上，不进导出。
-    var selectedID: UUID? {
+    var selectedIDs: Set<UUID> = [] {
         didSet { needsDisplay = true }
     }
     var currentStyle: Style {
@@ -67,21 +67,34 @@ final class AnnotationCanvas: NSView {
     }
 
     private func drawSelectionHighlight(in ctx: CGContext) {
-        guard let id = selectedID,
-              let shape = annotations.first(where: { $0.id == id })?.shape else { return }
+        let selected = annotations.filter { selectedIDs.contains($0.id) }
+        guard !selected.isEmpty else { return }
         ctx.saveGState()
         ctx.setStrokeColor(RGBAColor.palette[5].cgColor)
         ctx.setLineWidth(1.5)
-        if let geometry = shape.textGeometry {
-            drawTextHandles(geometry, in: ctx)
+        if selected.count == 1 {
+            let shape = selected[0].shape
+            if let geometry = shape.textGeometry {
+                drawTextHandles(geometry, in: ctx)
+            } else {
+                // 画布 frame 与选区重合，画布坐标即视图坐标，直接描在包围盒外扩 3pt 处。
+                let box = shape.bounds.insetBy(dx: -3, dy: -3)
+                ctx.setLineDash(phase: 0, lengths: [4, 3])
+                ctx.stroke(box)
+                ctx.setLineDash(phase: 0, lengths: [])
+                if shape.supportsResizeHandles {
+                    drawHandleSquares(ShapeHandle.allCases.map { $0.point(in: shape.bounds) }, in: ctx)
+                }
+            }
         } else {
-            // 画布 frame 与选区重合，画布坐标即视图坐标，直接描在包围盒外扩 3pt 处。
-            let box = shape.bounds.insetBy(dx: -3, dy: -3)
+            // 多选不显示缩放控制点，逐个描框后再补一个整体包围盒。
             ctx.setLineDash(phase: 0, lengths: [4, 3])
-            ctx.stroke(box)
+            for annotation in selected {
+                ctx.stroke(annotation.shape.bounds.insetBy(dx: -3, dy: -3))
+            }
             ctx.setLineDash(phase: 0, lengths: [])
-            if shape.supportsResizeHandles {
-                drawHandleSquares(ShapeHandle.allCases.map { $0.point(in: shape.bounds) }, in: ctx)
+            if let union = AnnotationSelection.bounds(of: selected, ids: selectedIDs) {
+                ctx.stroke(union.insetBy(dx: -6, dy: -6))
             }
         }
         ctx.restoreGState()

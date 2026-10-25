@@ -12,8 +12,9 @@ final class OverlayView: NSView {
     /// 会话状态机。idling 无选区；selecting 在拖选区（origin 视图坐标，freeDrag 表示
     /// 已脱离窗口吸附）；ready 选区已确定；drawing 在拖标注（origin 画布坐标）；
     /// polylineEditing 折线已落下首点、等待后续顶点（points 是已确认顶点）；
-    /// editing 在输入文字；selected 选中了一条标注；moving 在拖动它（grab 是画布坐标的
-    /// 按下点，original 是按下时的形状，拖动全程按它平移）；resizingText / rotatingText
+    /// editing 在输入文字；selected 选中了一组标注；moving 在拖动整组（grab 是画布坐标的
+    /// 按下点，originals 是按下时每个形状，拖动全程按它平移）；marquee 在选择模式下拖框选
+    /// （base 是追加框选前的集合）；resizingText / rotatingText
     /// 在拖文字控制点（center 是未旋转包围盒中心，original 是按下时的形状）；
     /// resizingShape 在拖面状形状的四角（recorded 表示这次拖动已压过撤销栈）。
     private enum Phase {
@@ -23,10 +24,17 @@ final class OverlayView: NSView {
         case drawing(origin: CGPoint)
         case polylineEditing(points: [CGPoint])
         case editing
-        case selected(id: UUID)
-        /// pendingClone 非空表示这是 Control 按下起的克隆拖动：真正挪动时才把副本入列，
-        /// 只是点一下不会留下多余副本。
-        case moving(id: UUID, grab: CGPoint, original: Shape, pendingClone: Annotation?)
+        case selected(ids: Set<UUID>)
+        /// pendingClones 非空表示这是 Control 按下起的克隆拖动：真正挪动时才把副本入列，
+        /// 只是点一下不会留下多余副本。recorded 保证整组一次拖动只压一次撤销快照。
+        case moving(
+            ids: Set<UUID>,
+            grab: CGPoint,
+            originals: [UUID: Shape],
+            pendingClones: [Annotation]?,
+            recorded: Bool
+        )
+        case marquee(origin: CGPoint, base: Set<UUID>, additive: Bool)
         case resizingText(id: UUID, corner: TextHandle, original: Shape, center: CGPoint)
         case rotatingText(id: UUID, original: Shape, center: CGPoint)
         case resizingShape(id: UUID, corner: ShapeHandle, original: Shape, recorded: Bool)
@@ -118,7 +126,10 @@ final class OverlayView: NSView {
     private var toolStore = ToolStyleStore()
 
     /// 应用内剪贴板。二次编辑的复制粘贴不碰系统剪贴板。
-    private var copiedAnnotation: Annotation?
+    private var copiedAnnotations: [Annotation] = []
+
+    /// 框选矩形（画布坐标，y 向上）。只在 marquee 阶段非空。
+    private var marqueeRect: CGRect = .zero
 
     /// 两字符快捷键（RR）的首字符暂存。
     private var pendingShortcut: (key: String, at: TimeInterval)?
@@ -198,6 +209,7 @@ final class OverlayView: NSView {
             drawSelectionBorder()
             drawSizeLabel()
         }
+        drawMarquee()
         drawMagnifier()
         drawHistoryLabel()
     }
@@ -255,7 +267,7 @@ final class OverlayView: NSView {
                 return
             }
             appendPolylinePoint(canvasPoint(from: point), to: points)
-        case .selected(let id):
+        case .selected(let ids):
             // 自动选中后仍要保留双击复制的既有节奏，否则双击会落到拖动分支。
             if event.clickCount == 2, selectionRect.contains(point) {
                 requestCopy()
@@ -282,15 +294,22 @@ final class OverlayView: NSView {
             }
             // 画完自动选中后仍在 draw 模式：按在选中的形状上直接拖，按在别处开新一笔。
             let start = canvasPoint(from: point)
-            if let hit = hitAnnotation(at: start), hit.id == id {
-                phase = .moving(id: id, grab: start, original: hit.shape, pendingClone: nil)
+            if let hit = hitAnnotation(at: start), ids.contains(hit.id) {
+                phase = .moving(
+                    ids: ids,
+                    grab: start,
+                    originals: movingOriginals(for: ids),
+                    pendingClones: nil,
+                    recorded: false
+                )
                 return
             }
             clearSelection()
             beginDraft(at: point)
         case .editing:
             commitTextEditing()
-        case .selecting, .drawing, .moving, .resizingText, .rotatingText, .resizingShape:
+        case .selecting, .drawing, .moving, .marquee,
+             .resizingText, .rotatingText, .resizingShape:
             break // 已有按压，忽略重入
         }
     }
@@ -328,23 +347,50 @@ final class OverlayView: NSView {
             case .serial, .text, .eraser:
                 break
             }
-        case .moving(let id, let grab, let original, let pendingClone):
+        case .moving(let ids, let grab, let originals, let pendingClones, let recorded):
             guard let canvas else { return }
             let current = canvasPoint(from: point)
-            var movingID = id
+            var moveIDs = ids
+            var moveOriginals = originals
+            var didRecord = recorded
             // 克隆副本在第一次真实拖动时才入列，平移基准仍是按下时的形状。
-            if let clone = pendingClone {
+            if let clones = pendingClones {
                 pushUndoSnapshot()
-                canvas.annotations.append(clone)
-                movingID = clone.id
-                phase = .moving(id: clone.id, grab: grab, original: original, pendingClone: nil)
-                canvas.selectedID = clone.id
+                canvas.annotations.append(contentsOf: clones)
+                moveIDs = Set(clones.map(\.id))
+                moveOriginals = Dictionary(
+                    uniqueKeysWithValues: clones.map { ($0.id, $0.shape) }
+                )
+                didRecord = true
+                canvas.selectedIDs = moveIDs
+                phase = .moving(
+                    ids: moveIDs,
+                    grab: grab,
+                    originals: moveOriginals,
+                    pendingClones: nil,
+                    recorded: true
+                )
             }
-            guard let index = canvas.annotations.firstIndex(where: { $0.id == movingID }) else { return }
-            canvas.annotations[index].shape = original.translated(by: CGPoint(
-                x: current.x - grab.x,
-                y: current.y - grab.y
-            ))
+            let delta = CGPoint(x: current.x - grab.x, y: current.y - grab.y)
+            // 整组一次拖动只压一次栈；按下未移动的单击不产生撤销步。
+            if !didRecord, delta != .zero {
+                pushUndoSnapshot()
+                didRecord = true
+                phase = .moving(
+                    ids: moveIDs,
+                    grab: grab,
+                    originals: moveOriginals,
+                    pendingClones: nil,
+                    recorded: true
+                )
+            }
+            for index in canvas.annotations.indices where moveIDs.contains(canvas.annotations[index].id) {
+                guard let original = moveOriginals[canvas.annotations[index].id] else { continue }
+                canvas.annotations[index].shape = original.translated(by: delta)
+            }
+        case .marquee(let origin, _, _):
+            marqueeRect = RectMath.normalizedRect(from: origin, to: canvasPoint(from: point))
+            needsDisplay = true
         case .resizingText(let id, let corner, let original, let center):
             guard let canvas,
                   case .text(let text, _, let fontSize, let rotation) = original,
@@ -438,17 +484,25 @@ final class OverlayView: NSView {
                 return
             }
             commitDraft()
-        case .moving(let id, _, let original, _):
-            discardRedoIfChanged(id, from: original)
-            phase = .selected(id: id)
-            canvas?.selectedID = id
+        case .moving(let ids, _, _, _, _):
+            phase = .selected(ids: ids)
+            canvas?.selectedIDs = ids
+        case .marquee(_, let base, let additive):
+            let hits = AnnotationSelection.ids(
+                in: canvas?.annotations ?? [],
+                intersecting: marqueeRect
+            )
+            let ids = additive ? base.union(hits) : hits
+            marqueeRect = .zero
+            applySelection(ids)
+            needsDisplay = true
         case .resizingText(let id, _, let original, _), .rotatingText(let id, let original, _):
             discardRedoIfChanged(id, from: original)
-            phase = .selected(id: id)
-            canvas?.selectedID = id
+            phase = .selected(ids: [id])
+            canvas?.selectedIDs = [id]
         case .resizingShape(let id, _, _, _):
-            phase = .selected(id: id)
-            canvas?.selectedID = id
+            phase = .selected(ids: [id])
+            canvas?.selectedIDs = [id]
         case .idle, .ready, .polylineEditing, .editing, .selected:
             break // ready 下单击保留选区，等待 Enter / 双击 / ⌘S
         }
@@ -482,26 +536,68 @@ final class OverlayView: NSView {
 
     // MARK: - 二次编辑
 
-    /// 选择模式按下：命中则选中或起拖；Control 按下复制一份再拖副本。
+    /// 选择模式按下：命中则选中或起拖；Control 按下克隆整组再拖副本；Shift 追加 / 移除；
+    /// 空白处拖动框选，Shift 拖框追加到当前集合。
     private func selectModeMouseDown(at viewPoint: CGPoint, event: NSEvent) {
         guard let canvas else { return }
         let start = canvasPoint(from: viewPoint)
+        let shift = event.modifierFlags.contains(.shift)
         guard let hit = hitAnnotation(at: start) else {
-            clearSelection()
+            let base = shift ? canvas.selectedIDs : []
+            marqueeRect = .zero
+            phase = .marquee(origin: start, base: base, additive: shift)
+            needsDisplay = true
             return
         }
+        if shift {
+            var ids = canvas.selectedIDs
+            if ids.contains(hit.id) {
+                ids.remove(hit.id)
+            } else {
+                ids.insert(hit.id)
+            }
+            applySelection(ids)
+            return
+        }
+        let ids = canvas.selectedIDs.contains(hit.id) ? canvas.selectedIDs : [hit.id]
         if event.modifierFlags.contains(.control) {
-            let copy = Annotation(shape: hit.shape, style: hit.style)
-            canvas.selectedID = hit.id
-            phase = .moving(id: hit.id, grab: start, original: hit.shape, pendingClone: copy)
+            let selected = canvas.annotations.filter { ids.contains($0.id) }
+            let clones = selected.map { Annotation(shape: $0.shape, style: $0.style) }
+            canvas.selectedIDs = ids
+            phase = .moving(
+                ids: ids,
+                grab: start,
+                originals: movingOriginals(for: ids),
+                pendingClones: clones,
+                recorded: false
+            )
             return
         }
-        if case .selected(let id) = phase, id == hit.id {
-            phase = .moving(id: id, grab: start, original: hit.shape, pendingClone: nil)
+        if canvas.selectedIDs.contains(hit.id) {
+            phase = .moving(
+                ids: ids,
+                grab: start,
+                originals: movingOriginals(for: ids),
+                pendingClones: nil,
+                recorded: false
+            )
             return
         }
-        phase = .selected(id: hit.id)
-        canvas.selectedID = hit.id
+        applySelection([hit.id])
+    }
+
+    /// 把选中集合同步到画布与状态机；空集合回到 ready。
+    private func applySelection(_ ids: Set<UUID>) {
+        canvas?.selectedIDs = ids
+        phase = ids.isEmpty ? .ready : .selected(ids: ids)
+    }
+
+    private func movingOriginals(for ids: Set<UUID>) -> [UUID: Shape] {
+        Dictionary(
+            uniqueKeysWithValues: (canvas?.annotations ?? [])
+                .filter { ids.contains($0.id) }
+                .map { ($0.id, $0.shape) }
+        )
     }
 
     /// 自上而下取最上层命中。
@@ -514,9 +610,10 @@ final class OverlayView: NSView {
 
     /// 清除选中。阶段退回 ready，选区与标注不动。
     private func clearSelection() {
-        canvas?.selectedID = nil
+        canvas?.selectedIDs = []
+        marqueeRect = .zero
         switch phase {
-        case .selected, .moving, .resizingShape:
+        case .selected, .moving, .resizingShape, .marquee:
             phase = .ready
         default:
             break
@@ -524,44 +621,50 @@ final class OverlayView: NSView {
     }
 
     private func deleteSelected() {
-        guard case .selected(let id) = phase, let canvas else {
+        guard case .selected(let ids) = phase, let canvas, !ids.isEmpty else {
             NSSound.beep()
             return
         }
-        guard canvas.annotations.contains(where: { $0.id == id }) else {
+        let existing = ids.intersection(Set(canvas.annotations.map(\.id)))
+        guard !existing.isEmpty else {
             NSSound.beep()
             return
         }
         pushUndoSnapshot()
-        canvas.annotations.removeAll { $0.id == id }
-        canvas.selectedID = nil
+        canvas.annotations = AnnotationSelection.removing(existing, from: canvas.annotations)
+        canvas.selectedIDs = []
         phase = .ready
     }
 
     private func copySelected() {
-        guard case .selected(let id) = phase, let canvas,
-              let annotation = canvas.annotations.first(where: { $0.id == id }) else {
+        guard case .selected(let ids) = phase, let canvas else {
             NSSound.beep()
             return
         }
-        copiedAnnotation = annotation
+        let selected = canvas.annotations.filter { ids.contains($0.id) }
+        guard !selected.isEmpty else {
+            NSSound.beep()
+            return
+        }
+        copiedAnnotations = selected
     }
 
     private func pasteAnnotation() {
-        guard let source = copiedAnnotation, let canvas else {
+        guard !copiedAnnotations.isEmpty, let canvas else {
             NSSound.beep()
             return
         }
-        let pasted = Annotation(
-            shape: source.shape.translated(by: CGPoint(x: 12, y: 12)),
-            style: source.style
-        )
+        let pasted = copiedAnnotations.map {
+            Annotation(
+                shape: $0.shape.translated(by: CGPoint(x: 12, y: 12)),
+                style: $0.style
+            )
+        }
         pushUndoSnapshot()
-        canvas.annotations.append(pasted)
+        canvas.annotations.append(contentsOf: pasted)
         // 连续粘贴以新副本为源，否则每次偏移基准相同，多个副本会叠在同一处。
-        copiedAnnotation = pasted
-        canvas.selectedID = pasted.id
-        phase = .selected(id: pasted.id)
+        copiedAnnotations = pasted
+        applySelection(Set(pasted.map(\.id)))
         // 粘贴后切到选择模式，用户可以直接拖动刚贴出的副本。
         toolMode = .select
         toolbar.selectMode()
@@ -713,7 +816,7 @@ final class OverlayView: NSView {
     private var isCommittedPhase: Bool {
         switch phase {
         case .ready, .selected, .moving: return true
-        case .idle, .selecting, .drawing, .polylineEditing, .editing,
+        case .idle, .selecting, .drawing, .polylineEditing, .editing, .marquee,
              .resizingText, .rotatingText, .resizingShape: return false
         }
     }
@@ -722,7 +825,7 @@ final class OverlayView: NSView {
     private var isReadyOrSelected: Bool {
         switch phase {
         case .ready, .selected: return true
-        case .idle, .selecting, .drawing, .polylineEditing, .editing, .moving,
+        case .idle, .selecting, .drawing, .polylineEditing, .editing, .moving, .marquee,
              .resizingText, .rotatingText, .resizingShape: return false
         }
     }
@@ -731,7 +834,7 @@ final class OverlayView: NSView {
     private var canOutput: Bool {
         switch phase {
         case .ready, .selected: return true
-        case .idle, .selecting, .drawing, .polylineEditing, .editing, .moving,
+        case .idle, .selecting, .drawing, .polylineEditing, .editing, .moving, .marquee,
              .resizingText, .rotatingText, .resizingShape: return false
         }
     }
@@ -915,14 +1018,19 @@ final class OverlayView: NSView {
         guard let canvas else { return }
         canvas.annotations = snapshot.annotations
         canvas.nextSerial = snapshot.nextSerial
-        if let selected = canvas.selectedID,
-           !canvas.annotations.contains(where: { $0.id == selected }) {
-            clearSelection()
+        let remaining = canvas.selectedIDs.intersection(Set(canvas.annotations.map(\.id)))
+        canvas.selectedIDs = remaining
+        if remaining.isEmpty {
+            if case .selected = phase {
+                phase = .ready
+            }
+        } else if case .selected = phase {
+            phase = .selected(ids: remaining)
         }
         needsDisplay = true
     }
 
-    /// 拖动 / 缩放 / 旋转不进撤销栈，但一旦真的改变形状，旧的重做分支就失效。
+    /// 文字缩放 / 旋转不进撤销栈，但一旦真的改变形状，旧的重做分支就失效。
     private func discardRedoIfChanged(_ id: UUID, from original: Shape) {
         guard let canvas,
               let current = canvas.annotations.first(where: { $0.id == id }) else { return }
@@ -987,7 +1095,7 @@ final class OverlayView: NSView {
 
     /// 选中的文字标注及其控制点。旋转圆点最先命中，其次四角。
     private func textHandleHit(at point: CGPoint) -> (id: UUID, handle: TextHandle)? {
-        guard case .selected(let id) = phase,
+        guard case .selected(let ids) = phase, ids.count == 1, let id = ids.first,
               let shape = canvas?.annotations.first(where: { $0.id == id })?.shape,
               let geometry = shape.textGeometry else { return nil }
         let handles = [TextHandle.rotate] + TextHandle.allCases.filter(\.isCorner)
@@ -1004,7 +1112,7 @@ final class OverlayView: NSView {
         guard let canvas,
               let shape = canvas.annotations.first(where: { $0.id == hit.id })?.shape,
               let geometry = shape.textGeometry else { return }
-        canvas.selectedID = hit.id
+        canvas.selectedIDs = [hit.id]
         switch hit.handle {
         case .rotate:
             phase = .rotatingText(id: hit.id, original: shape, center: geometry.center)
@@ -1020,7 +1128,7 @@ final class OverlayView: NSView {
 
     /// 选中面状形状的四角命中。线状形状没有控制点，仍只显示包围盒。
     private func shapeHandleHit(at point: CGPoint) -> (id: UUID, corner: ShapeHandle)? {
-        guard case .selected(let id) = phase,
+        guard case .selected(let ids) = phase, ids.count == 1, let id = ids.first,
               let shape = canvas?.annotations.first(where: { $0.id == id })?.shape,
               shape.supportsResizeHandles else { return nil }
         for corner in ShapeHandle.allCases {
@@ -1036,7 +1144,7 @@ final class OverlayView: NSView {
         guard let canvas,
               let shape = canvas.annotations.first(where: { $0.id == hit.id })?.shape,
               shape.supportsResizeHandles else { return }
-        canvas.selectedID = hit.id
+        canvas.selectedIDs = [hit.id]
         phase = .resizingShape(id: hit.id, corner: hit.corner, original: shape, recorded: false)
     }
 
@@ -1136,8 +1244,8 @@ final class OverlayView: NSView {
         }
         canvas.draft = nil
         // Snipaste 的 auto_select_on_creation：新标注立即选中，可直接拖动或缩放。
-        canvas.selectedID = draft.id
-        phase = .selected(id: draft.id)
+        canvas.selectedIDs = [draft.id]
+        phase = .selected(ids: [draft.id])
     }
 
     /// 橡皮擦沿路径删除相交标注。一次拖动只压一次栈，撤销时整组恢复。
@@ -1154,7 +1262,7 @@ final class OverlayView: NSView {
         }
         let hitIDs = Set(hits.map(\.id))
         canvas.annotations.removeAll { hitIDs.contains($0.id) }
-        if let selected = canvas.selectedID, hitIDs.contains(selected) {
+        if !canvas.selectedIDs.isDisjoint(with: hitIDs) {
             clearSelection()
         }
     }
@@ -1220,8 +1328,8 @@ final class OverlayView: NSView {
         pushUndoSnapshot()
         canvas.annotations.append(finalized)
         canvas.draft = nil
-        canvas.selectedID = finalized.id
-        phase = .selected(id: finalized.id)
+        canvas.selectedIDs = [finalized.id]
+        phase = .selected(ids: [finalized.id])
     }
 
     private func cancelPolyline() {
@@ -1330,8 +1438,8 @@ final class OverlayView: NSView {
         )
         pushUndoSnapshot()
         canvas.annotations.append(annotation)
-        canvas.selectedID = annotation.id
-        phase = .selected(id: annotation.id)
+        canvas.selectedIDs = [annotation.id]
+        phase = .selected(ids: [annotation.id])
     }
 
     private func cancelTextEditing() {
@@ -1595,6 +1703,24 @@ final class OverlayView: NSView {
         border.lineWidth = 1
         NSColor.white.setStroke()
         border.stroke()
+    }
+
+    /// 框选矩形画在覆盖层上，不经过画布，因此不进导出。
+    private func drawMarquee() {
+        guard case .marquee = phase, !marqueeRect.isEmpty else { return }
+        let rect = marqueeRect.offsetBy(dx: selectionRect.minX, dy: selectionRect.minY)
+        let path = NSBezierPath(rect: rect)
+        path.lineWidth = 1
+        let accent = RGBAColor.palette[5]
+        func color(_ alpha: CGFloat) -> NSColor {
+            NSColor(srgbRed: accent.r, green: accent.g, blue: accent.b, alpha: alpha)
+        }
+        color(0.10).setFill()
+        path.fill()
+        color(0.90).setStroke()
+        let dash: [CGFloat] = [4, 3]
+        path.setLineDash(dash, count: dash.count, phase: 0)
+        path.stroke()
     }
 
     private func drawSizeLabel() {
