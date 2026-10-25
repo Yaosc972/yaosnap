@@ -246,6 +246,7 @@ final class SnipController {
                 whiteboardMode: activeWhiteboard != nil
             )
             view.autoSelectOnCreation = settings.autoSelectOnCreation
+            view.elementDetectionEnabled = settings.detectUIElements
             view.selectionAspectRatio = settings.selectionAspectRatio
             if pickColor {
                 view.onPickColor = { [weak self] in self?.cancel() }

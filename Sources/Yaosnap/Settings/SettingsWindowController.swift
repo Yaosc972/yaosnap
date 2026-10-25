@@ -126,6 +126,7 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate, N
     let restoreCapacityField = NSTextField()
     let restoreCapacityStepper = NSStepper()
     let autoSelectCheckbox = NSButton(checkboxWithTitle: "创建后自动选中", target: nil, action: nil)
+    let detectElementsCheckbox = NSButton(checkboxWithTitle: "自动检测 UI 元素", target: nil, action: nil)
     let aspectRatioPopup = NSPopUpButton()
     let shadowCheckbox = NSButton(checkboxWithTitle: "保存 / 复制时添加", target: nil, action: nil)
     let hotCornerCheckbox = NSButton(checkboxWithTitle: "启用", target: nil, action: nil)
@@ -249,6 +250,12 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate, N
         autoSelectCheckbox.action = #selector(autoSelectToggled)
         rows.append([autoSelectTitle, autoSelectCheckbox])
 
+        let detectElementsTitle = NSTextField(labelWithString: "自动检测 UI 元素")
+        detectElementsTitle.alignment = .right
+        detectElementsCheckbox.target = self
+        detectElementsCheckbox.action = #selector(detectElementsToggled)
+        rows.append([detectElementsTitle, detectElementsCheckbox])
+
         let aspectTitle = NSTextField(labelWithString: "选区比例")
         aspectTitle.alignment = .right
         aspectRatioPopup.addItems(withTitles: SelectionAspectRatio.allCases.map(\.title))
@@ -360,6 +367,7 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate, N
         restoreCapacityField.integerValue = settings.restoreCapacity
         restoreCapacityStepper.integerValue = settings.restoreCapacity
         autoSelectCheckbox.state = settings.autoSelectOnCreation ? .on : .off
+        detectElementsCheckbox.state = settings.detectUIElements ? .on : .off
         if let index = SelectionAspectRatio.allCases.firstIndex(of: settings.selectionAspectRatio) {
             aspectRatioPopup.selectItem(at: index)
         }
@@ -430,6 +438,39 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate, N
     @objc private func autoSelectToggled() {
         settings.autoSelectOnCreation = autoSelectCheckbox.state == .on
         apply()
+    }
+
+    /// 开启时未授权只做引导：设置照常保存，截图时静默回落到窗口吸附。
+    @objc private func detectElementsToggled() {
+        settings.detectUIElements = detectElementsCheckbox.state == .on
+        apply()
+        guard settings.detectUIElements, !UIElementDetector.isTrusted else { return }
+        // 先登记进「辅助功能」列表，否则系统设置里根本没有本应用可勾选。
+        UIElementDetector.requestTrust()
+        presentAccessibilityAlert()
+    }
+
+    private func presentAccessibilityAlert() {
+        let alert = NSAlert()
+        alert.messageText = "需要辅助功能权限"
+        alert.informativeText = """
+        自动检测 UI 元素需要辅助功能权限。请在「系统设置 → 隐私与安全性 → 辅助功能」中勾选 \
+        Build/Yaosnap.app（~/yaosnap/Build/Yaosnap.app），然后关闭并重新开启本开关以生效。
+        """
+        alert.addButton(withTitle: "打开系统设置")
+        alert.addButton(withTitle: "稍后")
+        let handler: (NSApplication.ModalResponse) -> Void = { response in
+            guard response == .alertFirstButtonReturn,
+                  let url = URL(
+                      string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+                  ) else { return }
+            NSWorkspace.shared.open(url)
+        }
+        if let window {
+            alert.beginSheetModal(for: window, completionHandler: handler)
+        } else {
+            handler(alert.runModal())
+        }
     }
 
     @objc private func aspectRatioChanged() {

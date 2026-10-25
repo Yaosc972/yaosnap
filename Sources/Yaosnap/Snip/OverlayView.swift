@@ -53,6 +53,12 @@ final class OverlayView: NSView {
     private var toolMode: ToolMode = .draw(.rect)
     /// 光标下的可吸附窗口（全局坐标）。nil 表示光标不在任何窗口上。
     private var hoverWindow: WindowCandidate?
+    /// 光标下 UI 元素的吸附矩形（视图坐标）。nil 表示本帧没有可用的元素候选。
+    private var hoverElementRect: CGRect?
+    /// 元素检测的父级层数，滚轮调。0 是光标命中元素本身。
+    private var hoverElementLevel = 0
+    /// 是否开启元素吸附，来自设置。
+    var elementDetectionEnabled = false
     /// 当前选区（视图坐标，左下原点）。空矩形表示尚未选中。
     private(set) var selectionRect: CGRect = .zero
 
@@ -71,6 +77,8 @@ final class OverlayView: NSView {
 
     private static let maskAlpha: CGFloat = 0.32
     private static let minimumSelectionSide: CGFloat = 1
+    /// 元素吸附的最小边长。更小的控件（光标、分隔线）点一下就选中没有意义，回落到窗口。
+    private static let minimumElementSide: CGFloat = 4
     /// 标注形状任一边长小于该值视为无效，丢弃。
     private static let minimumStrokeSide: CGFloat = 2
     /// 按下到拖动的位移小于该值不脱离窗口吸附；双击确认时手抖不应清掉已确定的选区。
@@ -251,8 +259,10 @@ final class OverlayView: NSView {
         // 有按压或已有选区时不画 hover，跳过状态更新避免整屏重绘
         guard case .idle = phase, selectionRect.isEmpty else { return }
         let hit = windowUnderMouse(at: point)
-        guard hit != hoverWindow else { return }
+        let element = elementUnderMouse(at: point)
+        guard hit != hoverWindow || element != hoverElementRect else { return }
         hoverWindow = hit
+        hoverElementRect = element
         needsDisplay = true
     }
 
@@ -557,7 +567,18 @@ final class OverlayView: NSView {
     }
 
     /// 滚轮调笔宽。向上滚变粗，钳制在 5 档内。
+    /// 元素检测悬停时空闲滚轮改为切换父级 / 子级（上滚父级，下滚子级）。
     override func scrollWheel(with event: NSEvent) {
+        if case .idle = phase, elementDetectionEnabled, UIElementDetector.isTrusted,
+           event.scrollingDeltaY != 0 {
+            let step = event.scrollingDeltaY > 0 ? 1 : -1
+            let next = UIElementDetector.clampLevel(hoverElementLevel + step)
+            guard next != hoverElementLevel else { return }
+            hoverElementLevel = next
+            refreshHover(at: convert(event.locationInWindow, from: nil))
+            needsDisplay = true
+            return
+        }
         guard isReadyOrSelected, event.scrollingDeltaY != 0 else {
             super.scrollWheel(with: event)
             return
@@ -1034,6 +1055,8 @@ final class OverlayView: NSView {
         selectionRect = .zero
         phase = .idle
         hoverWindow = nil
+        hoverElementRect = nil
+        hoverElementLevel = 0
         pendingShortcut = nil
         updateActionBar()
     }
@@ -1121,12 +1144,46 @@ final class OverlayView: NSView {
 
     /// 光标下的窗口：视图坐标 → CG 全局坐标后在本屏候选里取最顶层命中。
     private func windowUnderMouse(at viewPoint: CGPoint) -> WindowCandidate? {
-        let globalPoint = RectMath.toGlobalPoint(
+        let globalPoint = globalPoint(from: viewPoint)
+        return WindowDetector.window(at: globalPoint, in: candidates)
+    }
+
+    /// 光标下 UI 元素的视图矩形。未开启、未授权、命中自身覆盖层、矩形过小或越出本屏时返回 nil，
+    /// 调用方回落到窗口吸附。
+    private func elementUnderMouse(at viewPoint: CGPoint) -> CGRect? {
+        guard elementDetectionEnabled, UIElementDetector.isTrusted else { return nil }
+        let point = globalPoint(from: viewPoint)
+        let pid = windowUnderMouse(at: viewPoint)?.ownerPID
+        let axRect = hoverElementLevel == 0
+            ? UIElementDetector.element(at: point, inPID: pid)
+            : UIElementDetector.parentRect(of: point, levels: hoverElementLevel, inPID: pid)
+        guard let axRect,
+              UIElementDetector.isUsable(
+                  axRect,
+                  minimumSide: Self.minimumElementSide,
+                  within: shot.bounds
+              ) else { return nil }
+        return RectMath.clamp(
+            UIElementDetector.viewRect(
+                fromAXRect: axRect,
+                displayBounds: shot.bounds,
+                viewHeight: bounds.height
+            ),
+            to: bounds
+        )
+    }
+
+    private func refreshHover(at viewPoint: CGPoint) {
+        hoverWindow = windowUnderMouse(at: viewPoint)
+        hoverElementRect = elementUnderMouse(at: viewPoint)
+    }
+
+    private func globalPoint(from viewPoint: CGPoint) -> CGPoint {
+        RectMath.toGlobalPoint(
             viewPoint: viewPoint,
             displayBounds: shot.bounds,
             viewHeight: bounds.height
         )
-        return WindowDetector.window(at: globalPoint, in: candidates)
     }
 
     /// 视图点 → 画布点。画布 frame 与选区重合，减去选区原点即得。
@@ -1197,10 +1254,14 @@ final class OverlayView: NSView {
         phase = .resizingShape(id: hit.id, corner: hit.corner, original: shape, recorded: false)
     }
 
-    /// 开始一次选区拖拽。起点落在窗口内 → 初始选区为整个窗口；拖动后才脱离窗口锁定。
+    /// 开始一次选区拖拽。元素优先于窗口：起点落在可用元素内 → 选区为该元素；
+    /// 否则落在窗口内 → 整个窗口。拖动超过阈值才脱离锁定。
     private func beginSelection(at point: CGPoint) {
         hoverWindow = nil
-        if let window = windowUnderMouse(at: point) {
+        hoverElementRect = nil
+        if let element = elementUnderMouse(at: point) {
+            selectionRect = element
+        } else if let window = windowUnderMouse(at: point) {
             selectionRect = RectMath.clamp(
                 RectMath.toViewRect(
                     globalRect: window.bounds,
@@ -1743,7 +1804,8 @@ final class OverlayView: NSView {
         guard let rect = hoverRectInView() else { return }
         let border = NSBezierPath(rect: rect)
         border.lineWidth = 2
-        NSColor.systemBlue.setStroke()
+        // 元素比窗口更细，用不同颜色区分当前吸附的是哪一级。
+        (hoverElementRect == nil ? NSColor.systemBlue : NSColor.systemOrange).setStroke()
         border.stroke()
     }
 
@@ -1762,8 +1824,9 @@ final class OverlayView: NSView {
         mask.fill()
     }
 
-    /// 当前悬停窗口在本屏视图坐标系下的矩形；无悬停或完全在本屏外时为 nil。
+    /// 当前悬停目标在本屏视图坐标系下的矩形；元素优先于窗口，无悬停或完全在本屏外时为 nil。
     private func hoverRectInView() -> CGRect? {
+        if let element = hoverElementRect, !element.isEmpty { return element }
         guard let window = hoverWindow else { return nil }
         let rect = RectMath.clamp(
             RectMath.toViewRect(

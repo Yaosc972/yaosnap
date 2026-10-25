@@ -94,6 +94,10 @@ final class SettingsHarness {
               "自动选中写回 \(store.load().autoSelectOnCreation)")
         check("auto-select-callback", lastChange?.autoSelectOnCreation == !selectBefore, "变更回调收到新值")
 
+        check("detect-elements-default",
+              controller.detectElementsCheckbox.state == .off && !store.load().detectUIElements,
+              "自动检测 UI 元素默认关闭")
+
         let cornerBefore = store.load().hotCorners.enabled
         controller.hotCornerCheckbox.performClick(nil)
         check("hot-corner-toggle", store.load().hotCorners.enabled == !cornerBefore,

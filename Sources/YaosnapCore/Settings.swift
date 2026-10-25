@@ -39,6 +39,8 @@ public struct Settings: Equatable, Codable {
     public var quickSaveDirectory: String?
     public var restoreCapacity: Int
     public var autoSelectOnCreation: Bool
+    /// 截图时按 UI 元素吸附。默认关闭，开启需要辅助功能权限。
+    public var detectUIElements: Bool
     public var selectionAspectRatio: SelectionAspectRatio
     public var exportShadow: Bool
     public var hotCorners: HotCornerSettings
@@ -52,6 +54,7 @@ public struct Settings: Equatable, Codable {
         quickSaveDirectory: String? = nil,
         restoreCapacity: Int = Settings.defaultRestoreCapacity,
         autoSelectOnCreation: Bool = true,
+        detectUIElements: Bool = false,
         selectionAspectRatio: SelectionAspectRatio = .free,
         exportShadow: Bool = false,
         hotCorners: HotCornerSettings = .standard,
@@ -64,6 +67,7 @@ public struct Settings: Equatable, Codable {
         self.quickSaveDirectory = quickSaveDirectory
         self.restoreCapacity = restoreCapacity
         self.autoSelectOnCreation = autoSelectOnCreation
+        self.detectUIElements = detectUIElements
         self.selectionAspectRatio = selectionAspectRatio
         self.exportShadow = exportShadow
         self.hotCorners = hotCorners
@@ -78,6 +82,7 @@ public struct Settings: Equatable, Codable {
         case quickSaveDirectory
         case restoreCapacity
         case autoSelectOnCreation
+        case detectUIElements
         case selectionAspectRatio
         case exportShadow
         case hotCorners
@@ -94,6 +99,7 @@ public struct Settings: Equatable, Codable {
         quickSaveDirectory = try container.decodeIfPresent(String.self, forKey: .quickSaveDirectory)
         restoreCapacity = try container.decode(Int.self, forKey: .restoreCapacity)
         autoSelectOnCreation = try container.decode(Bool.self, forKey: .autoSelectOnCreation)
+        detectUIElements = try container.decodeIfPresent(Bool.self, forKey: .detectUIElements) ?? false
         selectionAspectRatio = try container.decodeIfPresent(
             SelectionAspectRatio.self, forKey: .selectionAspectRatio
         ) ?? .free
