@@ -58,6 +58,9 @@ final class OverlayView: NSView {
         didSet { window?.invalidateCursorRects(for: self) }
     }
 
+    /// 新标注创建后是否自动选中，来自设置，默认开启。
+    var autoSelectOnCreation = true
+
     private static let maskAlpha: CGFloat = 0.32
     private static let minimumSelectionSide: CGFloat = 1
     /// 标注形状任一边长小于该值视为无效，丢弃。
@@ -1244,8 +1247,10 @@ final class OverlayView: NSView {
         }
         canvas.draft = nil
         // Snipaste 的 auto_select_on_creation：新标注立即选中，可直接拖动或缩放。
-        canvas.selectedIDs = [draft.id]
-        phase = .selected(ids: [draft.id])
+        if autoSelectOnCreation {
+            canvas.selectedIDs = [draft.id]
+            phase = .selected(ids: [draft.id])
+        }
     }
 
     /// 橡皮擦沿路径删除相交标注。一次拖动只压一次栈，撤销时整组恢复。
@@ -1328,8 +1333,12 @@ final class OverlayView: NSView {
         pushUndoSnapshot()
         canvas.annotations.append(finalized)
         canvas.draft = nil
-        canvas.selectedIDs = [finalized.id]
-        phase = .selected(ids: [finalized.id])
+        if autoSelectOnCreation {
+            canvas.selectedIDs = [finalized.id]
+            phase = .selected(ids: [finalized.id])
+        } else {
+            phase = .ready
+        }
     }
 
     private func cancelPolyline() {
@@ -1438,8 +1447,12 @@ final class OverlayView: NSView {
         )
         pushUndoSnapshot()
         canvas.annotations.append(annotation)
-        canvas.selectedIDs = [annotation.id]
-        phase = .selected(ids: [annotation.id])
+        if autoSelectOnCreation {
+            canvas.selectedIDs = [annotation.id]
+            phase = .selected(ids: [annotation.id])
+        } else {
+            phase = .ready
+        }
     }
 
     private func cancelTextEditing() {

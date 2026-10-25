@@ -34,6 +34,9 @@ final class SnipController {
     private var saveJob: SaveJob?
     /// 快捷保存根目录。验收 harness 注入临时目录，生产用 ~/Pictures/Yaosnap。
     var quickSaveDirectory: URL?
+
+    /// 设置存储。验收 harness 可换成独立 suite 的实例。
+    var settingsStore = SettingsStore()
     /// 十字光标是否生效。保存面板等场景需要临时恢复箭头。
     private var isCrosshairActive = false
 
@@ -72,6 +75,7 @@ final class SnipController {
             }
             let window = SnipOverlayWindow(screen: screen)
             let view = OverlayView(shot: shot, history: history, pickColorMode: pickColor)
+            view.autoSelectOnCreation = settingsStore.load().autoSelectOnCreation
             if pickColor {
                 view.onPickColor = { [weak self] in self?.cancel() }
             }
