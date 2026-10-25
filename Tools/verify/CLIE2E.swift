@@ -27,11 +27,13 @@ let urlCases: [(CommandLineCommand, String)] = [
     (.barcodeScan, "yaosnap://barcode-scan"),
     (.showImages, "yaosnap://show-images"),
     (.hideImages, "yaosnap://hide-images"),
-    (.whiteboard(color: nil, activeScreen: false), "yaosnap://whiteboard"),
-    (.whiteboard(color: WhiteboardColor.parse("#112233"), activeScreen: false),
+    (.whiteboard(background: nil, activeScreen: false), "yaosnap://whiteboard"),
+    (.whiteboard(background: .solid(WhiteboardColor.parse("#112233")!), activeScreen: false),
      "yaosnap://whiteboard?color=%23112233"),
-    (.whiteboard(color: .gray, activeScreen: true),
+    (.whiteboard(background: .solid(.gray), activeScreen: true),
      "yaosnap://whiteboard?color=%23808080&active_screen=1"),
+    (.whiteboard(background: .transparent, activeScreen: false),
+     "yaosnap://whiteboard?color=transparent"),
 ]
 
 for (command, expected) in urlCases {
@@ -61,6 +63,8 @@ let argumentCases: [([String], String)] = [
     (["whiteboard", "--active-screen"], "yaosnap://whiteboard?active_screen=1"),
     (["whiteboard", "--color", "red", "--active-screen"],
      "yaosnap://whiteboard?color=%23ff0000&active_screen=1"),
+    (["whiteboard", "--color", "transparent"],
+     "yaosnap://whiteboard?color=transparent"),
 ]
 
 for (arguments, expected) in argumentCases {

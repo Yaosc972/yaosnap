@@ -150,7 +150,10 @@ final class SettingsHarness {
                 from: controller.whiteboardColorWell
             )
         }
-        let boardColor = store.load().whiteboard.color
+        guard case .solid(let boardColor) = store.load().whiteboard.background else {
+            fail("whiteboard-color", "白板背景应为纯色")
+            return summarize()
+        }
         check("whiteboard-color",
               abs(boardColor.r - 0.1) < 0.01
                 && abs(boardColor.g - 0.2) < 0.01
@@ -165,7 +168,10 @@ final class SettingsHarness {
                 from: controller.whiteboardColorHexField
             )
         }
-        let hexColor = store.load().whiteboard.color
+        guard case .solid(let hexColor) = store.load().whiteboard.background else {
+            fail("whiteboard-hex", "白板背景应为纯色")
+            return summarize()
+        }
         check("whiteboard-hex",
               hexColor.hexString == "#112233",
               "十六进制白板色写回 \(hexColor.hexString)")
@@ -179,9 +185,23 @@ final class SettingsHarness {
             )
         }
         check("whiteboard-hex-fallback",
-              store.load().whiteboard.color == .white
+              store.load().whiteboard.background == .solid(.white)
                 && controller.whiteboardColorHexField.stringValue == "#ffffff",
               "非法十六进制回落白色并回填 \(controller.whiteboardColorHexField.stringValue)")
+
+        controller.whiteboardTransparentCheckbox.performClick(nil)
+        check("whiteboard-transparent",
+              store.load().whiteboard.background == .transparent
+                && !controller.whiteboardColorWell.isEnabled
+                && !controller.whiteboardColorHexField.isEnabled,
+              "透明勾选写回并禁用颜色控件")
+
+        controller.whiteboardTransparentCheckbox.performClick(nil)
+        check("whiteboard-transparent-off",
+              store.load().whiteboard.background == .solid(.white)
+                && controller.whiteboardColorWell.isEnabled
+                && controller.whiteboardColorHexField.isEnabled,
+              "取消透明恢复纯色并启用颜色控件")
 
         controller.restoreCapacityField.stringValue = "7"
         if let action = controller.restoreCapacityField.action {

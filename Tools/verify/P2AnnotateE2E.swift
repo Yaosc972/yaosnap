@@ -2921,7 +2921,7 @@ final class AnnotateHarness {
 
     /// 白板模式：Esc 不退出、工具条默认隐藏、空格切换、导出背景为指定颜色。
     func runWhiteboardMode() {
-        controller.startWhiteboard(color: WhiteboardColor.parse("#112233"), activeScreen: false)
+        controller.startWhiteboard(background: .solid(WhiteboardColor.parse("#112233")!), activeScreen: false)
         pump(0.4)
         guard let window = visibleOverlayWindows.first,
               let view = window.contentView as? OverlayView else {

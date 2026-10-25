@@ -740,7 +740,7 @@ final class Harness {
         defaults.removePersistentDomain(forName: suite)
         var settings = Settings.standard
         settings.whiteboard.enabled = true
-        settings.whiteboard.color = .white
+        settings.whiteboard.background = .solid(.white)
         board.settingsStore = SettingsStore(defaults: defaults)
         board.settingsStore.save(settings)
 
@@ -784,6 +784,62 @@ final class Harness {
             pass("WHITEBOARD-HISTORY", "白板导出进入同一份历史")
         } else {
             fail("WHITEBOARD-HISTORY", "historyCount=\(board.historyCount)，期望 1")
+        }
+
+        board.cancel()
+        NSPasteboard.general.clearContents()
+        pump(0.15)
+    }
+
+    /// 透明白板：窗口透明、底图 alpha 全 0，导出后采样点 alpha 必须全为 0。
+    func runTransparentWhiteboardExport() {
+        let wiring = ObserverWiring()
+        let board = wiring.controller
+        let suite = "yaosnap.p1.whiteboard-transparent"
+        guard let defaults = UserDefaults(suiteName: suite) else {
+            fail("WHITEBOARD-TRANSPARENT", "无法创建测试 UserDefaults suite")
+            return
+        }
+        defaults.removePersistentDomain(forName: suite)
+        board.settingsStore = SettingsStore(defaults: defaults)
+        board.startWhiteboard(background: .transparent, activeScreen: false)
+        pump(0.4)
+        guard let window = visibleOverlayWindows.first,
+              let view = window.contentView as? OverlayView else {
+            fail("WHITEBOARD-TRANSPARENT", "start 后没有可见覆盖窗口")
+            board.cancel()
+            return
+        }
+        guard window.isOpaque == false, window.backgroundColor == .clear else {
+            fail("WHITEBOARD-TRANSPARENT", "覆盖窗口未切换为透明")
+            board.cancel()
+            return
+        }
+        drag(view, window: window, from: CGPoint(x: 100, y: 100), to: CGPoint(x: 300, y: 200))
+        NSPasteboard.general.clearContents()
+        keyDown(36, characters: "\r", in: window, view: view)
+
+        guard let image = pasteboardImage(),
+              let bytes = srgbBytes(image, width: image.width, height: image.height) else {
+            fail("WHITEBOARD-TRANSPARENT", "剪贴板没有可读取的图像")
+            board.cancel()
+            return
+        }
+        let samples = [
+            (0, 0),
+            (image.width - 1, 0),
+            (0, image.height - 1),
+            (image.width - 1, image.height - 1),
+            (image.width / 2, image.height / 2),
+        ]
+        let allTransparent = samples.allSatisfy { point in
+            let offset = (point.1 * image.width + point.0) * 4
+            return bytes[offset + 3] == 0
+        }
+        if allTransparent {
+            pass("WHITEBOARD-TRANSPARENT", "\(image.width)x\(image.height) 四角与中心 alpha 均为 0")
+        } else {
+            fail("WHITEBOARD-TRANSPARENT", "导出图存在非透明采样点")
         }
 
         board.cancel()
@@ -882,6 +938,7 @@ final class Harness {
         runActionBar()
         runMaskAndHover()
         runWhiteboardExport()
+        runTransparentWhiteboardExport()
         runHistoryMenu()
 
         print("SUMMARY passes=\(passes) failures=\(failures)")
