@@ -38,13 +38,58 @@ public enum WhiteboardColor {
     }
 }
 
-/// 一次白板会话的解析结果。activeScreenOnly 只影响开哪几屏，颜色独立于全局设置。
+/// 白板背景的判别式联合：纯色与透明共用一条解析入口。
+public enum WhiteboardBackground: Equatable, Codable, Sendable {
+    case solid(RGBAColor)
+    case transparent
+
+    /// "transparent"/"clear"（trim + 小写）→ .transparent；其余走 WhiteboardColor.parse。
+    public static func parse(_ raw: String) -> WhiteboardBackground? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if trimmed == "transparent" || trimmed == "clear" { return .transparent }
+        guard let color = WhiteboardColor.parse(raw) else { return nil }
+        return .solid(color)
+    }
+
+    /// parse 失败回落到白色，与 WhiteboardColor 的宽松回退行为一致。
+    public static func parseOrDefault(_ raw: String) -> WhiteboardBackground {
+        parse(raw) ?? .solid(.white)
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let name = try? container.decode(String.self) {
+            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard trimmed == "transparent" || trimmed == "clear" else {
+                throw DecodingError.dataCorruptedError(
+                    in: container,
+                    debugDescription: "未知的白板背景：\(name)"
+                )
+            }
+            self = .transparent
+            return
+        }
+        self = .solid(try container.decode(RGBAColor.self))
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .solid(let color):
+            try container.encode(color)
+        case .transparent:
+            try container.encode("transparent")
+        }
+    }
+}
+
+/// 一次白板会话的解析结果。activeScreenOnly 只影响开哪几屏，背景独立于全局设置。
 public struct WhiteboardSession: Equatable {
-    public var color: RGBAColor
+    public var background: WhiteboardBackground
     public var activeScreenOnly: Bool
 
-    public init(color: RGBAColor = .white, activeScreenOnly: Bool = false) {
-        self.color = color
+    public init(background: WhiteboardBackground = .solid(.white), activeScreenOnly: Bool = false) {
+        self.background = background
         self.activeScreenOnly = activeScreenOnly
     }
 }
@@ -70,17 +115,43 @@ public struct WhiteboardSettings: Equatable, Codable {
     public static let standard = WhiteboardSettings()
 
     public var enabled: Bool
-    public var color: RGBAColor
+    public var background: WhiteboardBackground
 
-    public init(enabled: Bool = false, color: RGBAColor = .white) {
+    public init(enabled: Bool = false, background: WhiteboardBackground = .solid(.white)) {
         self.enabled = enabled
-        self.color = color
+        self.background = background
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case enabled
+        case background
+        /// 旧版本只存了纯色字段，解码时需要回退读取。
+        case color
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+        if let background = try container.decodeIfPresent(WhiteboardBackground.self, forKey: .background) {
+            self.background = background
+        } else if let legacy = try container.decodeIfPresent(RGBAColor.self, forKey: .color) {
+            self.background = .solid(legacy)
+        } else {
+            self.background = .solid(.white)
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(enabled, forKey: .enabled)
+        try container.encode(background, forKey: .background)
     }
 }
 
 public enum WhiteboardImage {
-    /// 生成与冻结帧同像素尺寸的纯色图。尺寸一致，选区裁剪与缩放计算可以原样复用。
-    public static func make(width: Int, height: Int, color: RGBAColor) -> CGImage? {
+    /// 生成与冻结帧同像素尺寸的底图。尺寸一致，选区裁剪与缩放计算可以原样复用。
+    /// 透明白板返回 alpha 全 0 的图，窗口透明后即透出实时桌面。
+    public static func make(width: Int, height: Int, background: WhiteboardBackground) -> CGImage? {
         guard width > 0, height > 0,
               let space = CGColorSpace(name: CGColorSpace.sRGB),
               let context = CGContext(
@@ -92,9 +163,15 @@ public enum WhiteboardImage {
                 space: space,
                 bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
               ) else { return nil }
-        let color = color.clamped()
-        context.setFillColor(red: color.r, green: color.g, blue: color.b, alpha: color.a)
-        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        let rect = CGRect(x: 0, y: 0, width: width, height: height)
+        switch background {
+        case .solid(let color):
+            let color = color.clamped()
+            context.setFillColor(red: color.r, green: color.g, blue: color.b, alpha: color.a)
+            context.fill(rect)
+        case .transparent:
+            context.clear(rect)
+        }
         return context.makeImage()
     }
 }

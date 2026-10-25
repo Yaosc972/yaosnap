@@ -5,7 +5,7 @@ import Testing
 
 struct CaptureHistoryMenuTests {
     private func entry(width: Int, height: Int, at time: TimeInterval) -> CaptureHistoryEntry {
-        let image = WhiteboardImage.make(width: width, height: height, color: .black)!
+        let image = WhiteboardImage.make(width: width, height: height, background: .solid(.black))!
         return CaptureHistoryEntry(
             image: image,
             displaySize: CGSize(width: width, height: height),

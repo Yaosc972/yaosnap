@@ -50,8 +50,8 @@ final class AppCommandRouter {
             pinController.showAll()
         case .hideImages:
             pinController.hideAll()
-        case .whiteboard(let color, let activeScreen):
-            snipController.startWhiteboard(color: color, activeScreen: activeScreen)
+        case .whiteboard(let background, let activeScreen):
+            snipController.startWhiteboard(background: background, activeScreen: activeScreen)
         }
     }
 }

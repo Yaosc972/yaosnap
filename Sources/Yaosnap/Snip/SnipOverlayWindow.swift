@@ -3,7 +3,7 @@ import AppKit
 /// 覆盖在整屏之上的无边框窗口，背景为冻结帧。
 @MainActor
 final class SnipOverlayWindow: NSWindow {
-    init(screen: NSScreen) {
+    init(screen: NSScreen, translucent: Bool = false) {
         // designated init 的 contentRect 用全局屏幕坐标；带 screen: 的便捷 init 相对该屏左下角，副屏会二次偏移。
         super.init(
             contentRect: screen.frame,
@@ -13,11 +13,12 @@ final class SnipOverlayWindow: NSWindow {
         )
         level = .init(Int(CGWindowLevelForKey(.assistiveTechHighWindow)))
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        isOpaque = true
+        // 透明白板要让实时桌面从窗口下方透出，窗口本身不能有不透明底色和阴影。
+        isOpaque = !translucent
         hasShadow = false
         ignoresMouseEvents = false
         acceptsMouseMovedEvents = true
-        backgroundColor = .black
+        backgroundColor = translucent ? .clear : .black
         // 窗口由 SnipController 强引用并跨会话复用，关闭时不能由 AppKit 释放。
         isReleasedWhenClosed = false
     }

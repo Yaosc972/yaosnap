@@ -28,7 +28,7 @@ public enum CommandLineParser {
       snip show-images             显示所有贴图
       snip hide-images             隐藏所有贴图
       snip whiteboard [--color C] [--active-screen]
-                                   进入白板模式；C 为颜色名或 #RRGGBB，
+                                   进入白板模式；C 为颜色名、#RRGGBB 或 transparent，
                                    --active-screen 只在光标所在屏开启
       snip --help                  显示本帮助
     """
@@ -97,7 +97,7 @@ public enum CommandLineParser {
 
     /// 白板选项顺序自由，未知选项直接报错，避免把一个拼错的开关当成默认白板启动。
     private static func whiteboardCommand(_ arguments: [String]) throws -> CommandLineCommand {
-        var color: RGBAColor?
+        var background: WhiteboardBackground?
         var activeScreen = false
         var index = 1
         while index < arguments.count {
@@ -106,7 +106,7 @@ public enum CommandLineParser {
                 guard index + 1 < arguments.count, !arguments[index + 1].isEmpty else {
                     throw CommandLineParseError.missingValue("--color COLOR")
                 }
-                color = WhiteboardColor.parseOrDefault(arguments[index + 1])
+                background = WhiteboardBackground.parseOrDefault(arguments[index + 1])
                 index += 2
             case "--active-screen":
                 activeScreen = true
@@ -115,7 +115,7 @@ public enum CommandLineParser {
                 throw CommandLineParseError.unknownArgument(arguments[index])
             }
         }
-        return .whiteboard(color: color, activeScreen: activeScreen)
+        return .whiteboard(background: background, activeScreen: activeScreen)
     }
 
     private static func outputCommand(_ value: String) -> CommandLineCommand {

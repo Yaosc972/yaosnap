@@ -12,7 +12,7 @@ public enum CommandLineCommand: Equatable, Sendable {
     case barcodeScan
     case showImages
     case hideImages
-    case whiteboard(color: RGBAColor?, activeScreen: Bool)
+    case whiteboard(background: WhiteboardBackground?, activeScreen: Bool)
 }
 
 public enum CommandLineRequestError: Error, Equatable, Sendable {
@@ -84,9 +84,9 @@ public struct CommandLineRequest: Equatable, Sendable {
         case "hide-images":
             command = .hideImages
         case "whiteboard":
-            var color: RGBAColor?
+            var background: WhiteboardBackground?
             if let raw = value("color"), !raw.isEmpty {
-                color = WhiteboardColor.parseOrDefault(raw)
+                background = WhiteboardBackground.parseOrDefault(raw)
             }
             var activeScreen = false
             if let raw = value("active_screen"), !raw.isEmpty {
@@ -96,7 +96,7 @@ public struct CommandLineRequest: Equatable, Sendable {
                 default: throw CommandLineRequestError.invalidParameter("active_screen")
                 }
             }
-            command = .whiteboard(color: color, activeScreen: activeScreen)
+            command = .whiteboard(background: background, activeScreen: activeScreen)
         default:
             throw CommandLineRequestError.unsupportedCommand(host)
         }
@@ -132,11 +132,16 @@ public struct CommandLineRequest: Equatable, Sendable {
             components.host = "show-images"
         case .hideImages:
             components.host = "hide-images"
-        case .whiteboard(let color, let activeScreen):
+        case .whiteboard(let background, let activeScreen):
             components.host = "whiteboard"
             var items: [URLQueryItem] = []
-            if let color {
-                items.append(URLQueryItem(name: "color", value: color.hexString))
+            if let background {
+                let value: String
+                switch background {
+                case .solid(let color): value = color.hexString
+                case .transparent: value = "transparent"
+                }
+                items.append(URLQueryItem(name: "color", value: value))
             }
             if activeScreen {
                 items.append(URLQueryItem(name: "active_screen", value: "1"))

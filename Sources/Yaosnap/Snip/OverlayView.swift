@@ -234,7 +234,10 @@ final class OverlayView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         // 用 NSImage 绘制，避免 CGImage 直接进 CGContext 时的上下翻转。
         activeImage.draw(in: bounds)
-        drawMask()
+        // 白板底图就是用户要导出的背景：纯色不应被遮罩压暗，透明要让实时桌面透出。
+        if !whiteboardMode {
+            drawMask()
+        }
         if selectionRect.isEmpty {
             drawHoverHighlight()
         } else {

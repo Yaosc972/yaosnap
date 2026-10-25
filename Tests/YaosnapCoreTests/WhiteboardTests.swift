@@ -29,14 +29,14 @@ struct WhiteboardTests {
     }
 
     @Test func imageKeepsRequestedPixelSize() throws {
-        let image = try #require(WhiteboardImage.make(width: 160, height: 90, color: .white))
+        let image = try #require(WhiteboardImage.make(width: 160, height: 90, background: .solid(.white)))
         #expect(image.width == 160)
         #expect(image.height == 90)
     }
 
     @Test func everyPixelUsesTheRequestedColor() throws {
         let color = RGBAColor(r: 0.2, g: 0.4, b: 0.6, a: 1)
-        let image = try #require(WhiteboardImage.make(width: 32, height: 24, color: color))
+        let image = try #require(WhiteboardImage.make(width: 32, height: 24, background: .solid(color)))
         let bytes = try #require(rgbaBytes(image))
         for (x, y) in [(0, 0), (31, 0), (0, 23), (15, 12), (31, 23)] {
             let actual = pixel(bytes, width: image.width, x: x, y: y)
@@ -51,7 +51,7 @@ struct WhiteboardTests {
         let image = try #require(WhiteboardImage.make(
             width: 8,
             height: 8,
-            color: WhiteboardSettings.standard.color
+            background: WhiteboardSettings.standard.background
         ))
         let bytes = try #require(rgbaBytes(image))
         #expect(pixel(bytes, width: image.width, x: 4, y: 4) == [255, 255, 255, 255])
@@ -59,7 +59,7 @@ struct WhiteboardTests {
 
     @Test func transparentColorKeepsAlphaZero() throws {
         let transparent = RGBAColor(r: 1, g: 0, b: 0, a: 0)
-        let image = try #require(WhiteboardImage.make(width: 4, height: 4, color: transparent))
+        let image = try #require(WhiteboardImage.make(width: 4, height: 4, background: .solid(transparent)))
         let bytes = try #require(rgbaBytes(image))
         #expect(pixel(bytes, width: image.width, x: 2, y: 2)[3] == 0)
     }
@@ -86,7 +86,7 @@ struct WhiteboardTests {
     @Test func invalidColorFallsBackToWhite() {
         for raw in ["", "mauve", "#123", "#GGGGGG", "001122", "#1122334"] {
             #expect(WhiteboardColor.parse(raw) == nil)
-            #expect(WhiteboardColor.parseOrDefault(raw) == .white)
+            #expect(WhiteboardBackground.parseOrDefault(raw) == .solid(.white))
         }
     }
 

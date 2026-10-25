@@ -65,21 +65,21 @@ struct CommandLineRequestTests {
     }
 
     @Test func whiteboardParsesColorAndActiveScreen() throws {
-        #expect(try request(["whiteboard"])?.command == .whiteboard(color: nil, activeScreen: false))
-        #expect(try request(["snip", "whiteboard"])?.command == .whiteboard(color: nil, activeScreen: false))
+        #expect(try request(["whiteboard"])?.command == .whiteboard(background: nil, activeScreen: false))
+        #expect(try request(["snip", "whiteboard"])?.command == .whiteboard(background: nil, activeScreen: false))
 
         let red = try #require(try request(["whiteboard", "--color", "red"]))
-        #expect(red.command == .whiteboard(color: .red, activeScreen: false))
+        #expect(red.command == .whiteboard(background: .solid(.red), activeScreen: false))
         #expect(red.url.absoluteString == "yaosnap://whiteboard?color=%23ff0000")
 
         let hex = try #require(try request(["snip", "whiteboard", "--color", "#112233"]))
         #expect(hex.command == .whiteboard(
-            color: WhiteboardColor.parse("#112233"), activeScreen: false
+            background: .solid(try #require(WhiteboardColor.parse("#112233"))), activeScreen: false
         ))
         #expect(hex.url.absoluteString == "yaosnap://whiteboard?color=%23112233")
 
         let active = try #require(try request(["whiteboard", "--active-screen"]))
-        #expect(active.command == .whiteboard(color: nil, activeScreen: true))
+        #expect(active.command == .whiteboard(background: nil, activeScreen: true))
         #expect(active.url.absoluteString == "yaosnap://whiteboard?active_screen=1")
 
         let both = try #require(try request([
@@ -101,9 +101,19 @@ struct CommandLineRequestTests {
         }
     }
 
+    @Test func whiteboardTransparentBackground() throws {
+        let cli = try #require(try request(["whiteboard", "--color", "transparent"]))
+        #expect(cli.command == .whiteboard(background: .transparent, activeScreen: false))
+        #expect(cli.url.absoluteString == "yaosnap://whiteboard?color=transparent")
+        #expect(try CommandLineRequest(url: cli.url) == cli)
+
+        let clear = try #require(try request(["snip", "whiteboard", "--color", "CLEAR"]))
+        #expect(clear.command == .whiteboard(background: .transparent, activeScreen: false))
+    }
+
     @Test func whiteboardInvalidColorFallsBackToWhite() throws {
         let parsed = try #require(try request(["whiteboard", "--color", "mauve"]))
-        #expect(parsed.command == .whiteboard(color: .white, activeScreen: false))
+        #expect(parsed.command == .whiteboard(background: .solid(.white), activeScreen: false))
     }
 
     @Test func invalidArgumentsThrow() {
@@ -147,8 +157,8 @@ struct CommandLineRequestTests {
             .barcodeScan,
             .showImages,
             .hideImages,
-            .whiteboard(color: .gray, activeScreen: true),
-            .whiteboard(color: nil, activeScreen: false),
+            .whiteboard(background: .solid(.gray), activeScreen: true),
+            .whiteboard(background: nil, activeScreen: false),
         ]
         for command in commands {
             let original = CommandLineRequest(command: command)

@@ -136,6 +136,9 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate, N
     let whiteboardCheckbox = NSButton(checkboxWithTitle: "启用", target: nil, action: nil)
     let whiteboardColorWell = NSColorWell()
     let whiteboardColorHexField = NSTextField()
+    let whiteboardTransparentCheckbox = NSButton(checkboxWithTitle: "透明", target: nil, action: nil)
+    /// 透明模式下背景枚举不保留颜色，用这个值让取消勾选时恢复用户上次选的纯色。
+    private var lastWhiteboardSolidColor: RGBAColor = .white
     let resetButton = NSButton(title: "恢复默认", target: nil, action: nil)
 
     init(store: SettingsStore, settings: Settings, onChange: @escaping (Settings) -> Void) {
@@ -330,7 +333,13 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate, N
         whiteboardColorHexField.action = #selector(whiteboardHexCommitted)
         whiteboardColorHexField.delegate = self
         whiteboardColorHexField.widthAnchor.constraint(equalToConstant: 90).isActive = true
-        let whiteboardColorRow = NSStackView(views: [whiteboardColorWell, whiteboardColorHexField])
+        whiteboardTransparentCheckbox.target = self
+        whiteboardTransparentCheckbox.action = #selector(whiteboardTransparentToggled)
+        let whiteboardColorRow = NSStackView(views: [
+            whiteboardColorWell,
+            whiteboardColorHexField,
+            whiteboardTransparentCheckbox,
+        ])
         whiteboardColorRow.orientation = .horizontal
         whiteboardColorRow.alignment = .centerY
         whiteboardColorRow.spacing = 8
@@ -389,13 +398,20 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate, N
         }
         dwellField.integerValue = settings.hotCorners.dwellMilliseconds
         whiteboardCheckbox.state = settings.whiteboard.enabled ? .on : .off
+        let whiteboardBackground = settings.whiteboard.background
+        let isTransparent = whiteboardBackground == .transparent
+        if case .solid(let solid) = whiteboardBackground {
+            lastWhiteboardSolidColor = solid
+        }
+        whiteboardTransparentCheckbox.state = isTransparent ? .on : .off
         whiteboardColorWell.color = NSColor(
-            srgbRed: settings.whiteboard.color.r,
-            green: settings.whiteboard.color.g,
-            blue: settings.whiteboard.color.b,
-            alpha: settings.whiteboard.color.a
+            srgbRed: lastWhiteboardSolidColor.r,
+            green: lastWhiteboardSolidColor.g,
+            blue: lastWhiteboardSolidColor.b,
+            alpha: lastWhiteboardSolidColor.a
         )
-        whiteboardColorHexField.stringValue = settings.whiteboard.color.hexString
+        whiteboardColorHexField.stringValue = lastWhiteboardSolidColor.hexString
+        updateWhiteboardColorControlsEnabled()
         showRegistrationFailures([])
     }
 
@@ -533,29 +549,53 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate, N
         apply()
     }
 
+    @objc private func whiteboardTransparentToggled() {
+        let transparent = whiteboardTransparentCheckbox.state == .on
+        settings.whiteboard.background = transparent
+            ? .transparent
+            : .solid(currentWhiteboardColor())
+        updateWhiteboardColorControlsEnabled()
+        apply()
+    }
+
     @objc private func whiteboardColorChanged() {
-        let color = whiteboardColorWell.color.usingColorSpace(.sRGB) ?? .white
-        settings.whiteboard.color = RGBAColor(
-            r: color.redComponent,
-            g: color.greenComponent,
-            b: color.blueComponent,
-            a: color.alphaComponent
-        )
-        whiteboardColorHexField.stringValue = settings.whiteboard.color.hexString
+        let color = currentWhiteboardColor()
+        lastWhiteboardSolidColor = color
+        settings.whiteboard.background = .solid(color)
+        whiteboardColorHexField.stringValue = color.hexString
         apply()
     }
 
     /// 非法输入不落库，回填当前颜色，避免设置里出现无法解析的字符串。
     @objc private func whiteboardHexCommitted() {
-        settings.whiteboard.color = WhiteboardColor.parseOrDefault(whiteboardColorHexField.stringValue)
-        whiteboardColorHexField.stringValue = settings.whiteboard.color.hexString
+        let color = WhiteboardColor.parse(whiteboardColorHexField.stringValue) ?? .white
+        lastWhiteboardSolidColor = color
+        settings.whiteboard.background = .solid(color)
+        whiteboardColorHexField.stringValue = color.hexString
         whiteboardColorWell.color = NSColor(
-            srgbRed: settings.whiteboard.color.r,
-            green: settings.whiteboard.color.g,
-            blue: settings.whiteboard.color.b,
-            alpha: settings.whiteboard.color.a
+            srgbRed: color.r,
+            green: color.g,
+            blue: color.b,
+            alpha: color.a
         )
         apply()
+    }
+
+    private func currentWhiteboardColor() -> RGBAColor {
+        let color = whiteboardColorWell.color.usingColorSpace(.sRGB) ?? .white
+        return RGBAColor(
+            r: color.redComponent,
+            g: color.greenComponent,
+            b: color.blueComponent,
+            a: color.alphaComponent
+        )
+    }
+
+    /// 透明背景没有颜色可调，禁用颜色控件避免用户误以为修改会生效。
+    private func updateWhiteboardColorControlsEnabled() {
+        let enabled = whiteboardTransparentCheckbox.state != .on
+        whiteboardColorWell.isEnabled = enabled
+        whiteboardColorHexField.isEnabled = enabled
     }
 
     @objc private func resetToDefaults() {

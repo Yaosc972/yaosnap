@@ -66,14 +66,19 @@ final class SnipController {
         startSession(pickColor: false, replayIndex: nil, initialRegion: nil, whiteboard: nil)
     }
 
-    /// CLI / URL 入口的白板会话。颜色缺省时取设置里的默认背景色。
-    func startWhiteboard(color: RGBAColor?, activeScreen: Bool) {
+    /// CLI / URL 入口的白板会话。背景缺省时取设置里的默认背景。
+    func startWhiteboard(background: WhiteboardBackground?, activeScreen: Bool) {
         guard windows.isEmpty, delayDeadline == nil else { return }
         let resolved = WhiteboardSession(
-            color: color ?? settingsStore.load().whiteboard.color,
+            background: background ?? settingsStore.load().whiteboard.background,
             activeScreenOnly: activeScreen
         )
-        print("[snip] whiteboard color=\(resolved.color.hexString) activeScreen=\(activeScreen)")
+        let label: String
+        switch resolved.background {
+        case .solid(let color): label = color.hexString
+        case .transparent: label = "transparent"
+        }
+        print("[snip] whiteboard background=\(label) activeScreen=\(activeScreen)")
         startSession(
             pickColor: false,
             replayIndex: nil,
@@ -213,7 +218,7 @@ final class SnipController {
         // 显式白板会话优先；没有显式请求时由设置里的全局开关决定。
         let activeWhiteboard = whiteboard
             ?? (settings.whiteboard.enabled
-                ? WhiteboardSession(color: settings.whiteboard.color)
+                ? WhiteboardSession(background: settings.whiteboard.background)
                 : nil)
         let mouse = NSEvent.mouseLocation
         let keyDisplayID = displayUnderMouse()
@@ -236,7 +241,10 @@ final class SnipController {
                 print("[snip] warning: displayID=\(shot.displayID) 未匹配到 NSScreen，跳过该屏覆盖层")
                 continue
             }
-            let window = SnipOverlayWindow(screen: screen)
+            let window = SnipOverlayWindow(
+                screen: screen,
+                translucent: activeWhiteboard?.background == .transparent
+            )
             let initialHistory = shot.displayID == keyDisplayID ? replayIndex ?? 0 : 0
             let view = OverlayView(
                 shot: shot,
@@ -292,14 +300,14 @@ final class SnipController {
             ? shots.filter { $0.displayID == activeDisplayID }
             : shots
         return selected.map { shot in
-            guard let solid = WhiteboardImage.make(
+            guard let image = WhiteboardImage.make(
                 width: shot.image.width,
                 height: shot.image.height,
-                color: whiteboard.color
+                background: whiteboard.background
             ) else { return shot }
             return DisplayShot(
                 displayID: shot.displayID,
-                image: solid,
+                image: image,
                 bounds: shot.bounds,
                 scale: shot.scale
             )
