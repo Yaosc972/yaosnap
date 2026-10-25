@@ -33,4 +33,46 @@ public enum ClipboardService {
         )
         return pasteboard.writeObjects([nsImage])
     }
+
+    /// 把图像写成临时 PNG，剪贴板里放文件 URL。对标 Snipaste 的「复制为文件」。
+    /// PNG 按像素落盘，scale 不参与编码。
+    @discardableResult
+    public static func copyFile(_ image: CGImage, scale: CGFloat) -> Bool {
+        guard let url = writeTemporaryPNG(image) else { return false }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        return pasteboard.writeObjects([url as NSURL])
+    }
+
+    private static func writeTemporaryPNG(_ image: CGImage) -> URL? {
+        guard let data = ImageOutput.pngData(from: image) else { return nil }
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Yaosnap-Copy", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(
+                at: directory, withIntermediateDirectories: true
+            )
+            let url = uniqueURL(in: directory, now: Date())
+            try data.write(to: url, options: .atomic)
+            return url
+        } catch {
+            print("[clipboard] error: 写入临时截图失败 \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    /// 同一秒内连续复制会撞名，退到 `-2`、`-3`。
+    private static func uniqueURL(in directory: URL, now: Date) -> URL {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        let base = "Yaosnap-\(formatter.string(from: now))"
+        var url = directory.appendingPathComponent("\(base).png")
+        var sequence = 2
+        while FileManager.default.fileExists(atPath: url.path) {
+            url = directory.appendingPathComponent("\(base)-\(sequence).png")
+            sequence += 1
+        }
+        return url
+    }
 }

@@ -129,6 +129,7 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate, N
     let detectElementsCheckbox = NSButton(checkboxWithTitle: "自动检测 UI 元素", target: nil, action: nil)
     let aspectRatioPopup = NSPopUpButton()
     let shadowCheckbox = NSButton(checkboxWithTitle: "保存 / 复制时添加", target: nil, action: nil)
+    let copyAsFilePopup = NSPopUpButton()
     let hotCornerCheckbox = NSButton(checkboxWithTitle: "启用", target: nil, action: nil)
     private(set) var hotCornerBoxes: [ScreenCorner: NSButton] = [:]
     let dwellField = NSTextField()
@@ -269,6 +270,13 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate, N
         shadowCheckbox.action = #selector(shadowToggled)
         rows.append([shadowTitle, shadowCheckbox])
 
+        let copyAsFileTitle = NSTextField(labelWithString: "复制为文件")
+        copyAsFileTitle.alignment = .right
+        copyAsFilePopup.addItems(withTitles: CopyAsFileTrigger.allCases.map(\.title))
+        copyAsFilePopup.target = self
+        copyAsFilePopup.action = #selector(copyAsFileChanged)
+        rows.append([copyAsFileTitle, copyAsFilePopup])
+
         let cornerTitle = NSTextField(labelWithString: "触发角")
         cornerTitle.alignment = .right
         hotCornerCheckbox.target = self
@@ -372,6 +380,9 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate, N
             aspectRatioPopup.selectItem(at: index)
         }
         shadowCheckbox.state = settings.exportShadow ? .on : .off
+        if let index = CopyAsFileTrigger.allCases.firstIndex(of: settings.copyAsFileTrigger) {
+            copyAsFilePopup.selectItem(at: index)
+        }
         hotCornerCheckbox.state = settings.hotCorners.enabled ? .on : .off
         for (corner, box) in hotCornerBoxes {
             box.state = settings.hotCorners.corners.contains(corner) ? .on : .off
@@ -482,6 +493,13 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate, N
 
     @objc private func shadowToggled() {
         settings.exportShadow = shadowCheckbox.state == .on
+        apply()
+    }
+
+    @objc private func copyAsFileChanged() {
+        let index = copyAsFilePopup.indexOfSelectedItem
+        guard CopyAsFileTrigger.allCases.indices.contains(index) else { return }
+        settings.copyAsFileTrigger = CopyAsFileTrigger.allCases[index]
         apply()
     }
 

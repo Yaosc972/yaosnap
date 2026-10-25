@@ -27,6 +27,30 @@ public struct HotkeyBinding: Equatable {
     }
 }
 
+/// 复制截图时是否在剪贴板里放文件 URL。对标 Snipaste 的 `Output/copy_as_file_trigger`。
+public enum CopyAsFileTrigger: String, CaseIterable, Codable, Sendable {
+    case off
+    case shortcut
+    case always
+
+    public var title: String {
+        switch self {
+        case .off: return "关闭"
+        case .shortcut: return "按住 ⌥ 时"
+        case .always: return "总是"
+        }
+    }
+
+    /// 三分支的判定收在模型里，调用方只报告 ⌥ 是否按住。
+    public func copiesAsFile(optionHeld: Bool) -> Bool {
+        switch self {
+        case .off: return false
+        case .shortcut: return optionHeld
+        case .always: return true
+        }
+    }
+}
+
 public struct Settings: Equatable, Codable {
     public static let defaultRestoreCapacity = 1
     public static let restoreCapacityRange = 1...20
@@ -43,6 +67,7 @@ public struct Settings: Equatable, Codable {
     public var detectUIElements: Bool
     public var selectionAspectRatio: SelectionAspectRatio
     public var exportShadow: Bool
+    public var copyAsFileTrigger: CopyAsFileTrigger
     public var hotCorners: HotCornerSettings
     public var whiteboard: WhiteboardSettings
 
@@ -57,6 +82,7 @@ public struct Settings: Equatable, Codable {
         detectUIElements: Bool = false,
         selectionAspectRatio: SelectionAspectRatio = .free,
         exportShadow: Bool = false,
+        copyAsFileTrigger: CopyAsFileTrigger = .shortcut,
         hotCorners: HotCornerSettings = .standard,
         whiteboard: WhiteboardSettings = .standard
     ) {
@@ -70,6 +96,7 @@ public struct Settings: Equatable, Codable {
         self.detectUIElements = detectUIElements
         self.selectionAspectRatio = selectionAspectRatio
         self.exportShadow = exportShadow
+        self.copyAsFileTrigger = copyAsFileTrigger
         self.hotCorners = hotCorners
         self.whiteboard = whiteboard
     }
@@ -85,6 +112,7 @@ public struct Settings: Equatable, Codable {
         case detectUIElements
         case selectionAspectRatio
         case exportShadow
+        case copyAsFileTrigger
         case hotCorners
         case whiteboard
     }
@@ -104,6 +132,9 @@ public struct Settings: Equatable, Codable {
             SelectionAspectRatio.self, forKey: .selectionAspectRatio
         ) ?? .free
         exportShadow = try container.decodeIfPresent(Bool.self, forKey: .exportShadow) ?? false
+        copyAsFileTrigger = try container.decodeIfPresent(
+            CopyAsFileTrigger.self, forKey: .copyAsFileTrigger
+        ) ?? .shortcut
         hotCorners = try container.decodeIfPresent(HotCornerSettings.self, forKey: .hotCorners) ?? .standard
         whiteboard = try container.decodeIfPresent(WhiteboardSettings.self, forKey: .whiteboard) ?? .standard
     }

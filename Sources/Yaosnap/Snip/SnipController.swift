@@ -376,14 +376,20 @@ final class SnipController {
 
     func copyPendingImage(_ notification: Notification) {
         guard let pending = validatedPending(for: notification, action: "复制") else { return }
+        let settings = settingsStore.load()
         guard let image = renderPendingOutput(
             pending,
-            applyShadow: settingsStore.load().exportShadow
+            applyShadow: settings.exportShadow
         ) else {
             abortWithError("合成标注图像失败")
             return
         }
-        guard ClipboardService.copyToPasteboard(image, scale: pending.scale) else {
+        let optionHeld = (notification.userInfo?[.modifierFlags] as? NSEvent.ModifierFlags)?
+            .contains(.option) ?? false
+        let copied = settings.copyAsFileTrigger.copiesAsFile(optionHeld: optionHeld)
+            ? ClipboardService.copyFile(image, scale: pending.scale)
+            : ClipboardService.copyToPasteboard(image, scale: pending.scale)
+        guard copied else {
             print("[snip] error: 写入剪贴板失败")
             NSSound.beep()
             return

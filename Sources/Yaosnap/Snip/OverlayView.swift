@@ -1751,7 +1751,11 @@ final class OverlayView: NSView {
         NotificationCenter.default.post(
             name: .snipCopyRequested,
             object: nil,
-            userInfo: [SnipNotificationKey.displayID: shot.displayID]
+            userInfo: [
+                SnipNotificationKey.displayID: shot.displayID,
+                // 没有事件上下文时静态属性返回当前按压状态，正是「复制时按住 ⌥」要的值。
+                SnipNotificationKey.modifierFlags: NSEvent.modifierFlags,
+            ]
         )
     }
 
@@ -2101,6 +2105,8 @@ enum SnipNotificationKey: Hashable {
     case cropRectPx
     /// ⌘ + 保存按钮：直接写快捷保存目录，不弹面板。
     case quickSave
+    /// 复制请求发出时的修饰键，决定「按住 ⌥ 时」是否落文件。
+    case modifierFlags
 }
 
 extension Dictionary where Key == AnyHashable, Value == Any {
