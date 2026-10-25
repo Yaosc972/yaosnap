@@ -16,7 +16,14 @@ cp Resources/Info.plist "$APP/Contents/Info.plist"
 cp Resources/AppIcon.icns Resources/StatusBarIcon.png Resources/StatusBarIcon@2x.png \
     Resources/MenuItemIcon.png Resources/MenuItemIcon@2x.png "$APP/Contents/Resources/"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
-codesign --force --deep --sign - "$APP"
+# 有本地证书就用它签名：ad-hoc 的 CDHash 会随代码变化，辅助功能授权每次重建都要重勾。
+SIGN_ID="Yaosnap Local Signing"
+if security find-identity -v -p codesigning 2>/dev/null | grep -q "$SIGN_ID"; then
+    codesign --force --deep --sign "$SIGN_ID" "$APP"
+else
+    codesign --force --deep --sign - "$APP"
+    echo "提示：当前为 ad-hoc 签名，改代码重建后辅助功能授权可能失效。运行一次 Tools/setup-signing.sh 可固定签名。"
+fi
 echo "Built $APP"
 CLI="$SCRIPT_DIR/.build/release/snip"
 echo "Built CLI $CLI"
