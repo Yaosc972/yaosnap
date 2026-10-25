@@ -95,7 +95,7 @@ final class OverlayView: NSView {
     /// 选择工具命中测试的容差：细线条点击偏几个点也能选中。
     private static let hitTolerance: CGFloat = 4
     /// 选区边缘拖拽的命中容差：贴边几 pt 内即可调整大小，内部深按仍走画标注。
-    private static let selectionEdgeHitTolerance: CGFloat = 4
+    private static let selectionEdgeHitTolerance: CGFloat = 6
     /// 选区边缘光标热区的边长。
     private static let selectionCursorSize: CGFloat = 6
     /// 文字与面状形状控制点共用的命中半径。比绘制的方块略大，按下不要求像素级精确。
@@ -1954,6 +1954,34 @@ final class OverlayView: NSView {
         border.lineWidth = 1
         NSColor.white.setStroke()
         border.stroke()
+        if isCommittedPhase { drawSelectionHandles() }
+    }
+
+    /// 边缘与四角的调整手柄，只画在覆盖层上，不进导出。
+    /// 白色方块配深色描边，浅色与深色底图上都能看清可拖的位置。
+    private func drawSelectionHandles() {
+        let side: CGFloat = 6
+        let half = side / 2
+        let points = [
+            CGPoint(x: selectionRect.midX, y: selectionRect.maxY),
+            CGPoint(x: selectionRect.midX, y: selectionRect.minY),
+            CGPoint(x: selectionRect.minX, y: selectionRect.midY),
+            CGPoint(x: selectionRect.maxX, y: selectionRect.midY),
+            CGPoint(x: selectionRect.minX, y: selectionRect.maxY),
+            CGPoint(x: selectionRect.maxX, y: selectionRect.maxY),
+            CGPoint(x: selectionRect.minX, y: selectionRect.minY),
+            CGPoint(x: selectionRect.maxX, y: selectionRect.minY),
+        ]
+        for point in points {
+            let handle = NSBezierPath(
+                rect: CGRect(x: point.x - half, y: point.y - half, width: side, height: side)
+            )
+            NSColor.white.setFill()
+            handle.fill()
+            NSColor(white: 0, alpha: 0.55).setStroke()
+            handle.lineWidth = 1
+            handle.stroke()
+        }
     }
 
     /// 框选矩形画在覆盖层上，不经过画布，因此不进导出。
