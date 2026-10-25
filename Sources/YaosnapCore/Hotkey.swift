@@ -26,4 +26,35 @@ public struct Hotkey: Equatable, Codable {
 
     /// kVK_ANSI_T = 17，Control+Shift，切换光标下贴图的鼠标穿透。
     public static let ctrlShiftT = Hotkey(keyCode: 17, modifiers: UInt32(controlKey | shiftKey))
+
+    /// 设置窗口按下组合键时用 Carbon 掩码判断，避免 NSEvent 与 Carbon 位序混淆。
+    private var hasCommand: Bool { modifiers & UInt32(cmdKey) != 0 }
+    private var hasControl: Bool { modifiers & UInt32(controlKey) != 0 }
+    private var hasOption: Bool { modifiers & UInt32(optionKey) != 0 }
+    private var hasShift: Bool { modifiers & UInt32(shiftKey) != 0 }
+
+    /// 与系统菜单一致：⌃⌥⇧⌘ 顺序。
+    public var displayName: String {
+        var text = ""
+        if hasControl { text += "⌃" }
+        if hasOption { text += "⌥" }
+        if hasShift { text += "⇧" }
+        if hasCommand { text += "⌘" }
+        return text + (Self.keyNames[keyCode] ?? "键\(keyCode)")
+    }
+
+    /// kVK 常量在 Swift 里不易直接跨版本使用，这里固定与 Carbon 头文件一致的键码。
+    private static let keyNames: [UInt32: String] = [
+        0: "A", 1: "S", 2: "D", 3: "F", 4: "H", 5: "G", 6: "Z", 7: "X", 8: "C", 9: "V",
+        11: "B", 12: "Q", 13: "W", 14: "E", 15: "R", 16: "Y", 17: "T",
+        18: "1", 19: "2", 20: "3", 21: "4", 23: "5", 22: "6", 26: "7", 28: "8", 25: "9", 29: "0",
+        24: "=", 27: "-", 30: "]", 33: "[", 39: "'", 41: ";", 42: "\\",
+        43: ",", 44: "/", 47: ".", 50: "`",
+        31: "O", 32: "U", 34: "I", 35: "P", 37: "L", 38: "J", 40: "K", 45: "N", 46: "M",
+        36: "↩", 48: "⇥", 49: "空格", 51: "⌫", 53: "⎋",
+        96: "F5", 97: "F6", 98: "F7", 99: "F3", 100: "F8", 101: "F9",
+        103: "F11", 109: "F10", 111: "F12", 118: "F4", 120: "F2", 122: "F1",
+        115: "↖", 116: "⇞", 117: "⌦", 119: "↘", 121: "⇟",
+        123: "←", 124: "→", 125: "↓", 126: "↑",
+    ]
 }

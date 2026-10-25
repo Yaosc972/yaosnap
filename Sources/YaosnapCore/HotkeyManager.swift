@@ -56,6 +56,14 @@ public final class HotkeyManager {
         }
     }
 
+    /// 设置变更后整批重注册：先释放旧组合，避免同一组合被自己占用。
+    public func unregisterAll() {
+        for registration in registrations.values {
+            UnregisterEventHotKey(registration.ref)
+        }
+        registrations.removeAll()
+    }
+
     /// 注册全局热键；组合已被占用、系统拒绝或事件分发未装好时返回 false。
     @discardableResult
     public func register(_ hotkey: Hotkey, handler: @escaping Handler) -> Bool {

@@ -7,6 +7,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let hotkeyManager = HotkeyManager()
     private let snipController = SnipController()
     private let pinController = PinController()
+    private let settingsStore = SettingsStore()
+    private var settings = Settings.standard
+    private var settingsWindowController: SettingsWindowController?
     private lazy var commandRouter = AppCommandRouter(
         snipController: snipController,
         pinController: pinController
@@ -29,7 +32,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             onCreatePinGroup: { [pinController] name in pinController.addGroup(named: name) },
             onRenamePinGroup: { [pinController] id, name in pinController.renameGroup(id, to: name) },
             onDeletePinGroup: { [pinController] id in pinController.deleteGroup(id) },
-            onToggleSolo: { [pinController] in pinController.toggleSoloForCurrentPin() }
+            onToggleSolo: { [pinController] in pinController.toggleSoloForCurrentPin() },
+            onOpenSettings: { [weak self] in self?.showSettings() }
         )
         NotificationCenter.default.addObserver(
             self, selector: #selector(handleSnipEscape(_:)), name: .snipEscapePressed, object: nil)
@@ -40,36 +44,83 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.addObserver(
             self, selector: #selector(handleSnipSave(_:)), name: .snipSaveRequested, object: nil)
         print("Yaosnap launched")
-        let snipHandler: () -> Void = { [snipController] in
-            MainActor.assumeIsolated {
-                print("[hotkey] snip triggered")
-                let t0 = CFAbsoluteTimeGetCurrent()
-                snipController.start()
-                let elapsed = (CFAbsoluteTimeGetCurrent() - t0) * 1000
-                print(String(format: "[perf] hotkey→overlay: %.1f ms", elapsed))
+        settings = settingsStore.load()
+        applyRuntimeSettings()
+        registerHotkeys()
+    }
+
+    private func showSettings() {
+        if settingsWindowController == nil {
+            let controller = SettingsWindowController(
+                store: settingsStore,
+                settings: settings,
+                onChange: { [weak self] updated in self?.applySettings(updated) }
+            )
+            controller.onRecordingStateChange = { [weak self] recording in
+                guard let self else { return }
+                if recording {
+                    self.hotkeyManager.unregisterAll()
+                } else {
+                    self.registerHotkeys()
+                }
+            }
+            settingsWindowController = controller
+        }
+        settingsWindowController?.show()
+        // 重新注册一次，把启动时和本次打开之间的占用状态画到对应行。
+        registerHotkeys()
+    }
+
+    private func applySettings(_ updated: Settings) {
+        settings = updated
+        applyRuntimeSettings()
+        registerHotkeys()
+    }
+
+    private func applyRuntimeSettings() {
+        snipController.quickSaveDirectory = settings.quickSaveDirectory
+            .map { URL(fileURLWithPath: $0) }
+        pinController.setRestoreCapacity(settings.restoreCapacity)
+    }
+
+    private func registerHotkeys() {
+        hotkeyManager.unregisterAll()
+        var failures = Set<HotkeyAction>()
+        for binding in settings.hotkeyBindings {
+            let handler = Self.handler(for: binding.action, snip: snipController, pin: pinController)
+            if !hotkeyManager.register(binding.hotkey, handler: handler) {
+                failures.insert(binding.action)
             }
         }
-        let ok = hotkeyManager.register(.f1, handler: snipHandler)
-        let ok2 = hotkeyManager.register(.ctrlShiftA, handler: snipHandler)
-        print("[hotkey] register F1 -> \(ok), Ctrl+Shift+A -> \(ok2)")
-        let pinHandler: () -> Void = { [pinController] in
-            MainActor.assumeIsolated { _ = pinController.pinFromPasteboard() }
-        }
-        let hidePinsHandler: () -> Void = { [pinController] in
-            MainActor.assumeIsolated { _ = pinController.toggleVisibility() }
-        }
-        let ok3 = hotkeyManager.register(.f3, handler: pinHandler)
-        let ok4 = hotkeyManager.register(.shiftF3, handler: hidePinsHandler)
-        let passthroughHandler: () -> Void = { [pinController] in
-            MainActor.assumeIsolated { _ = pinController.togglePassthrough() }
-        }
-        let ok5 = hotkeyManager.register(.ctrlShiftT, handler: passthroughHandler)
-        print("[hotkey] register F3 -> \(ok3), Shift+F3 -> \(ok4), Ctrl+Shift+T -> \(ok5)")
-        if !ok, !ok2 {
-            let alert = NSAlert()
-            alert.messageText = "F1 热键注册失败"
-            alert.informativeText = "可能被其他程序占用，请关闭冲突程序后重启 Yaosnap。"
-            alert.runModal()
+        let summary = settings.hotkeyBindings
+            .map { "\($0.action.rawValue)=\($0.hotkey.displayName)" }
+            .joined(separator: ", ")
+        print("[hotkey] registered \(summary) failures=\(failures.map(\.rawValue).sorted())")
+        settingsWindowController?.showRegistrationFailures(failures)
+    }
+
+    private static func handler(
+        for action: HotkeyAction,
+        snip: SnipController,
+        pin: PinController
+    ) -> () -> Void {
+        switch action {
+        case .snip:
+            return {
+                MainActor.assumeIsolated {
+                    print("[hotkey] snip triggered")
+                    let t0 = CFAbsoluteTimeGetCurrent()
+                    snip.start()
+                    let elapsed = (CFAbsoluteTimeGetCurrent() - t0) * 1000
+                    print(String(format: "[perf] hotkey→overlay: %.1f ms", elapsed))
+                }
+            }
+        case .pin:
+            return { MainActor.assumeIsolated { _ = pin.pinFromPasteboard() } }
+        case .togglePins:
+            return { MainActor.assumeIsolated { _ = pin.toggleVisibility() } }
+        case .passthrough:
+            return { MainActor.assumeIsolated { _ = pin.togglePassthrough() } }
         }
     }
 

@@ -26,6 +26,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private let onRenamePinGroup: @MainActor (Int, String) -> Bool
     private let onDeletePinGroup: @MainActor (Int) -> Bool
     private let onToggleSolo: @MainActor () -> Void
+    private let onOpenSettings: @MainActor () -> Void
 
     init(
         onSnip: @escaping @MainActor () -> Void,
@@ -36,7 +37,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         onCreatePinGroup: @escaping @MainActor (String) -> Bool,
         onRenamePinGroup: @escaping @MainActor (Int, String) -> Bool,
         onDeletePinGroup: @escaping @MainActor (Int) -> Bool,
-        onToggleSolo: @escaping @MainActor () -> Void
+        onToggleSolo: @escaping @MainActor () -> Void,
+        onOpenSettings: @escaping @MainActor () -> Void
     ) {
         self.onSnip = onSnip
         self.onPin = onPin
@@ -47,6 +49,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         self.onRenamePinGroup = onRenamePinGroup
         self.onDeletePinGroup = onDeletePinGroup
         self.onToggleSolo = onToggleSolo
+        self.onOpenSettings = onOpenSettings
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         super.init()
         if let button = statusItem.button {
@@ -121,6 +124,13 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         menu.addItem(soloItem)
 
         menu.addItem(.separator())
+        let settingsItem = NSMenuItem(
+            title: "设置…",
+            action: #selector(settingsTriggered),
+            keyEquivalent: ","
+        )
+        settingsItem.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: "设置")
+        menu.addItem(settingsItem)
         menu.addItem(NSMenuItem(title: "退出 Yaosnap", action: #selector(quit), keyEquivalent: "q"))
         for item in menu.items where item.action != nil {
             item.target = self
@@ -213,6 +223,10 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     @objc private func soloTriggered() {
         onToggleSolo()
+    }
+
+    @objc private func settingsTriggered() {
+        onOpenSettings()
     }
 
     @objc private func groupSelected(_ sender: NSMenuItem) {

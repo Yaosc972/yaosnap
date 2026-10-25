@@ -4,16 +4,24 @@ import YaosnapCore
 /// 持有所有贴图窗口。窗口关闭时由 windowWillClose 回收。
 @MainActor
 final class PinController: NSObject, NSWindowDelegate {
-    /// 与 Snipaste 默认值一致，可按需调大。
-    private static let restoreCapacity = 1
-
     private var pinned: [PinWindow] = []
-    private var restoreList = PinRestoreList<PinRestoreEntry>(capacity: PinController.restoreCapacity)
+    private var restoreList: PinRestoreList<PinRestoreEntry>
     private var lastPinned: PasteImage?
     private var groups = PinBoard()
     private var nextPinID = 1
     /// 进入 Solo 前的可见集合，退出时按它恢复，而不是假定「全组可见」。
     private var visibleBeforeSolo: Set<Int> = []
+
+    init(restoreCapacity: Int = Settings.defaultRestoreCapacity) {
+        restoreList = PinRestoreList(capacity: restoreCapacity)
+        super.init()
+    }
+
+    /// 设置里的容量改动立即生效；已记录的恢复项无法扩容，直接清空是唯一一致的选择。
+    func setRestoreCapacity(_ capacity: Int) {
+        guard capacity != restoreList.capacity else { return }
+        restoreList = PinRestoreList(capacity: capacity)
+    }
 
     @discardableResult
     func pinFromPasteboard() -> Bool {
