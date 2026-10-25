@@ -27,6 +27,9 @@ public enum CommandLineParser {
       snip barcode-scan            识别屏幕二维码/条形码并复制
       snip show-images             显示所有贴图
       snip hide-images             隐藏所有贴图
+      snip whiteboard [--color C] [--active-screen]
+                                   进入白板模式；C 为颜色名或 #RRGGBB，
+                                   --active-screen 只在光标所在屏开启
       snip --help                  显示本帮助
     """
 
@@ -75,6 +78,8 @@ public enum CommandLineParser {
             return .request(CommandLineRequest(
                 command: .pin(x: try coordinate(arguments[1]), y: try coordinate(arguments[2]))
             ))
+        case "whiteboard":
+            return .request(CommandLineRequest(command: try whiteboardCommand(arguments)))
         default:
             throw CommandLineParseError.unknownArgument(arguments[0])
         }
@@ -88,6 +93,29 @@ public enum CommandLineParser {
         case "hide-images": return .hideImages
         default: return nil
         }
+    }
+
+    /// 白板选项顺序自由，未知选项直接报错，避免把一个拼错的开关当成默认白板启动。
+    private static func whiteboardCommand(_ arguments: [String]) throws -> CommandLineCommand {
+        var color: RGBAColor?
+        var activeScreen = false
+        var index = 1
+        while index < arguments.count {
+            switch arguments[index] {
+            case "--color":
+                guard index + 1 < arguments.count, !arguments[index + 1].isEmpty else {
+                    throw CommandLineParseError.missingValue("--color COLOR")
+                }
+                color = WhiteboardColor.parseOrDefault(arguments[index + 1])
+                index += 2
+            case "--active-screen":
+                activeScreen = true
+                index += 1
+            default:
+                throw CommandLineParseError.unknownArgument(arguments[index])
+            }
+        }
+        return .whiteboard(color: color, activeScreen: activeScreen)
     }
 
     private static func outputCommand(_ value: String) -> CommandLineCommand {

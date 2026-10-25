@@ -63,17 +63,33 @@ final class SnipController {
             cancelDelay()
             return
         }
-        startSession(pickColor: false, replayIndex: nil, initialRegion: nil)
+        startSession(pickColor: false, replayIndex: nil, initialRegion: nil, whiteboard: nil)
+    }
+
+    /// CLI / URL 入口的白板会话。颜色缺省时取设置里的默认背景色。
+    func startWhiteboard(color: RGBAColor?, activeScreen: Bool) {
+        guard windows.isEmpty, delayDeadline == nil else { return }
+        let resolved = WhiteboardSession(
+            color: color ?? settingsStore.load().whiteboard.color,
+            activeScreenOnly: activeScreen
+        )
+        print("[snip] whiteboard color=\(resolved.color.hexString) activeScreen=\(activeScreen)")
+        startSession(
+            pickColor: false,
+            replayIndex: nil,
+            initialRegion: nil,
+            whiteboard: resolved
+        )
     }
 
     func startPickColor() {
-        startSession(pickColor: true, replayIndex: nil, initialRegion: nil)
+        startSession(pickColor: true, replayIndex: nil, initialRegion: nil, whiteboard: nil)
     }
 
     /// 从菜单历史进入：会话直接停在选中的那张，index 0 为最新。
     func startReplayingHistory(at index: Int) {
         guard history.indices.contains(index) else { return }
-        startSession(pickColor: false, replayIndex: index + 1, initialRegion: nil)
+        startSession(pickColor: false, replayIndex: index + 1, initialRegion: nil, whiteboard: nil)
     }
 
     func startDelayed(seconds: Int) {
@@ -108,7 +124,7 @@ final class SnipController {
         delayTimer?.invalidate()
         delayTimer = nil
         delayDeadline = nil
-        startSession(pickColor: false, replayIndex: nil, initialRegion: nil)
+        startSession(pickColor: false, replayIndex: nil, initialRegion: nil, whiteboard: nil)
     }
 
     /// 用最顶层普通窗口的矩形开会话；拿不到候选时提示音而不是回退全屏。
@@ -122,7 +138,7 @@ final class SnipController {
             return
         }
         print("[snip] active window \(window.ownerName) rect=\(window.bounds)")
-        startSession(pickColor: false, replayIndex: nil, initialRegion: region)
+        startSession(pickColor: false, replayIndex: nil, initialRegion: region, whiteboard: nil)
     }
 
     /// 上次选区映射到鼠标所在屏；没有历史或映射为空时提示音。
@@ -144,7 +160,8 @@ final class SnipController {
         startSession(
             pickColor: false,
             replayIndex: nil,
-            initialRegion: CaptureRegion(displayID: displayID, rect: mapped, displayBounds: bounds)
+            initialRegion: CaptureRegion(displayID: displayID, rect: mapped, displayBounds: bounds),
+            whiteboard: nil
         )
     }
 
@@ -178,7 +195,12 @@ final class SnipController {
         return CaptureRegion(displayID: best.id, rect: clamped, displayBounds: best.bounds)
     }
 
-    private func startSession(pickColor: Bool, replayIndex: Int?, initialRegion: CaptureRegion?) {
+    private func startSession(
+        pickColor: Bool,
+        replayIndex: Int?,
+        initialRegion: CaptureRegion?,
+        whiteboard: WhiteboardSession?
+    ) {
         print("[snip] start called\(pickColor ? " (pick-color)" : "")")
         guard windows.isEmpty else { return }
         guard ScreenCaptureService.hasPermission() else {
@@ -188,17 +210,21 @@ final class SnipController {
             return
         }
         let settings = settingsStore.load()
-        let captures = preparedCaptures(settings: settings)
+        // 显式白板会话优先；没有显式请求时由设置里的全局开关决定。
+        let activeWhiteboard = whiteboard
+            ?? (settings.whiteboard.enabled
+                ? WhiteboardSession(color: settings.whiteboard.color)
+                : nil)
+        let mouse = NSEvent.mouseLocation
+        let keyDisplayID = displayUnderMouse()
+        let captures = preparedCaptures(
+            whiteboard: activeWhiteboard,
+            activeDisplayID: keyDisplayID
+        )
         guard !captures.isEmpty else {
             showCaptureEmptyAlert()
             return
         }
-
-        // 键盘落在鼠标所在屏，历史重放也只在该屏生效，其余屏保持实时画面。
-        let mouse = NSEvent.mouseLocation
-        let keyDisplayID = NSScreen.screens.first { $0.frame.contains(mouse) }
-            .flatMap { $0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber }
-            .map(\.uint32Value)
 
         shots = []
         pendingRegion = nil
@@ -216,7 +242,8 @@ final class SnipController {
                 shot: shot,
                 history: history,
                 pickColorMode: pickColor,
-                initialHistoryIndex: initialHistory
+                initialHistoryIndex: initialHistory,
+                whiteboardMode: activeWhiteboard != nil
             )
             view.autoSelectOnCreation = settings.autoSelectOnCreation
             view.selectionAspectRatio = settings.selectionAspectRatio
@@ -253,14 +280,21 @@ final class SnipController {
     }
 
     /// 白板模式只替换冻结帧，像素尺寸保持不变，裁剪与多屏几何不用改。
-    private func preparedCaptures(settings: Settings) -> [DisplayShot] {
+    /// --active-screen 时先按光标所在屏过滤，白板会话不会在其余屏留下覆盖层。
+    private func preparedCaptures(
+        whiteboard: WhiteboardSession?,
+        activeDisplayID: CGDirectDisplayID?
+    ) -> [DisplayShot] {
         let shots = ScreenCaptureService.captureAllDisplays()
-        guard settings.whiteboard.enabled else { return shots }
-        return shots.map { shot in
+        guard let whiteboard else { return shots }
+        let selected = whiteboard.activeScreenOnly
+            ? shots.filter { $0.displayID == activeDisplayID }
+            : shots
+        return selected.map { shot in
             guard let solid = WhiteboardImage.make(
                 width: shot.image.width,
                 height: shot.image.height,
-                color: settings.whiteboard.color
+                color: whiteboard.color
             ) else { return shot }
             return DisplayShot(
                 displayID: shot.displayID,

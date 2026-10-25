@@ -27,6 +27,11 @@ let urlCases: [(CommandLineCommand, String)] = [
     (.barcodeScan, "yaosnap://barcode-scan"),
     (.showImages, "yaosnap://show-images"),
     (.hideImages, "yaosnap://hide-images"),
+    (.whiteboard(color: nil, activeScreen: false), "yaosnap://whiteboard"),
+    (.whiteboard(color: WhiteboardColor.parse("#112233"), activeScreen: false),
+     "yaosnap://whiteboard?color=%23112233"),
+    (.whiteboard(color: .gray, activeScreen: true),
+     "yaosnap://whiteboard?color=%23808080&active_screen=1"),
 ]
 
 for (command, expected) in urlCases {
@@ -50,6 +55,12 @@ let argumentCases: [([String], String)] = [
     (["barcode-scan"], "yaosnap://barcode-scan"),
     (["show-images"], "yaosnap://show-images"),
     (["hide-images"], "yaosnap://hide-images"),
+    (["whiteboard"], "yaosnap://whiteboard"),
+    (["snip", "whiteboard", "--color", "#112233"],
+     "yaosnap://whiteboard?color=%23112233"),
+    (["whiteboard", "--active-screen"], "yaosnap://whiteboard?active_screen=1"),
+    (["whiteboard", "--color", "red", "--active-screen"],
+     "yaosnap://whiteboard?color=%23ff0000&active_screen=1"),
 ]
 
 for (arguments, expected) in argumentCases {
@@ -69,6 +80,8 @@ let rejected: [([String], String)] = [
     (["-o", "clipboard", "extra"], "extra argument"),
     (["--delay", "0"], "delay below range"),
     (["--delay", "61"], "delay above range"),
+    (["whiteboard", "--color"], "whiteboard missing color"),
+    (["whiteboard", "--bogus"], "whiteboard unknown option"),
 ]
 
 for (arguments, label) in rejected {

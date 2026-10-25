@@ -153,6 +153,32 @@ final class SettingsHarness {
                 && abs(boardColor.b - 0.3) < 0.01,
               "白板背景色写回 r=\(boardColor.r) g=\(boardColor.g) b=\(boardColor.b)")
 
+        controller.whiteboardColorHexField.stringValue = "#112233"
+        if let action = controller.whiteboardColorHexField.action {
+            NSApp.sendAction(
+                action,
+                to: controller.whiteboardColorHexField.target,
+                from: controller.whiteboardColorHexField
+            )
+        }
+        let hexColor = store.load().whiteboard.color
+        check("whiteboard-hex",
+              hexColor.hexString == "#112233",
+              "十六进制白板色写回 \(hexColor.hexString)")
+
+        controller.whiteboardColorHexField.stringValue = "not-a-color"
+        if let action = controller.whiteboardColorHexField.action {
+            NSApp.sendAction(
+                action,
+                to: controller.whiteboardColorHexField.target,
+                from: controller.whiteboardColorHexField
+            )
+        }
+        check("whiteboard-hex-fallback",
+              store.load().whiteboard.color == .white
+                && controller.whiteboardColorHexField.stringValue == "#ffffff",
+              "非法十六进制回落白色并回填 \(controller.whiteboardColorHexField.stringValue)")
+
         controller.restoreCapacityField.stringValue = "7"
         if let action = controller.restoreCapacityField.action {
             NSApp.sendAction(

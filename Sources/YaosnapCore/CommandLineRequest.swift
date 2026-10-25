@@ -12,6 +12,7 @@ public enum CommandLineCommand: Equatable, Sendable {
     case barcodeScan
     case showImages
     case hideImages
+    case whiteboard(color: RGBAColor?, activeScreen: Bool)
 }
 
 public enum CommandLineRequestError: Error, Equatable, Sendable {
@@ -82,6 +83,20 @@ public struct CommandLineRequest: Equatable, Sendable {
             command = .showImages
         case "hide-images":
             command = .hideImages
+        case "whiteboard":
+            var color: RGBAColor?
+            if let raw = value("color"), !raw.isEmpty {
+                color = WhiteboardColor.parseOrDefault(raw)
+            }
+            var activeScreen = false
+            if let raw = value("active_screen"), !raw.isEmpty {
+                switch raw.lowercased() {
+                case "1", "true": activeScreen = true
+                case "0", "false": activeScreen = false
+                default: throw CommandLineRequestError.invalidParameter("active_screen")
+                }
+            }
+            command = .whiteboard(color: color, activeScreen: activeScreen)
         default:
             throw CommandLineRequestError.unsupportedCommand(host)
         }
@@ -117,6 +132,16 @@ public struct CommandLineRequest: Equatable, Sendable {
             components.host = "show-images"
         case .hideImages:
             components.host = "hide-images"
+        case .whiteboard(let color, let activeScreen):
+            components.host = "whiteboard"
+            var items: [URLQueryItem] = []
+            if let color {
+                items.append(URLQueryItem(name: "color", value: color.hexString))
+            }
+            if activeScreen {
+                items.append(URLQueryItem(name: "active_screen", value: "1"))
+            }
+            if !items.isEmpty { components.queryItems = items }
         }
         // scheme 与 host 都来自本文件的常量，URLComponents 不会拒绝这组输入。
         return components.url!

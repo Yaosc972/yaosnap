@@ -3,7 +3,7 @@ import Foundation
 
 /// 标注颜色。固定 sRGB 语义：渲染时交给 CG 按目标上下文色彩空间匹配，
 /// P3 底图上不会偏色。
-public struct RGBAColor: Equatable, Codable, Hashable {
+public struct RGBAColor: Equatable, Codable, Hashable, Sendable {
     public var r: CGFloat
     public var g: CGFloat
     public var b: CGFloat

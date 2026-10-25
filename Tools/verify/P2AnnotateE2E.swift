@@ -2624,6 +2624,86 @@ final class AnnotateHarness {
         }
     }
 
+    /// 白板模式：Esc 不退出、工具条默认隐藏、空格切换、导出背景为指定颜色。
+    func runWhiteboardMode() {
+        controller.startWhiteboard(color: WhiteboardColor.parse("#112233"), activeScreen: false)
+        pump(0.4)
+        guard let window = visibleOverlayWindows.first,
+              let view = window.contentView as? OverlayView else {
+            fail("WHITEBOARD-ESC", "startWhiteboard 后没有可见覆盖窗口")
+            return
+        }
+        let sessionCount = visibleOverlayWindows.count
+
+        keyDown(53, characters: "\u{1b}", in: window, view: view)
+        if visibleOverlayWindows.count == sessionCount {
+            pass("WHITEBOARD-ESC", "Esc 后会话仍在，覆盖窗口 \(sessionCount) 个")
+        } else {
+            fail("WHITEBOARD-ESC", "Esc 结束了白板会话")
+        }
+
+        drag(view, window: window, from: CGPoint(x: 100, y: 100), to: CGPoint(x: 300, y: 200))
+        guard let bar = view.subviews.compactMap({ $0 as? AnnotateToolbar }).first else {
+            fail("WHITEBOARD-TOOLBAR", "找不到标注工具条")
+            endSession()
+            return
+        }
+        if bar.isHidden {
+            pass("WHITEBOARD-TOOLBAR", "有选区时工具条默认隐藏")
+        } else {
+            fail("WHITEBOARD-TOOLBAR", "白板模式下工具条未自动隐藏")
+        }
+
+        keyDown(49, characters: " ", in: window, view: view)
+        if !bar.isHidden {
+            pass("WHITEBOARD-SPACE-SHOW", "空格键显示工具条")
+        } else {
+            fail("WHITEBOARD-SPACE-SHOW", "空格键没有显示工具条")
+        }
+
+        keyDown(49, characters: " ", in: window, view: view)
+        if bar.isHidden {
+            pass("WHITEBOARD-SPACE-HIDE", "再次空格隐藏工具条")
+        } else {
+            fail("WHITEBOARD-SPACE-HIDE", "再次空格没有隐藏工具条")
+        }
+
+        keyDown(53, characters: "\u{1b}", in: window, view: view)
+        if visibleOverlayWindows.count == sessionCount {
+            pass("WHITEBOARD-ESC-SELECTION", "有选区时 Esc 也不结束会话")
+        } else {
+            fail("WHITEBOARD-ESC-SELECTION", "有选区时 Esc 结束了会话")
+        }
+
+        NSPasteboard.general.clearContents()
+        keyDown(36, characters: "\r", in: window, view: view)
+        guard let image = pasteboardImage(),
+              let bytes = srgbBytes(image, width: image.width, height: image.height) else {
+            fail("WHITEBOARD-COLOR", "剪贴板没有可读取的图像")
+            endSession()
+            return
+        }
+        let samples = [
+            (0, 0),
+            (image.width - 1, 0),
+            (0, image.height - 1),
+            (image.width - 1, image.height - 1),
+            (image.width / 2, image.height / 2),
+        ]
+        let allMatch = samples.allSatisfy { point in
+            let offset = (point.1 * image.width + point.0) * 4
+            return abs(Int(bytes[offset]) - 17) <= 1
+                && abs(Int(bytes[offset + 1]) - 34) <= 1
+                && abs(Int(bytes[offset + 2]) - 51) <= 1
+        }
+        if allMatch {
+            pass("WHITEBOARD-COLOR", "导出背景为 #112233，采样点 rgb(17,34,51)")
+        } else {
+            fail("WHITEBOARD-COLOR", "导出背景不是 #112233")
+        }
+        endSession()
+    }
+
     func runAll() {
         if !ScreenCaptureService.hasPermission() {
             print("FATAL 屏幕录制权限缺失，无法执行标注验收")
@@ -2670,6 +2750,7 @@ final class AnnotateHarness {
         runArrowNudge()
         runLineStyleDash()
         runShapeResizeHandle()
+        runWhiteboardMode()
 
         print("SUMMARY passes=\(passes) failures=\(failures)")
         exit(failures == 0 ? 0 : 1)

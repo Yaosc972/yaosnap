@@ -133,6 +133,7 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate, N
     let dwellField = NSTextField()
     let whiteboardCheckbox = NSButton(checkboxWithTitle: "启用", target: nil, action: nil)
     let whiteboardColorWell = NSColorWell()
+    let whiteboardColorHexField = NSTextField()
     let resetButton = NSButton(title: "恢复默认", target: nil, action: nil)
 
     init(store: SettingsStore, settings: Settings, onChange: @escaping (Settings) -> Void) {
@@ -308,7 +309,17 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate, N
         whiteboardColorWell.target = self
         whiteboardColorWell.action = #selector(whiteboardColorChanged)
         whiteboardColorWell.widthAnchor.constraint(equalToConstant: 56).isActive = true
-        rows.append([whiteboardColorTitle, whiteboardColorWell])
+        whiteboardColorHexField.placeholderString = "#RRGGBB"
+        whiteboardColorHexField.alignment = .right
+        whiteboardColorHexField.target = self
+        whiteboardColorHexField.action = #selector(whiteboardHexCommitted)
+        whiteboardColorHexField.delegate = self
+        whiteboardColorHexField.widthAnchor.constraint(equalToConstant: 90).isActive = true
+        let whiteboardColorRow = NSStackView(views: [whiteboardColorWell, whiteboardColorHexField])
+        whiteboardColorRow.orientation = .horizontal
+        whiteboardColorRow.alignment = .centerY
+        whiteboardColorRow.spacing = 8
+        rows.append([whiteboardColorTitle, whiteboardColorRow])
 
         let grid = NSGridView(views: rows)
         grid.column(at: 0).xPlacement = .trailing
@@ -365,6 +376,7 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate, N
             blue: settings.whiteboard.color.b,
             alpha: settings.whiteboard.color.a
         )
+        whiteboardColorHexField.stringValue = settings.whiteboard.color.hexString
         showRegistrationFailures([])
     }
 
@@ -470,6 +482,20 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate, N
             b: color.blueComponent,
             a: color.alphaComponent
         )
+        whiteboardColorHexField.stringValue = settings.whiteboard.color.hexString
+        apply()
+    }
+
+    /// 非法输入不落库，回填当前颜色，避免设置里出现无法解析的字符串。
+    @objc private func whiteboardHexCommitted() {
+        settings.whiteboard.color = WhiteboardColor.parseOrDefault(whiteboardColorHexField.stringValue)
+        whiteboardColorHexField.stringValue = settings.whiteboard.color.hexString
+        whiteboardColorWell.color = NSColor(
+            srgbRed: settings.whiteboard.color.r,
+            green: settings.whiteboard.color.g,
+            blue: settings.whiteboard.color.b,
+            alpha: settings.whiteboard.color.a
+        )
         apply()
     }
 
@@ -485,6 +511,8 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate, N
             restoreCapacityCommitted()
         } else if field === dwellField {
             dwellCommitted()
+        } else if field === whiteboardColorHexField {
+            whiteboardHexCommitted()
         }
     }
 

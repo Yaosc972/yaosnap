@@ -63,4 +63,54 @@ struct WhiteboardTests {
         let bytes = try #require(rgbaBytes(image))
         #expect(pixel(bytes, width: image.width, x: 2, y: 2)[3] == 0)
     }
+
+    @Test func parsesNamedColorsCaseInsensitively() {
+        #expect(WhiteboardColor.parse("black") == .black)
+        #expect(WhiteboardColor.parse("White") == .white)
+        #expect(WhiteboardColor.parse(" red ") == .red)
+        #expect(WhiteboardColor.parse("green") == .green)
+        #expect(WhiteboardColor.parse("blue") == .blue)
+        #expect(WhiteboardColor.parse("yellow") == .yellow)
+        #expect(WhiteboardColor.parse("gray") == .gray)
+        #expect(WhiteboardColor.parse("grey") == .gray)
+    }
+
+    @Test func parsesHexColor() throws {
+        let color = try #require(WhiteboardColor.parse("#112233"))
+        #expect(abs(color.r - 17.0 / 255) < 1e-9)
+        #expect(abs(color.g - 34.0 / 255) < 1e-9)
+        #expect(abs(color.b - 51.0 / 255) < 1e-9)
+        #expect(color.a == 1)
+    }
+
+    @Test func invalidColorFallsBackToWhite() {
+        for raw in ["", "mauve", "#123", "#GGGGGG", "001122", "#1122334"] {
+            #expect(WhiteboardColor.parse(raw) == nil)
+            #expect(WhiteboardColor.parseOrDefault(raw) == .white)
+        }
+    }
+
+    @Test func hexStringRoundTripsParsedColor() throws {
+        let color = try #require(WhiteboardColor.parse("#0a1B2c"))
+        #expect(color.hexString == "#0a1b2c")
+        #expect(WhiteboardColor.parse(color.hexString) == color)
+    }
+
+    @Test func whiteboardEscapeNeverExitsSession() {
+        #expect(WhiteboardInteraction.escapeAction(
+            isWhiteboardMode: true, hasSelectedAnnotations: false
+        ) == .ignore)
+        #expect(WhiteboardInteraction.escapeAction(
+            isWhiteboardMode: true, hasSelectedAnnotations: true
+        ) == .dismissAnnotations)
+    }
+
+    @Test func normalEscapeStillExitsSession() {
+        #expect(WhiteboardInteraction.escapeAction(
+            isWhiteboardMode: false, hasSelectedAnnotations: false
+        ) == .exitSession)
+        #expect(WhiteboardInteraction.escapeAction(
+            isWhiteboardMode: false, hasSelectedAnnotations: true
+        ) == .dismissAnnotations)
+    }
 }

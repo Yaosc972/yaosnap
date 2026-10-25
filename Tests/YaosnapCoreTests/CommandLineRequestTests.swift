@@ -64,6 +64,48 @@ struct CommandLineRequestTests {
         #expect(try CommandLineParser.parse(["snip", "--help"]) == .help)
     }
 
+    @Test func whiteboardParsesColorAndActiveScreen() throws {
+        #expect(try request(["whiteboard"])?.command == .whiteboard(color: nil, activeScreen: false))
+        #expect(try request(["snip", "whiteboard"])?.command == .whiteboard(color: nil, activeScreen: false))
+
+        let red = try #require(try request(["whiteboard", "--color", "red"]))
+        #expect(red.command == .whiteboard(color: .red, activeScreen: false))
+        #expect(red.url.absoluteString == "yaosnap://whiteboard?color=%23ff0000")
+
+        let hex = try #require(try request(["snip", "whiteboard", "--color", "#112233"]))
+        #expect(hex.command == .whiteboard(
+            color: WhiteboardColor.parse("#112233"), activeScreen: false
+        ))
+        #expect(hex.url.absoluteString == "yaosnap://whiteboard?color=%23112233")
+
+        let active = try #require(try request(["whiteboard", "--active-screen"]))
+        #expect(active.command == .whiteboard(color: nil, activeScreen: true))
+        #expect(active.url.absoluteString == "yaosnap://whiteboard?active_screen=1")
+
+        let both = try #require(try request([
+            "whiteboard", "--active-screen", "--color", "#001122",
+        ]))
+        #expect(both.url.absoluteString == "yaosnap://whiteboard?color=%23001122&active_screen=1")
+        #expect(try CommandLineRequest(url: both.url) == both)
+    }
+
+    @Test func whiteboardRejectsMalformedOptions() {
+        #expect(throws: CommandLineParseError.missingValue("--color COLOR")) {
+            try CommandLineParser.parse(["whiteboard", "--color"])
+        }
+        #expect(throws: CommandLineParseError.missingValue("--color COLOR")) {
+            try CommandLineParser.parse(["whiteboard", "--color", ""])
+        }
+        #expect(throws: CommandLineParseError.unknownArgument("--bogus")) {
+            try CommandLineParser.parse(["whiteboard", "--bogus"])
+        }
+    }
+
+    @Test func whiteboardInvalidColorFallsBackToWhite() throws {
+        let parsed = try #require(try request(["whiteboard", "--color", "mauve"]))
+        #expect(parsed.command == .whiteboard(color: .white, activeScreen: false))
+    }
+
     @Test func invalidArgumentsThrow() {
         #expect(throws: CommandLineParseError.unknownArgument("bogus")) {
             try CommandLineParser.parse(["bogus"])
@@ -105,6 +147,8 @@ struct CommandLineRequestTests {
             .barcodeScan,
             .showImages,
             .hideImages,
+            .whiteboard(color: .gray, activeScreen: true),
+            .whiteboard(color: nil, activeScreen: false),
         ]
         for command in commands {
             let original = CommandLineRequest(command: command)

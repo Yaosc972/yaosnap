@@ -7,6 +7,9 @@ final class OverlayView: NSView {
     let shot: DisplayShot
     /// 取色模式：放大镜常驻，单击取样后结束会话而不是开始框选。
     private let pickColorMode: Bool
+    /// 白板模式：Esc 不退出会话，工具条默认隐藏、由空格切换。
+    private let whiteboardMode: Bool
+    private var actionBarVisible: Bool
     var onPickColor: (() -> Void)?
 
     /// 会话状态机。idling 无选区；selecting 在拖选区（origin 视图坐标，freeDrag 表示
@@ -181,11 +184,14 @@ final class OverlayView: NSView {
         shot: DisplayShot,
         history: [CaptureHistoryEntry] = [],
         pickColorMode: Bool = false,
-        initialHistoryIndex: Int = 0
+        initialHistoryIndex: Int = 0,
+        whiteboardMode: Bool = false
     ) {
         self.shot = shot
         self.history = history
         self.pickColorMode = pickColorMode
+        self.whiteboardMode = whiteboardMode
+        actionBarVisible = !whiteboardMode
         let frozen = NSImage(
             cgImage: shot.image,
             size: NSSize(width: shot.bounds.width, height: shot.bounds.height)
@@ -705,12 +711,26 @@ final class OverlayView: NSView {
                 cancelPolyline()
                 return
             }
-            // 有选中时 Esc 只清选中，不退出截图；选区与标注都保留。
-            if case .selected = phase {
+            let hasSelectedAnnotations: Bool = {
+                if case .selected = phase { return true }
+                return false
+            }()
+            switch WhiteboardInteraction.escapeAction(
+                isWhiteboardMode: whiteboardMode,
+                hasSelectedAnnotations: hasSelectedAnnotations
+            ) {
+            case .dismissAnnotations:
                 clearSelection()
+            case .ignore:
                 return
+            case .exitSession:
+                NotificationCenter.default.post(name: .snipEscapePressed, object: nil)
             }
-            NotificationCenter.default.post(name: .snipEscapePressed, object: nil)
+        // 白板模式下工具条默认隐藏，空格键切换显隐；普通截图保持原行为。
+        case 49 where whiteboardMode
+            && event.modifierFlags.intersection([.command, .control, .option]).isEmpty:
+            actionBarVisible.toggle()
+            updateActionBar()
         case 36: // Return
             if case .polylineEditing = phase {
                 commitPolyline()
@@ -1618,7 +1638,7 @@ final class OverlayView: NSView {
     }
 
     private func updateActionBar() {
-        guard isCommittedPhase, !selectionRect.isEmpty else {
+        guard isCommittedPhase, !selectionRect.isEmpty, actionBarVisible else {
             toolbar.isHidden = true
             return
         }
