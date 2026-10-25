@@ -240,6 +240,19 @@ final class AnnotateHarness {
         return true
     }
 
+    /// 工具条线型按钮点击入口。
+    @discardableResult
+    private func tapLineStyle(_ view: OverlayView, id: String) -> Bool {
+        guard let bar = view.subviews.compactMap({ $0 as? AnnotateToolbar }).first,
+              let button = bar.lineStyleButton else {
+            fail(id, "工具条上找不到线型按钮")
+            return false
+        }
+        button.performClick(nil)
+        pump(0.1)
+        return true
+    }
+
     /// 打开颜色弹层并点选第 index 个色块。
     private func pickColor(_ view: OverlayView, _ index: Int, id: String) -> Bool {
         guard let bar = view.subviews.compactMap({ $0 as? AnnotateToolbar }).first else {
@@ -2182,6 +2195,106 @@ final class AnnotateHarness {
         return CIContext().createCGImage(scaled, from: scaled.extent)
     }
 
+    /// 与基线导出逐像素比较，返回着色像素数。两次导出的底图与选区相同，差异只来自标注。
+    private func differingPixels(_ lhs: [UInt8], _ rhs: [UInt8]) -> Int {
+        guard lhs.count == rhs.count else { return -1 }
+        var count = 0
+        for index in stride(from: 0, to: lhs.count, by: 4)
+        where lhs[index] != rhs[index]
+            || lhs[index + 1] != rhs[index + 1]
+            || lhs[index + 2] != rhs[index + 2] {
+            count += 1
+        }
+        return count
+    }
+
+    /// 同一条矩形分别用实线和虚线导出，虚线着色像素应明显更少。
+    private func runLineStyleDash() {
+        guard let (window, view) = beginSession("LINE-STYLE") else { return }
+        drag(view, window: window, from: CGPoint(x: 200, y: 200), to: CGPoint(x: 600, y: 500))
+        let selection = view.selectionRect
+        guard let baseline = exportedBytes(view) else {
+            fail("LINE-STYLE", "无法导出基线像素")
+            endSession()
+            return
+        }
+
+        let drawPath = [
+            CGPoint(x: selection.minX + 50, y: selection.minY + 50),
+            CGPoint(x: selection.minX + 250, y: selection.minY + 150),
+        ]
+        press(view, window: window, path: drawPath)
+        guard view.annotations.count == 1,
+              let solid = exportedBytes(view) else {
+            fail("LINE-STYLE", "实线矩形未画出或导出失败")
+            endSession()
+            return
+        }
+        let solidInk = differingPixels(solid, baseline)
+
+        // 删除实线矩形，把当前工具的线型切到虚线后按同一坐标重画。
+        keyDown(51, characters: "\u{7f}", in: window, view: view)
+        guard view.annotations.isEmpty, tapLineStyle(view, id: "LINE-STYLE") else {
+            fail("LINE-STYLE", "删除实线矩形或切换线型失败")
+            endSession()
+            return
+        }
+        press(view, window: window, path: drawPath)
+        guard view.annotations.count == 1,
+              view.annotations[0].style.lineStyle == .dashed,
+              let dashed = exportedBytes(view) else {
+            fail("LINE-STYLE", "虚线矩形未画出或线型未写回样式")
+            endSession()
+            return
+        }
+        let dashedInk = differingPixels(dashed, baseline)
+        guard dashedInk > 0, solidInk > dashedInk else {
+            fail("LINE-STYLE", "着色像素 实线 \(solidInk) 虚线 \(dashedInk)，虚线应更少")
+            endSession()
+            return
+        }
+        pass("LINE-STYLE", "虚线导出着色 \(dashedInk) 像素，少于实线 \(solidInk)")
+        endSession()
+    }
+
+    /// 选中矩形拖右上角控制点，包围盒按对角固定放大；一次拖动压一步撤销。
+    private func runShapeResizeHandle() {
+        guard let (window, view) = beginSession("RESIZE") else { return }
+        drag(view, window: window, from: CGPoint(x: 200, y: 200), to: CGPoint(x: 700, y: 600))
+        let selection = view.selectionRect
+        press(view, window: window, path: [
+            CGPoint(x: selection.minX + 50, y: selection.minY + 50),
+            CGPoint(x: selection.minX + 250, y: selection.minY + 150),
+        ])
+        guard view.annotations.count == 1,
+              case .rect(let original)? = view.annotations.first?.shape else {
+            fail("RESIZE", "前置画矩形失败 annotations=\(view.annotations)")
+            endSession()
+            return
+        }
+
+        // 右上角控制点在画布 (250,150)，拖到 (320,220)。
+        press(view, window: window, path: [
+            CGPoint(x: selection.minX + 250, y: selection.minY + 150),
+            CGPoint(x: selection.minX + 320, y: selection.minY + 220),
+        ])
+        let expected = CGRect(x: 50, y: 50, width: 270, height: 170)
+        guard case .rect(let resized)? = view.annotations.first?.shape, resized == expected else {
+            fail("RESIZE", "拖角后 \(view.annotations.first?.shape as Any) 期望 \(expected)")
+            endSession()
+            return
+        }
+
+        keyDown(6, characters: "z", in: window, view: view, modifierFlags: .command)
+        guard case .rect(let restored)? = view.annotations.first?.shape, restored == original else {
+            fail("RESIZE", "撤销一步后 \(view.annotations.first?.shape as Any) 期望回到 \(original)")
+            endSession()
+            return
+        }
+        pass("RESIZE", "右上角拖到 (320,220) 得 \(resized)，一次撤销回到 \(restored)")
+        endSession()
+    }
+
     func runAll() {
         if !ScreenCaptureService.hasPermission() {
             print("FATAL 屏幕录制权限缺失，无法执行标注验收")
@@ -2221,6 +2334,8 @@ final class AnnotateHarness {
         runColorWheelAlpha()
         runMagnifierAndColorSampling()
         runArrowNudge()
+        runLineStyleDash()
+        runShapeResizeHandle()
 
         print("SUMMARY passes=\(passes) failures=\(failures)")
         exit(failures == 0 ? 0 : 1)

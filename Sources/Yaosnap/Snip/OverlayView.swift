@@ -14,7 +14,8 @@ final class OverlayView: NSView {
     /// polylineEditing 折线已落下首点、等待后续顶点（points 是已确认顶点）；
     /// editing 在输入文字；selected 选中了一条标注；moving 在拖动它（grab 是画布坐标的
     /// 按下点，original 是按下时的形状，拖动全程按它平移）；resizingText / rotatingText
-    /// 在拖文字控制点（center 是未旋转包围盒中心，original 是按下时的形状）。
+    /// 在拖文字控制点（center 是未旋转包围盒中心，original 是按下时的形状）；
+    /// resizingShape 在拖面状形状的四角（recorded 表示这次拖动已压过撤销栈）。
     private enum Phase {
         case idle
         case selecting(origin: CGPoint, freeDrag: Bool)
@@ -28,6 +29,7 @@ final class OverlayView: NSView {
         case moving(id: UUID, grab: CGPoint, original: Shape, pendingClone: Annotation?)
         case resizingText(id: UUID, corner: TextHandle, original: Shape, center: CGPoint)
         case rotatingText(id: UUID, original: Shape, center: CGPoint)
+        case resizingShape(id: UUID, corner: ShapeHandle, original: Shape, recorded: Bool)
     }
 
     /// 工具模式。select 时鼠标只做选中与移动，不落新形状；draw 时行为与之前一致。
@@ -56,8 +58,8 @@ final class OverlayView: NSView {
     private static let dragThreshold: CGFloat = 3
     /// 选择工具命中测试的容差：细线条点击偏几个点也能选中。
     private static let hitTolerance: CGFloat = 4
-    /// 文字控制点的命中半径。比绘制的方块略大，按下不要求像素级精确。
-    private static let textHandleHitRadius: CGFloat = 8
+    /// 文字与面状形状控制点共用的命中半径。比绘制的方块略大，按下不要求像素级精确。
+    private static let handleHitRadius: CGFloat = 8
     /// 文字编辑器的最小宽度。选区右侧不够宽时向右溢出，保证插入点始终可输入。
     private static let minimumTextWidth: CGFloat = 80
 
@@ -265,6 +267,10 @@ final class OverlayView: NSView {
                 beginTextHandleDrag(hit)
                 return
             }
+            if let hit = shapeHandleHit(at: rawCanvasPoint(from: point)) {
+                beginShapeHandleDrag(hit)
+                return
+            }
             guard selectionRect.contains(point) else {
                 removeCanvas()
                 beginSelection(at: point)
@@ -284,7 +290,7 @@ final class OverlayView: NSView {
             beginDraft(at: point)
         case .editing:
             commitTextEditing()
-        case .selecting, .drawing, .moving, .resizingText, .rotatingText:
+        case .selecting, .drawing, .moving, .resizingText, .rotatingText, .resizingShape:
             break // 已有按压，忽略重入
         }
     }
@@ -376,6 +382,21 @@ final class OverlayView: NSView {
                 fontSize: fontSize,
                 rotation: angle
             )
+        case .resizingShape(let id, let corner, let original, let recorded):
+            guard let canvas,
+                  let index = canvas.annotations.firstIndex(where: { $0.id == id }) else { return }
+            let box = ShapeResize.resizedBox(
+                original.bounds,
+                corner: corner,
+                to: rawCanvasPoint(from: point),
+                minimum: Self.minimumStrokeSide
+            )
+            // 第一次真正拖动才压栈，点一下控制点不会留下空撤销步。
+            if !recorded {
+                pushUndoSnapshot()
+                phase = .resizingShape(id: id, corner: corner, original: original, recorded: true)
+            }
+            canvas.annotations[index].shape = original.resized(to: box)
         case .idle, .ready, .polylineEditing, .editing, .selected:
             break
         }
@@ -423,6 +444,9 @@ final class OverlayView: NSView {
             canvas?.selectedID = id
         case .resizingText(let id, _, let original, _), .rotatingText(let id, let original, _):
             discardRedoIfChanged(id, from: original)
+            phase = .selected(id: id)
+            canvas?.selectedID = id
+        case .resizingShape(let id, _, _, _):
             phase = .selected(id: id)
             canvas?.selectedID = id
         case .idle, .ready, .polylineEditing, .editing, .selected:
@@ -492,7 +516,7 @@ final class OverlayView: NSView {
     private func clearSelection() {
         canvas?.selectedID = nil
         switch phase {
-        case .selected, .moving:
+        case .selected, .moving, .resizingShape:
             phase = .ready
         default:
             break
@@ -690,7 +714,7 @@ final class OverlayView: NSView {
         switch phase {
         case .ready, .selected, .moving: return true
         case .idle, .selecting, .drawing, .polylineEditing, .editing,
-             .resizingText, .rotatingText: return false
+             .resizingText, .rotatingText, .resizingShape: return false
         }
     }
 
@@ -699,16 +723,16 @@ final class OverlayView: NSView {
         switch phase {
         case .ready, .selected: return true
         case .idle, .selecting, .drawing, .polylineEditing, .editing, .moving,
-             .resizingText, .rotatingText: return false
+             .resizingText, .rotatingText, .resizingShape: return false
         }
     }
 
-    /// 能出图的阶段。拖动中途按 Enter / ⌘S 会把半成品输出，所以排除 moving。
+    /// 能出图的阶段。拖动中途按 Enter / ⌘S 会把半成品输出，所以排除 moving 与缩放。
     private var canOutput: Bool {
         switch phase {
         case .ready, .selected: return true
         case .idle, .selecting, .drawing, .polylineEditing, .editing, .moving,
-             .resizingText, .rotatingText: return false
+             .resizingText, .rotatingText, .resizingShape: return false
         }
     }
 
@@ -969,7 +993,7 @@ final class OverlayView: NSView {
         let handles = [TextHandle.rotate] + TextHandle.allCases.filter(\.isCorner)
         for handle in handles {
             let anchor = geometry.point(for: handle)
-            if hypot(point.x - anchor.x, point.y - anchor.y) <= Self.textHandleHitRadius {
+            if hypot(point.x - anchor.x, point.y - anchor.y) <= Self.handleHitRadius {
                 return (id, handle)
             }
         }
@@ -992,6 +1016,28 @@ final class OverlayView: NSView {
                 center: geometry.center
             )
         }
+    }
+
+    /// 选中面状形状的四角命中。线状形状没有控制点，仍只显示包围盒。
+    private func shapeHandleHit(at point: CGPoint) -> (id: UUID, corner: ShapeHandle)? {
+        guard case .selected(let id) = phase,
+              let shape = canvas?.annotations.first(where: { $0.id == id })?.shape,
+              shape.supportsResizeHandles else { return nil }
+        for corner in ShapeHandle.allCases {
+            let anchor = corner.point(in: shape.bounds)
+            if hypot(point.x - anchor.x, point.y - anchor.y) <= Self.handleHitRadius {
+                return (id, corner)
+            }
+        }
+        return nil
+    }
+
+    private func beginShapeHandleDrag(_ hit: (id: UUID, corner: ShapeHandle)) {
+        guard let canvas,
+              let shape = canvas.annotations.first(where: { $0.id == hit.id })?.shape,
+              shape.supportsResizeHandles else { return }
+        canvas.selectedID = hit.id
+        phase = .resizingShape(id: hit.id, corner: hit.corner, original: shape, recorded: false)
     }
 
     /// 开始一次选区拖拽。起点落在窗口内 → 初始选区为整个窗口；拖动后才脱离窗口锁定。

@@ -168,6 +168,53 @@ struct AnnotationRendererTests {
         #expect(isWhite(PixelBuffer.pixel(bytes, x: 50, y: height - 1 - 50, width: width)))
     }
 
+    /// 同一条矩形只换线型：实线着色最多，虚线次之，点线最少。
+    /// 线型只改 dash，不改任何其他绘制参数，所以三者的差异只来自着色覆盖率。
+    @Test func dashStylesProduceDifferentInkDensity() {
+        let side = 200
+        func ink(_ lineStyle: LineStyle) -> Int {
+            let annotation = Annotation(
+                shape: .rect(CGRect(x: 30, y: 30, width: 140, height: 100)),
+                style: Style(color: red, pen: .p3, lineStyle: lineStyle)
+            )
+            let bytes = rendered(width: side, height: side) { ctx in
+                AnnotationRenderer.draw(
+                    [annotation], draft: nil,
+                    input: input(canvasSize: CGSize(width: side, height: side)),
+                    into: ctx
+                )
+            }
+            return redCount(bytes, side: side, canvasYRange: 0...(side - 1))
+        }
+        let solid = ink(.solid)
+        let dashed = ink(.dashed)
+        let dotted = ink(.dotted)
+        #expect(solid > 0)
+        #expect(Double(solid) > Double(dashed) * 1.2, "虚线应明显少于实线，实线 \(solid) 虚线 \(dashed)")
+        #expect(dashed > dotted, "点线的着色像素应少于虚线，虚线 \(dashed) 点线 \(dotted)")
+        #expect(dotted > 0)
+    }
+
+    /// 画笔不走描边路径，样式里的线型不能改变自由笔画的像素。
+    @Test func lineStyleLeavesInkStrokeUnchanged() {
+        let side = 120
+        let points = [CGPoint(x: 20, y: 60), CGPoint(x: 60, y: 90), CGPoint(x: 100, y: 60)]
+        func render(_ lineStyle: LineStyle) -> [UInt8] {
+            let annotation = Annotation(
+                shape: .brush(points),
+                style: Style(color: red, pen: .p3, lineStyle: lineStyle)
+            )
+            return rendered(width: side, height: side) { ctx in
+                AnnotationRenderer.draw(
+                    [annotation], draft: nil,
+                    input: input(canvasSize: CGSize(width: side, height: side)),
+                    into: ctx
+                )
+            }
+        }
+        #expect(render(.solid) == render(.dotted))
+    }
+
     @Test func sameInputProducesIdenticalBytes() {
         let annotation = Annotation(
             shape: .rect(CGRect(x: 5, y: 5, width: 20, height: 15)),

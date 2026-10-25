@@ -57,7 +57,7 @@ public enum AnnotationRenderer {
         case .rect(let rect):
             // 空心描边，线宽全部落在 rect 内侧，与 Snipaste 的矩形观感一致。
             // 直角是矩形观感的一部分：闭合形状 cap 不参与，join 必须保持 miter。
-            stroke(ctx, color: color, lineWidth: lineWidth, join: .miter) {
+            stroke(ctx, color: color, lineWidth: lineWidth, join: .miter, lineStyle: annotation.style.lineStyle) {
                 $0.addRect(rect.insetBy(dx: lineWidth / 2, dy: lineWidth / 2))
             }
         case .roundedRect(let rect, let radius):
@@ -65,7 +65,7 @@ public enum AnnotationRenderer {
             // 半径按内缩后短边钳制，超过半边长时 CGPath(roundedRect:) 行为未定义。
             guard inner.width > 0, inner.height > 0 else { break }
             let safeRadius = min(radius, min(inner.width, inner.height) / 2)
-            stroke(ctx, color: color, lineWidth: lineWidth) {
+            stroke(ctx, color: color, lineWidth: lineWidth, lineStyle: annotation.style.lineStyle) {
                 $0.addPath(CGPath(
                     roundedRect: inner,
                     cornerWidth: safeRadius,
@@ -76,18 +76,30 @@ public enum AnnotationRenderer {
         case .ellipse(let rect):
             let inner = rect.insetBy(dx: lineWidth / 2, dy: lineWidth / 2)
             guard inner.width > 0, inner.height > 0 else { break }
-            stroke(ctx, color: color, lineWidth: lineWidth) {
+            stroke(ctx, color: color, lineWidth: lineWidth, lineStyle: annotation.style.lineStyle) {
                 $0.addEllipse(in: inner)
             }
         case .line(let from, let to):
-            stroke(ctx, color: color, lineWidth: lineWidth) {
+            stroke(ctx, color: color, lineWidth: lineWidth, lineStyle: annotation.style.lineStyle) {
                 $0.move(to: from)
                 $0.addLine(to: to)
             }
         case .arrow(let from, let to):
-            drawArrow(from: from, to: to, color: color, lineWidth: lineWidth, in: ctx)
+            drawArrow(
+                from: from, to: to,
+                color: color,
+                lineWidth: lineWidth,
+                lineStyle: annotation.style.lineStyle,
+                in: ctx
+            )
         case .polyline(let points):
-            drawPolyline(points, color: color, lineWidth: lineWidth, in: ctx)
+            drawPolyline(
+                points,
+                color: color,
+                lineWidth: lineWidth,
+                lineStyle: annotation.style.lineStyle,
+                in: ctx
+            )
         case .brush(let points):
             drawInkStroke(points, color: color, lineWidth: lineWidth, blend: .normal, in: ctx)
         case .marker(let points):
@@ -130,12 +142,14 @@ public enum AnnotationRenderer {
 
     /// 所有描边形状共用的设置：圆头、圆角连接。build 只负责构建路径。
     /// 矩形传 .miter 保持直角，其余形状用默认圆角连接。
+    /// 线型每笔都显式设置：实线传空数组复位，避免上一笔的 dash 泄漏到这一笔。
     private static func stroke(
         _ ctx: CGContext,
         color: RGBAColor,
         lineWidth: CGFloat,
         blend: CGBlendMode = .normal,
         join: CGLineJoin = .round,
+        lineStyle: LineStyle = .solid,
         build: (CGContext) -> Void
     ) {
         ctx.setBlendMode(blend)
@@ -143,6 +157,7 @@ public enum AnnotationRenderer {
         ctx.setLineWidth(lineWidth)
         ctx.setLineCap(.round)
         ctx.setLineJoin(join)
+        ctx.setLineDash(phase: 0, lengths: lineStyle.dashPattern(lineWidth: lineWidth) ?? [])
         build(ctx)
         ctx.strokePath()
     }
@@ -201,12 +216,13 @@ public enum AnnotationRenderer {
     }
 
     /// 箭头 = 圆头直线 + 填充三角头部。头长 4.5 倍线宽、张角 28°，
-    /// 线体画到头部底边为止，避免圆头从三角下方露出。
+    /// 线体画到头部底边为止，避免圆头从三角下方露出。线型只作用于线体，头部始终实心。
     private static func drawArrow(
         from: CGPoint,
         to: CGPoint,
         color: RGBAColor,
         lineWidth: CGFloat,
+        lineStyle: LineStyle,
         in ctx: CGContext
     ) {
         let angle = atan2(to.y - from.y, to.x - from.x)
@@ -216,7 +232,7 @@ public enum AnnotationRenderer {
         let perpX = -sin(angle), perpY = cos(angle)
 
         if hypot(to.x - from.x, to.y - from.y) > headLength {
-            stroke(ctx, color: color, lineWidth: lineWidth) {
+            stroke(ctx, color: color, lineWidth: lineWidth, lineStyle: lineStyle) {
                 $0.move(to: from)
                 $0.addLine(to: base)
             }
@@ -236,6 +252,7 @@ public enum AnnotationRenderer {
         _ points: [CGPoint],
         color: RGBAColor,
         lineWidth: CGFloat,
+        lineStyle: LineStyle,
         in ctx: CGContext
     ) {
         guard let first = points.first else { return }
@@ -243,7 +260,7 @@ public enum AnnotationRenderer {
             fillDot(first, radius: lineWidth / 2, color: color, blend: .normal, in: ctx)
             return
         }
-        stroke(ctx, color: color, lineWidth: lineWidth) {
+        stroke(ctx, color: color, lineWidth: lineWidth, lineStyle: lineStyle) {
             $0.move(to: first)
             for point in points.dropFirst() {
                 $0.addLine(to: point)

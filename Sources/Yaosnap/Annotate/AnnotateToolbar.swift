@@ -26,7 +26,7 @@ final class AnnotateToolbar: NSView {
         // 复杂表达式拆开，编译器在单表达式里推不动
         private static let toolRow: CGFloat = CGFloat(ShapeCatalog.p2.count) * buttonSide
             + CGFloat(ShapeCatalog.p2.count - 1) * spacing
-        private static let styleRow: CGFloat = buttonSide * 2 + spacing
+        private static let styleRow: CGFloat = buttonSide * 3 + spacing * 2
         private static let actionRow: CGFloat = buttonSide * 5 + spacing * 4
         private static let separators: CGFloat = (separatorGap + separatorWidth + separatorGap) * 3
         static let width: CGFloat = padding * 2 + buttonSide + toolRow + styleRow + actionRow + separators
@@ -40,6 +40,7 @@ final class AnnotateToolbar: NSView {
     private(set) var toolButtons: [ShapeKind: HoverButton] = [:]
     private(set) var colorButton: HoverButton!
     private(set) var penButton: HoverButton!
+    private(set) var lineStyleButton: HoverButton!
     private(set) var textButton: HoverButton!
     private(set) var barcodeButton: HoverButton!
     private(set) var saveButton: HoverButton!
@@ -148,6 +149,9 @@ final class AnnotateToolbar: NSView {
         place(colorButton)
         penButton = makeHoverButton(symbol: nil, title: "笔尖", action: #selector(penTapped))
         place(penButton)
+        lineStyleButton = makeHoverButton(symbol: nil, title: "线型", action: #selector(lineStyleTapped))
+        lineStyleButton.contentTintColor = .white
+        place(lineStyleButton)
         separator()
         place(makeHoverButton(symbol: "doc.on.doc", title: "复制", action: #selector(copyTapped)))
         textButton = makeHoverButton(
@@ -233,13 +237,35 @@ final class AnnotateToolbar: NSView {
         4 + CGFloat(pen.rawValue - 1) * 3
     }
 
-    /// 刷新颜色/笔尖按钮上的圆点，反映当前样式。
+    /// 刷新颜色/笔尖/线型按钮，反映当前样式。非描边类形状禁用电线型按钮。
     private func refreshStyleButtons() {
         colorButton.image = Self.dotImage(diameter: 16, color: Self.nsColor(currentStyle.color))
         penButton.image = Self.dotImage(
             diameter: Self.penDotDiameter(currentStyle.pen),
             color: .white
         )
+        lineStyleButton.image = Self.lineStyleImage(currentStyle.lineStyle)
+        lineStyleButton.isEnabled = selectedKind.supportsLineStyle
+    }
+
+    /// 线型按钮的横线样本，与实际渲染共用同一套 dash 参数。
+    static func lineStyleImage(_ style: LineStyle) -> NSImage {
+        let size = NSSize(width: 22, height: 14)
+        let image = NSImage(size: size)
+        image.lockFocus()
+        let line = NSBezierPath()
+        line.move(to: NSPoint(x: 2, y: size.height / 2))
+        line.line(to: NSPoint(x: size.width - 2, y: size.height / 2))
+        line.lineWidth = 2
+        line.lineCapStyle = .round
+        if let pattern = style.dashPattern(lineWidth: 2) {
+            line.setLineDash(pattern, count: pattern.count, phase: 0)
+        }
+        NSColor.white.setStroke()
+        line.stroke()
+        image.unlockFocus()
+        image.isTemplate = true
+        return image
     }
 
     static func nsColor(_ color: RGBAColor) -> NSColor {
@@ -336,6 +362,12 @@ final class AnnotateToolbar: NSView {
         popover.contentViewController = controller
         penPopover = popover
         popover.show(relativeTo: penButton.bounds, of: penButton, preferredEdge: .maxY)
+    }
+
+    @objc private func lineStyleTapped() {
+        currentStyle.lineStyle = currentStyle.lineStyle.next
+        refreshStyleButtons()
+        onStyleChange?(currentStyle)
     }
 
     private func dismissPopovers() {

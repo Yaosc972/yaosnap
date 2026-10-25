@@ -79,6 +79,10 @@ final class AnnotationCanvas: NSView {
             let box = shape.bounds.insetBy(dx: -3, dy: -3)
             ctx.setLineDash(phase: 0, lengths: [4, 3])
             ctx.stroke(box)
+            ctx.setLineDash(phase: 0, lengths: [])
+            if shape.supportsResizeHandles {
+                drawHandleSquares(ShapeHandle.allCases.map { $0.point(in: shape.bounds) }, in: ctx)
+            }
         }
         ctx.restoreGState()
     }
@@ -95,7 +99,22 @@ final class AnnotationCanvas: NSView {
         ctx.closePath()
         ctx.strokePath()
         ctx.setLineDash(phase: 0, lengths: [])
+        drawHandleSquares(corners, in: ctx)
 
+        let dot = geometry.point(for: .rotate)
+        let radius: CGFloat = 4
+        let circle = CGRect(
+            x: dot.x - radius,
+            y: dot.y - radius,
+            width: radius * 2,
+            height: radius * 2
+        )
+        ctx.fillEllipse(in: circle)
+        ctx.strokeEllipse(in: circle)
+    }
+
+    /// 白底蓝边方块。文字四角与面状形状的缩放控制点共用。
+    private func drawHandleSquares(_ corners: [CGPoint], in ctx: CGContext) {
         let side: CGFloat = 6
         ctx.setFillColor(NSColor.white.cgColor)
         for corner in corners {
@@ -108,16 +127,5 @@ final class AnnotationCanvas: NSView {
             ctx.fill(box)
             ctx.stroke(box)
         }
-
-        let dot = geometry.point(for: .rotate)
-        let radius: CGFloat = 4
-        let circle = CGRect(
-            x: dot.x - radius,
-            y: dot.y - radius,
-            width: radius * 2,
-            height: radius * 2
-        )
-        ctx.fillEllipse(in: circle)
-        ctx.strokeEllipse(in: circle)
     }
 }

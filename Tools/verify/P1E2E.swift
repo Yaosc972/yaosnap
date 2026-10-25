@@ -607,10 +607,10 @@ final class Harness {
         _ = capture("09-actionbar.png")
 
         let buttons = bar.subviews.compactMap { $0 as? NSButton }
-        // 按内容推导：选择 + 形状目录 + 颜色/笔尖 + 输出动作，不写死总数。
+        // 按内容推导：选择 + 形状目录 + 颜色/笔尖/线型 + 输出动作，不写死总数。
         let expectedTitles = ["选择"]
             + ShapeCatalog.p2.map(\.title)
-            + ["颜色", "笔尖", "复制", "提取文字", "识别码", "保存", "取消"]
+            + ["颜色", "笔尖", "线型", "复制", "提取文字", "识别码", "保存", "取消"]
         let actualTitles = buttons.compactMap(\.toolTip)
         guard actualTitles.count == expectedTitles.count,
               Set(actualTitles) == Set(expectedTitles) else {

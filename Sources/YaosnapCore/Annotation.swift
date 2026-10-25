@@ -276,10 +276,24 @@ public enum Shape: Equatable, Codable {
 public struct Style: Equatable, Codable {
     public var color: RGBAColor
     public var pen: PenSize
+    public var lineStyle: LineStyle
 
-    public init(color: RGBAColor, pen: PenSize) {
+    public init(color: RGBAColor, pen: PenSize, lineStyle: LineStyle = .solid) {
         self.color = color
         self.pen = pen
+        self.lineStyle = lineStyle
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case color, pen, lineStyle
+    }
+
+    /// 旧数据没有 lineStyle 字段，缺省按实线解码，保持既有标注外观。
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        color = try container.decode(RGBAColor.self, forKey: .color)
+        pen = try container.decode(PenSize.self, forKey: .pen)
+        lineStyle = try container.decodeIfPresent(LineStyle.self, forKey: .lineStyle) ?? .solid
     }
 }
 
