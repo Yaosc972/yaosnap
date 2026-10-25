@@ -91,6 +91,75 @@ struct AnnotationRendererTests {
         #expect(redPixels > 0)
     }
 
+    /// 指定底色的位图上下文，用来把背景填充和原底图区分开。
+    private func rendered(
+        width: Int,
+        height: Int,
+        base: RGBAColor,
+        apply: (CGContext) -> Void
+    ) -> [UInt8] {
+        let ctx = CGContext(
+            data: nil, width: width, height: height,
+            bitsPerComponent: 8, bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )!
+        ctx.setFillColor(base.cgColor)
+        ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        apply(ctx)
+        return PixelBuffer.srgbBytes(ctx.makeImage()!, width: width, height: height)!
+    }
+
+    /// 文字带背景：外扩 2pt 内边距被背景色覆盖，笔画仍是文字色，内边距之外保持底图。
+    @Test func textBackgroundFillsPaddingBand() {
+        let side = 140
+        let origin = CGPoint(x: 30, y: 90)
+        let text = "Hello"
+        let box = TextMetrics.multiline(text, fontSize: 24, origin: origin).rect
+        let base = RGBAColor(r: 0.18, g: 0.42, b: 0.86)
+        let annotation = Annotation(
+            shape: .text(text, origin: origin, fontSize: 24, rotation: 0),
+            style: Style(color: red, pen: .p3, background: RGBAColor(r: 1, g: 1, b: 1))
+        )
+        let bytes = rendered(width: side, height: side, base: base) { ctx in
+            AnnotationRenderer.draw(
+                [annotation], draft: nil,
+                input: input(canvasSize: CGSize(width: side, height: side)),
+                into: ctx
+            )
+        }
+        let middle = Int(box.midY)
+        // 文字左缘左侧 1pt 落在外扩区内，应为背景色。
+        #expect(isWhite(at(bytes, x: Int(box.minX) - 1, cy: middle, canvasSide: side)))
+        // 再往左越过外扩区，仍是底图蓝色。
+        let outside = at(bytes, x: Int(box.minX) - 4, cy: middle, canvasSide: side)
+        #expect(outside.b > 150 && !isWhite(outside))
+        // 文字笔画保持标注色。
+        #expect(redCount(bytes, side: side, canvasYRange: Int(box.minY)...Int(box.maxY)) > 0)
+    }
+
+    /// 文字无背景：同一采样点保持底图，说明旧行为不受影响。
+    @Test func textWithoutBackgroundLeavesPaddingBandBase() {
+        let side = 140
+        let origin = CGPoint(x: 30, y: 90)
+        let text = "Hello"
+        let box = TextMetrics.multiline(text, fontSize: 24, origin: origin).rect
+        let base = RGBAColor(r: 0.18, g: 0.42, b: 0.86)
+        let annotation = Annotation(
+            shape: .text(text, origin: origin, fontSize: 24, rotation: 0),
+            style: Style(color: red, pen: .p3)
+        )
+        let bytes = rendered(width: side, height: side, base: base) { ctx in
+            AnnotationRenderer.draw(
+                [annotation], draft: nil,
+                input: input(canvasSize: CGSize(width: side, height: side)),
+                into: ctx
+            )
+        }
+        let outside = at(bytes, x: Int(box.minX) - 1, cy: Int(box.midY), canvasSide: side)
+        #expect(outside.b > 150 && !isWhite(outside))
+    }
+
     @Test func multilineSecondLineDrawsAtItsBaseline() {
         let side = 200
         let origin = CGPoint(x: 10, y: 150)

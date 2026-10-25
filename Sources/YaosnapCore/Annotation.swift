@@ -277,23 +277,32 @@ public struct Style: Equatable, Codable {
     public var color: RGBAColor
     public var pen: PenSize
     public var lineStyle: LineStyle
+    /// 文字背景填充，nil 不铺底。与文字色并列的独立属性，只有文字形状消费它。
+    public var background: RGBAColor?
 
-    public init(color: RGBAColor, pen: PenSize, lineStyle: LineStyle = .solid) {
+    public init(
+        color: RGBAColor,
+        pen: PenSize,
+        lineStyle: LineStyle = .solid,
+        background: RGBAColor? = nil
+    ) {
         self.color = color
         self.pen = pen
         self.lineStyle = lineStyle
+        self.background = background
     }
 
     private enum CodingKeys: String, CodingKey {
-        case color, pen, lineStyle
+        case color, pen, lineStyle, background
     }
 
-    /// 旧数据没有 lineStyle 字段，缺省按实线解码，保持既有标注外观。
+    /// 旧数据没有 lineStyle / background 字段，缺省按实线、无背景解码，保持既有标注外观。
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         color = try container.decode(RGBAColor.self, forKey: .color)
         pen = try container.decode(PenSize.self, forKey: .pen)
         lineStyle = try container.decodeIfPresent(LineStyle.self, forKey: .lineStyle) ?? .solid
+        background = try container.decodeIfPresent(RGBAColor.self, forKey: .background)
     }
 }
 

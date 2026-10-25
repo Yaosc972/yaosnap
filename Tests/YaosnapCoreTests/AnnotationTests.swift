@@ -40,6 +40,26 @@ struct AnnotationTests {
         #expect(decoded.id == annotation.id)
     }
 
+    /// 旧存档没有 background 键，解码后按无背景处理。
+    @Test func legacyStyleWithoutBackgroundDecodesNil() throws {
+        let json = #"{"color":{"r":1,"g":0,"b":0,"a":1},"pen":3,"lineStyle":"solid"}"#
+        let decoded = try JSONDecoder().decode(Style.self, from: Data(json.utf8))
+        #expect(decoded.background == nil)
+        #expect(decoded.color == RGBAColor(r: 1, g: 0, b: 0))
+        #expect(decoded.pen == .p3)
+        #expect(decoded.lineStyle == .solid)
+    }
+
+    @Test func styleWithBackgroundRoundTrips() throws {
+        let withBackground = Style(
+            color: RGBAColor(r: 1, g: 0, b: 0),
+            pen: .p3,
+            background: RGBAColor(r: 0.3, g: 0.6, b: 0.9, a: 0.4)
+        )
+        let data = try JSONEncoder().encode(withBackground)
+        #expect(try JSONDecoder().decode(Style.self, from: data) == withBackground)
+    }
+
     @Test func kindDerivation() {
         let cases: [(Shape, ShapeKind)] = [
             (.rect(.zero), .rect),

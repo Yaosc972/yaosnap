@@ -130,6 +130,15 @@ public enum AnnotationRenderer {
                 ctx.rotate(by: rotation)
                 ctx.translateBy(x: -center.x, y: -center.y)
             }
+            if let background = annotation.style.background {
+                // 在 saveGState 之内绘制，文字旋转时背景随 CTM 一起转。
+                ctx.setFillColor(background.cgColor)
+                ctx.addPath(CGPath(
+                    roundedRect: layout.rect.insetBy(dx: -2, dy: -2),
+                    cornerWidth: 2, cornerHeight: 2, transform: nil
+                ))
+                ctx.fillPath()
+            }
             // CTLine 以文本矩阵定位基线；画布上下文 y 向上，与 CoreText 约定一致。
             ctx.textMatrix = .identity
             for row in layout.lines {

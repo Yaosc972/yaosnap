@@ -253,6 +253,19 @@ final class AnnotateHarness {
         return true
     }
 
+    /// 工具条背景按钮点击入口。
+    @discardableResult
+    private func tapBackground(_ view: OverlayView, id: String) -> Bool {
+        guard let bar = view.subviews.compactMap({ $0 as? AnnotateToolbar }).first,
+              let button = bar.backgroundButton else {
+            fail(id, "工具条上找不到背景按钮")
+            return false
+        }
+        button.performClick(nil)
+        pump(0.1)
+        return true
+    }
+
     /// 打开颜色弹层并点选第 index 个色块。
     private func pickColor(_ view: OverlayView, _ index: Int, id: String) -> Bool {
         guard let bar = view.subviews.compactMap({ $0 as? AnnotateToolbar }).first else {
@@ -1065,6 +1078,76 @@ final class AnnotateHarness {
             return
         }
         pass("TEXT-MULTILINE", "两行已入列 lines=\(layout.lines.count) rect.height=\(layout.rect.height) 行距=\(step) 单行高=\(lineHeight)")
+        endSession()
+    }
+
+    /// 文字背景填充：点背景按钮切到白色档后画字，导出后外扩区内为背景色、笔画仍是标注色。
+    private func runTextBackground() {
+        guard let (window, view) = beginSession("TEXT-BACKGROUND") else { return }
+        drag(view, window: window, from: CGPoint(x: 150, y: 150), to: CGPoint(x: 750, y: 600))
+        let selection = view.selectionRect
+        guard tapTool(view, .text, id: "TEXT-BACKGROUND") else {
+            endSession()
+            return
+        }
+        guard tapBackground(view, id: "TEXT-BACKGROUND") else {
+            endSession()
+            return
+        }
+        let click = CGPoint(x: selection.minX + 60, y: selection.minY + 220)
+        press(view, window: window, path: [click])
+        guard let editor = view.subviews.compactMap({ $0 as? NSTextView }).first else {
+            fail("TEXT-BACKGROUND", "单击后没有出现文字编辑器")
+            endSession()
+            return
+        }
+        editor.string = "Hello"
+        sendKey(36, characters: "\r", to: editor, in: window, modifierFlags: .command)
+
+        guard view.annotations.count == 1,
+              case .text(let text, let origin, let fontSize, _) = view.annotations[0].shape,
+              let background = view.annotations[0].style.background,
+              background.r > 0.9, background.g > 0.9, background.b > 0.9 else {
+            fail("TEXT-BACKGROUND", "背景未写入样式 annotations=\(view.annotations)")
+            endSession()
+            return
+        }
+        guard let exported = exportedBytes(view) else {
+            fail("TEXT-BACKGROUND", "导出失败")
+            endSession()
+            return
+        }
+
+        let cropRectPx = RectMath.imageRect(
+            fromViewRect: view.selectionRect,
+            viewHeight: view.bounds.height,
+            scale: view.shot.scale
+        ).integral
+        let imageWidth = Int(cropRectPx.width)
+        let imageHeight = Int(cropRectPx.height)
+        let padding = TextMetrics.multiline(text, fontSize: fontSize, origin: origin)
+            .rect.insetBy(dx: -2, dy: -2)
+        let px = Int(view.shot.scale)
+        var lightPixels = 0
+        var inkPixels = 0
+        for canvasY in Int(padding.minY.rounded(.down))...Int(padding.maxY.rounded(.up)) {
+            for canvasX in Int(padding.minX.rounded(.down))...Int(padding.maxX.rounded(.up))
+                where canvasX >= 0 && canvasY >= 0
+                    && canvasX * px < imageWidth && canvasY * px < imageHeight {
+                let offset = ((imageHeight - 1 - canvasY * px) * imageWidth + canvasX * px) * 4
+                let r = Int(exported[offset])
+                let g = Int(exported[offset + 1])
+                let b = Int(exported[offset + 2])
+                if r > 200, g > 200, b > 200 { lightPixels += 1 }
+                if r > 180, g < 130, b < 130 { inkPixels += 1 }
+            }
+        }
+        guard lightPixels > 0, inkPixels > 0, lightPixels > inkPixels else {
+            fail("TEXT-BACKGROUND", "外扩区背景 \(lightPixels) 像素、笔画 \(inkPixels) 像素，背景应占多数且笔画可见")
+            endSession()
+            return
+        }
+        pass("TEXT-BACKGROUND", "背景外扩区 \(lightPixels) 个浅色像素，文字笔画 \(inkPixels) 个标注色像素")
         endSession()
     }
 
@@ -2728,6 +2811,7 @@ final class AnnotateHarness {
         runEraserTool()
         runTextAnnotation()
         runMultilineText()
+        runTextBackground()
         runTextTransform()
         runSelectDrag()
         runDeleteSelection()

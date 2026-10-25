@@ -29,7 +29,7 @@ final class AnnotateToolbar: NSView {
         // 复杂表达式拆开，编译器在单表达式里推不动
         private static let toolRow: CGFloat = CGFloat(ShapeCatalog.p2.count) * buttonSide
             + CGFloat(ShapeCatalog.p2.count - 1) * spacing
-        private static let styleRow: CGFloat = buttonSide * 3 + spacing * 2
+        private static let styleRow: CGFloat = buttonSide * 4 + spacing * 3
         private static let actionRow: CGFloat = ratioLabelWidth + spacing
             + buttonSide * 6 + spacing * 5
         private static let separators: CGFloat = (separatorGap + separatorWidth + separatorGap) * 3
@@ -48,6 +48,7 @@ final class AnnotateToolbar: NSView {
     private(set) var colorButton: HoverButton!
     private(set) var penButton: HoverButton!
     private(set) var lineStyleButton: HoverButton!
+    private(set) var backgroundButton: HoverButton!
     private(set) var textButton: HoverButton!
     private(set) var barcodeButton: HoverButton!
     private(set) var saveButton: HoverButton!
@@ -174,6 +175,8 @@ final class AnnotateToolbar: NSView {
         lineStyleButton = makeHoverButton(symbol: nil, title: "线型", action: #selector(lineStyleTapped))
         lineStyleButton.contentTintColor = .white
         place(lineStyleButton)
+        backgroundButton = makeHoverButton(symbol: nil, title: "背景", action: #selector(backgroundTapped))
+        place(backgroundButton)
         separator()
         ratioLabel = NSTextField(labelWithString: initialAspectRatio.title)
         ratioLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
@@ -277,7 +280,7 @@ final class AnnotateToolbar: NSView {
         4 + CGFloat(pen.rawValue - 1) * 3
     }
 
-    /// 刷新颜色/笔尖/线型按钮，反映当前样式。非描边类形状禁用电线型按钮。
+    /// 刷新颜色/笔尖/线型/背景按钮，反映当前样式。非描边类形状禁用电线型按钮。
     private func refreshStyleButtons() {
         colorButton.image = Self.dotImage(diameter: 16, color: Self.nsColor(currentStyle.color))
         penButton.image = Self.dotImage(
@@ -286,6 +289,63 @@ final class AnnotateToolbar: NSView {
         )
         lineStyleButton.image = Self.lineStyleImage(currentStyle.lineStyle)
         lineStyleButton.isEnabled = selectedKind.supportsLineStyle
+        backgroundButton.attributedTitle = Self.backgroundTitle(
+            BackgroundCycle.of(currentStyle.background)
+        )
+    }
+
+    /// 背景按钮无图标，用标题表示当前档位。
+    private static func backgroundTitle(_ cycle: BackgroundCycle) -> NSAttributedString {
+        NSAttributedString(
+            string: cycle.title,
+            attributes: [
+                .foregroundColor: NSColor.white,
+                .font: NSFont.systemFont(ofSize: 11, weight: .medium),
+            ]
+        )
+    }
+
+    /// 背景按钮的四档循环：无 → 白 → 黑 → 文字色。档位只由样式反推，不另存状态。
+    private enum BackgroundCycle: CaseIterable {
+        case none, white, black, text
+
+        static let whiteColor = RGBAColor(r: 1, g: 1, b: 1, a: 0.85)
+        static let blackColor = RGBAColor(r: 0, g: 0, b: 0, a: 0.70)
+
+        var title: String {
+            switch self {
+            case .none: return "背景"
+            case .white: return "白"
+            case .black: return "黑"
+            case .text: return "彩"
+            }
+        }
+
+        /// 当前样式落在哪一档。非白非黑的自定义背景按文字色档处理。
+        static func of(_ background: RGBAColor?) -> BackgroundCycle {
+            guard let background else { return .none }
+            if background == whiteColor { return .white }
+            if background == blackColor { return .black }
+            return .text
+        }
+
+        var next: BackgroundCycle {
+            let all = Self.allCases
+            let index = all.firstIndex(of: self) ?? 0
+            return all[(index + 1) % all.count]
+        }
+
+        func color(textColor: RGBAColor) -> RGBAColor? {
+            switch self {
+            case .none: return nil
+            case .white: return Self.whiteColor
+            case .black: return Self.blackColor
+            case .text:
+                var tint = textColor
+                tint.a = 0.40
+                return tint
+            }
+        }
     }
 
     /// 线型按钮的横线样本，与实际渲染共用同一套 dash 参数。
@@ -429,6 +489,13 @@ final class AnnotateToolbar: NSView {
 
     @objc private func lineStyleTapped() {
         currentStyle.lineStyle = currentStyle.lineStyle.next
+        refreshStyleButtons()
+        onStyleChange?(currentStyle)
+    }
+
+    @objc private func backgroundTapped() {
+        let next = BackgroundCycle.of(currentStyle.background).next
+        currentStyle.background = next.color(textColor: currentStyle.color)
         refreshStyleButtons()
         onStyleChange?(currentStyle)
     }
