@@ -7,6 +7,7 @@ if [ -x "$SCRIPT_DIR/.env-tools/swiftc-manifest" ]; then
     export SWIFT_EXEC_MANIFEST="$SCRIPT_DIR/.env-tools/swiftc-manifest"
 fi
 swift build -c release --product Yaosnap
+swift build -c release --product snip
 APP="Build/Yaosnap.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
@@ -17,3 +18,6 @@ cp Resources/AppIcon.icns Resources/StatusBarIcon.png Resources/StatusBarIcon@2x
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 codesign --force --deep --sign - "$APP"
 echo "Built $APP"
+CLI="$SCRIPT_DIR/.build/release/snip"
+echo "Built CLI $CLI"
+echo "加入 PATH（写入你的 shell 配置）：export PATH=\"$SCRIPT_DIR/.build/release:\$PATH\""

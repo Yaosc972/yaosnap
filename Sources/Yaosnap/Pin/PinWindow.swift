@@ -9,7 +9,8 @@ final class PinWindow: NSWindow {
     /// 初始适配到屏幕 80% 后的尺寸。transform.scale 从 1 起，首次变换才不会跳回原图尺寸。
     let basePointSize: CGSize
 
-    init(pasteImage: PasteImage, screen: NSScreen, cascadeIndex: Int) {
+    /// topLeft 使用主屏左上角为原点的屏幕坐标（y 向下），与 CLI 的 --pos 一致。
+    init(pasteImage: PasteImage, screen: NSScreen, cascadeIndex: Int, topLeft requestedTopLeft: CGPoint? = nil) {
         let visible = screen.visibleFrame
         let source = pasteImage.pointSize
         let fit = min(
@@ -22,12 +23,18 @@ final class PinWindow: NSWindow {
             height: max(1, floor(source.height * fit))
         )
         basePointSize = size
-        // 后续贴图错开叠放，否则多张完全重合看不出有几张。
-        let offset = CGFloat(cascadeIndex % 6) * 24
-        var origin = CGPoint(
-            x: visible.midX - size.width / 2 + offset,
-            y: visible.maxY - visible.height * 0.12 - size.height - offset
-        )
+        var origin: CGPoint
+        if let requestedTopLeft {
+            // 窗口 frame 的原点是左下角，而请求给的是左上角。
+            origin = CGPoint(x: requestedTopLeft.x, y: requestedTopLeft.y - size.height)
+        } else {
+            // 后续贴图错开叠放，否则多张完全重合看不出有几张。
+            let offset = CGFloat(cascadeIndex % 6) * 24
+            origin = CGPoint(
+                x: visible.midX - size.width / 2 + offset,
+                y: visible.maxY - visible.height * 0.12 - size.height - offset
+            )
+        }
         origin.x = min(max(origin.x, visible.minX), max(visible.minX, visible.maxX - size.width))
         origin.y = min(max(origin.y, visible.minY), max(visible.minY, visible.maxY - size.height))
         // 非整数原点会让 AppKit 把 frame 向外取整，尺寸凭空多 1 点。

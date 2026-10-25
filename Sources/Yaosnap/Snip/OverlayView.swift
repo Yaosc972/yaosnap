@@ -5,6 +5,9 @@ import YaosnapCore
 @MainActor
 final class OverlayView: NSView {
     let shot: DisplayShot
+    /// 取色模式：放大镜常驻，单击取样后结束会话而不是开始框选。
+    private let pickColorMode: Bool
+    var onPickColor: (() -> Void)?
 
     /// 会话状态机。idling 无选区；selecting 在拖选区（origin 视图坐标，freeDrag 表示
     /// 已脱离窗口吸附）；ready 选区已确定；drawing 在拖标注（origin 画布坐标）；
@@ -151,9 +154,10 @@ final class OverlayView: NSView {
     /// 待导出标注。控制器在复制 / 保存时按 displayID 来取。
     var annotations: [Annotation] { canvas?.annotations ?? [] }
 
-    init(shot: DisplayShot, history: [CaptureHistoryEntry] = []) {
+    init(shot: DisplayShot, history: [CaptureHistoryEntry] = [], pickColorMode: Bool = false) {
         self.shot = shot
         self.history = history
+        self.pickColorMode = pickColorMode
         let frozen = NSImage(
             cgImage: shot.image,
             size: NSSize(width: shot.bounds.width, height: shot.bounds.height)
@@ -220,7 +224,12 @@ final class OverlayView: NSView {
         defer { refreshMagnifier() }
         switch phase {
         case .idle:
-            beginSelection(at: point)
+            if pickColorMode {
+                copyMagnifierColor()
+                onPickColor?()
+            } else {
+                beginSelection(at: point)
+            }
         case .ready:
             if event.clickCount == 2, selectionRect.contains(point) {
                 requestCopy()
@@ -632,7 +641,7 @@ final class OverlayView: NSView {
     }
 
     private func refreshMagnifier() {
-        let visible = isOptionDown || isDraggingSelection
+        let visible = pickColorMode || isOptionDown || isDraggingSelection
         guard visible != isMagnifierVisible else {
             if visible { needsDisplay = true }
             return

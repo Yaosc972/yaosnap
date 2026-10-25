@@ -28,6 +28,7 @@ final class SnipController {
     private var history: [CaptureHistoryEntry] = []
     private static let historyLimit = 10
     var historyCount: Int { history.count }
+    var latestCapture: CaptureHistoryEntry? { history.first }
     /// 当前待输出选区，绑定提交它的屏幕。输出请求必须带同一 displayID。
     private var pendingRegion: PendingRegion?
     private var saveJob: SaveJob?
@@ -37,7 +38,15 @@ final class SnipController {
     private var isCrosshairActive = false
 
     func start() {
-        print("[snip] start called")
+        start(pickColor: false)
+    }
+
+    func startPickColor() {
+        start(pickColor: true)
+    }
+
+    private func start(pickColor: Bool) {
+        print("[snip] start called\(pickColor ? " (pick-color)" : "")")
         guard windows.isEmpty else { return }
         guard ScreenCaptureService.hasPermission() else {
             print("[snip] no screen capture permission")
@@ -62,7 +71,11 @@ final class SnipController {
                 continue
             }
             let window = SnipOverlayWindow(screen: screen)
-            window.contentView = OverlayView(shot: shot, history: history)
+            let view = OverlayView(shot: shot, history: history, pickColorMode: pickColor)
+            if pickColor {
+                view.onPickColor = { [weak self] in self?.cancel() }
+            }
+            window.contentView = view
             window.makeFirstResponder(window.contentView)
             window.makeKeyAndOrderFront(nil)
             windows.append(window)
@@ -313,6 +326,105 @@ final class SnipController {
             NSSound.beep()
             resumeSessionAfterSavePanel()
         }
+    }
+
+    // MARK: - 命令行
+
+    func copyLatestCapture() {
+        guard let entry = recentCaptureOrReport("复制") else { return }
+        guard ClipboardService.copyToPasteboard(entry.image, scale: entry.scaleX) else {
+            print("[cli] error: 最近截图写入剪贴板失败")
+            NSSound.beep()
+            return
+        }
+        print("[cli] 最近截图已复制")
+    }
+
+    func saveLatestCapture(to path: String) {
+        guard let entry = recentCaptureOrReport("保存") else { return }
+        guard let data = ImageOutput.pngData(from: entry.image) else {
+            print("[cli] error: PNG 编码失败")
+            NSSound.beep()
+            return
+        }
+        let url = URL(fileURLWithPath: path)
+        do {
+            try data.write(to: url)
+            print("[cli] 最近截图已保存到 \(url.path)")
+        } catch {
+            print("[cli] error: 写入 \(url.path) 失败: \(error.localizedDescription)")
+            NSSound.beep()
+        }
+    }
+
+    func quickSaveLatestCapture() {
+        guard let entry = recentCaptureOrReport("快捷保存") else { return }
+        guard let data = ImageOutput.pngData(from: entry.image) else {
+            print("[cli] error: PNG 编码失败")
+            NSSound.beep()
+            return
+        }
+        let store = quickSaveDirectory.map { QuickSaveStore(directory: $0) } ?? QuickSaveStore()
+        do {
+            let url = try store.write(data)
+            print("[cli] 最近截图已快捷保存到 \(url.path)")
+            NSSound(named: "Glass")?.play()
+        } catch {
+            print("[cli] error: 快捷保存失败: \(error.localizedDescription)")
+            NSSound.beep()
+        }
+    }
+
+    /// 全屏抓取后逐屏识别，命中第一条结果就写入剪贴板。
+    func scanScreenForBarcode() {
+        guard ScreenCaptureService.hasPermission() else {
+            print("[snip] no screen capture permission")
+            ScreenCaptureService.requestPermission()
+            showPermissionAlert()
+            return
+        }
+        let captures = ScreenCaptureService.captureAllDisplays()
+        guard !captures.isEmpty else {
+            showCaptureEmptyAlert()
+            return
+        }
+        let images = captures.map(\.image)
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            var payload: String?
+            for image in images {
+                if let found = BarcodeScanner.scanFirstPayload(in: image) {
+                    payload = found
+                    break
+                }
+            }
+            Task { @MainActor in
+                self?.finishScreenBarcodeScan(payload)
+            }
+        }
+    }
+
+    private func finishScreenBarcodeScan(_ payload: String?) {
+        guard let payload, !payload.isEmpty else {
+            ClipboardService.clear()
+            print("[cli] 屏幕上没有识别到二维码 / 条形码，已清空剪贴板")
+            NSSound.beep()
+            return
+        }
+        guard ClipboardService.copyString(payload) else {
+            print("[cli] error: 识别结果写入剪贴板失败")
+            NSSound.beep()
+            return
+        }
+        print("[cli] 识别码 \(payload.count) 字符")
+    }
+
+    private func recentCaptureOrReport(_ action: String) -> CaptureHistoryEntry? {
+        guard let entry = history.first else {
+            print("[cli] \(action)失败：还没有成功输出的截图")
+            NSSound.beep()
+            return nil
+        }
+        return entry
     }
 
     private func abortWithError(_ message: String) {

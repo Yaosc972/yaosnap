@@ -14,6 +14,11 @@ let package = Package(
             dependencies: ["YaosnapCore"],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
+        .executableTarget(
+            name: "snip",
+            dependencies: ["YaosnapCore"],
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
         .testTarget(
             name: "YaosnapCoreTests",
             dependencies: ["YaosnapCore"],

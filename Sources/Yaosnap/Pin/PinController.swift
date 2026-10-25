@@ -19,17 +19,32 @@ final class PinController: NSObject, NSWindowDelegate {
             NSSound.beep()
             return false
         }
-        let window = PinWindow(
-            pasteImage: image,
-            screen: screen,
-            cascadeIndex: pinned.count
-        )
-        window.delegate = self
-        pinned.append(window)
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        present(image, on: screen, at: nil)
         print("[pin] pinned kind=\(content.kind) size=\(Int(image.pointSize.width))x\(Int(image.pointSize.height))")
         return true
+    }
+
+    /// 命令行贴图：--pos 给的是主屏左上角为原点的坐标，越界时由窗口初始化钳回可见区域。
+    @discardableResult
+    func pin(image: PasteImage, at topLeft: CGPoint?) -> Bool {
+        let appKitTop = topLeft.map(Self.appKitTop(fromTopLeft:))
+        guard let screen = screen(containing: appKitTop) else {
+            print("[pin] 找不到可用屏幕")
+            NSSound.beep()
+            return false
+        }
+        present(image, on: screen, at: appKitTop)
+        print("[pin] pinned from cli size=\(Int(image.pointSize.width))x\(Int(image.pointSize.height))")
+        return true
+    }
+
+    func showAll() {
+        for window in pinned { window.orderFront(nil) }
+        pinned.last?.makeKey()
+    }
+
+    func hideAll() {
+        for window in pinned { window.orderOut(nil) }
     }
 
     /// 只要还有可见窗口就全部隐藏，否则全部显示。
@@ -67,6 +82,34 @@ final class PinController: NSObject, NSWindowDelegate {
         let y = min(max(frame.minY, visible.minY), max(visible.minY, visible.maxY - frame.height))
         guard x != frame.minX || y != frame.minY else { return }
         window.setFrameOrigin(CGPoint(x: x, y: y))
+    }
+
+    private func present(_ image: PasteImage, on screen: NSScreen, at topLeft: CGPoint?) {
+        let window = PinWindow(
+            pasteImage: image,
+            screen: screen,
+            cascadeIndex: pinned.count,
+            topLeft: topLeft
+        )
+        window.delegate = self
+        pinned.append(window)
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// Snipaste 的 --pos 以主屏左上角为原点、y 向下；AppKit 以左下角为原点、y 向上。
+    private static func appKitTop(fromTopLeft point: CGPoint) -> CGPoint {
+        let main = NSScreen.screens.first { screen in
+            (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?
+                .uint32Value == CGMainDisplayID()
+        } ?? NSScreen.screens.first
+        let topY = main?.frame.maxY ?? 0
+        return CGPoint(x: point.x, y: topY - point.y)
+    }
+
+    private func screen(containing point: CGPoint?) -> NSScreen? {
+        guard let point else { return screenUnderMouse() }
+        return NSScreen.screens.first { $0.frame.contains(point) } ?? screenUnderMouse()
     }
 
     private func screenUnderMouse() -> NSScreen? {

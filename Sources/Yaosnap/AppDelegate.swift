@@ -7,6 +7,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let hotkeyManager = HotkeyManager()
     private let snipController = SnipController()
     private let pinController = PinController()
+    private lazy var commandRouter = AppCommandRouter(
+        snipController: snipController,
+        pinController: pinController
+    )
+
+    /// CLI 通过 `yaosnap://` 唤起；app 未运行时系统先启动进程再投递到这里。
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls {
+            commandRouter.handle(url)
+        }
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItemController = StatusItemController(
