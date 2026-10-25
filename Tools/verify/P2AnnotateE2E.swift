@@ -1657,6 +1657,74 @@ final class AnnotateHarness {
         endSession()
     }
 
+    private func runPaletteCustomization() {
+        guard let (window, view) = beginSession("PALETTE") else { return }
+        drag(view, window: window, from: CGPoint(x: 150, y: 150), to: CGPoint(x: 750, y: 600))
+        guard let bar = view.subviews.compactMap({ $0 as? AnnotateToolbar }).first else {
+            fail("PALETTE", "找不到工具条")
+            endSession()
+            return
+        }
+        // 走真实偏好路径，结束后把原数据放回去，避免测试色留在用户调色板里。
+        let defaults = UserDefaults.standard
+        let backup = defaults.data(forKey: PaletteStore.defaultsKey)
+        defer {
+            if let backup {
+                defaults.set(backup, forKey: PaletteStore.defaultsKey)
+            } else {
+                defaults.removeObject(forKey: PaletteStore.defaultsKey)
+            }
+            endSession()
+        }
+
+        bar.colorButton.performClick(nil)
+        pump(0.2)
+        guard let palette = bar.colorPopover?.contentViewController?.view as? ColorPaletteView else {
+            fail("PALETTE", "颜色弹层未弹出")
+            return
+        }
+        guard palette.customButton != nil,
+              palette.exportButton != nil,
+              palette.importButton != nil,
+              palette.resetButton != nil else {
+            fail("PALETTE", "弹层缺少自定义 / 导出 / 导入 / 恢复默认入口")
+            return
+        }
+        pass("PALETTE-BUTTONS", "弹层含自定义、导出、导入、恢复默认入口")
+
+        let custom = RGBAColor(r: 0.13, g: 0.42, b: 0.77, a: 0.6)
+        palette.addCustomColor(custom)
+        pump(0.1)
+        guard bar.currentStyle.color == custom else {
+            fail("PALETTE-APPLY", "颜色面板选色后应为该自定义色（含 alpha），实际 \(bar.currentStyle.color)")
+            return
+        }
+
+        guard let customIndex = palette.swatches.indices.first(where: { palette.model.isCustom(at: $0) }) else {
+            fail("PALETTE-PICK", "自定义色没有出现在色块网格里")
+            return
+        }
+        palette.swatches[0].performClick(nil)
+        pump(0.1)
+        guard bar.currentStyle.color != custom else {
+            fail("PALETTE-PICK", "点内置色后颜色没有变化")
+            return
+        }
+        palette.swatches[customIndex].performClick(nil)
+        pump(0.1)
+        guard bar.currentStyle.color == custom else {
+            fail("PALETTE-PICK", "点自定义色块后 currentStyle.color 应为该色，实际 \(bar.currentStyle.color)")
+            return
+        }
+        pass("PALETTE-PICK", "点自定义色块后 currentStyle.color 变为该色（含 alpha 0.6）")
+
+        guard PaletteStore().load().customColors.contains(custom) else {
+            fail("PALETTE-PERSIST", "自定义色没有写入偏好")
+            return
+        }
+        pass("PALETTE-PERSIST", "自定义色已写入 UserDefaults")
+    }
+
     // MARK: - 主流程
 
     private func runMagnifierAndColorSampling() {
@@ -2332,6 +2400,7 @@ final class AnnotateHarness {
         runAlphaTransparency()
         runDigitPenSize()
         runColorWheelAlpha()
+        runPaletteCustomization()
         runMagnifierAndColorSampling()
         runArrowNudge()
         runLineStyleDash()

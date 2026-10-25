@@ -1,4 +1,5 @@
 import AppKit
+import UniformTypeIdentifiers
 import YaosnapCore
 
 /// 选区标注工具条：选择、形状选择、颜色/笔尖弹层、复制/提取文字/识别码/保存/取消。
@@ -35,6 +36,8 @@ final class AnnotateToolbar: NSView {
     private(set) var selectedKind: ShapeKind = .rect
     private(set) var isSelectMode = false
     private(set) var currentStyle: Style
+    private let paletteStore: PaletteStore
+    private var paletteModel: PaletteModel
     /// 暴露给验收 harness 程序化点击。
     private(set) var selectButton: HoverButton!
     private(set) var toolButtons: [ShapeKind: HoverButton] = [:]
@@ -65,9 +68,11 @@ final class AnnotateToolbar: NSView {
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
     }
 
-    init(initialKind: ShapeKind, initialStyle: Style) {
+    init(initialKind: ShapeKind, initialStyle: Style, paletteStore: PaletteStore = PaletteStore()) {
         selectedKind = initialKind
         currentStyle = initialStyle
+        self.paletteStore = paletteStore
+        paletteModel = paletteStore.load()
         super.init(frame: NSRect(x: 0, y: 0, width: Metrics.width, height: Metrics.height))
         wantsLayer = true
         layer?.backgroundColor = NSColor(white: 0.12, alpha: 0.92).cgColor
@@ -315,18 +320,27 @@ final class AnnotateToolbar: NSView {
             return
         }
         dismissPopovers()
-        let palette = ColorPaletteView(selected: currentStyle.color)
+        let palette = ColorPaletteView(model: paletteModel, selected: currentStyle.color)
         let popover = NSPopover()
         popover.behavior = .transient
         palette.onPick = { [weak self, weak popover] color in
             guard let self else { return }
-            // 换色不改已选透明度，透明度由分组统一持有。
+            // 内置色不带 alpha，换色时沿用当前透明度。
             var picked = color
             picked.a = self.currentStyle.color.a
-            self.currentStyle.color = picked
-            self.refreshStyleButtons()
-            self.onStyleChange?(self.currentStyle)
+            self.applyPickedColor(picked)
             popover?.performClose(nil)
+        }
+        palette.onPickCustom = { [weak self, weak popover] color in
+            guard let self else { return }
+            // 自定义色自带 alpha，选它就把透明度一起带过来。
+            self.applyPickedColor(color)
+            popover?.performClose(nil)
+        }
+        palette.onAddCustom = { [weak self] color in
+            guard let self else { return }
+            // 面板还在开着，继续调色时要一直跟随，不关弹层。
+            self.applyPickedColor(color)
         }
         palette.onPickAlpha = { [weak self] alpha in
             guard let self else { return }
@@ -334,11 +348,25 @@ final class AnnotateToolbar: NSView {
             self.refreshStyleButtons()
             self.onStyleChange?(self.currentStyle)
         }
+        palette.onPaletteChange = { [weak self] model in
+            guard let self else { return }
+            self.paletteModel = model
+            self.paletteStore.save(model)
+        }
         let controller = NSViewController()
         controller.view = palette
+        palette.onSizeChange = { [weak controller] size in
+            controller?.preferredContentSize = size
+        }
         popover.contentViewController = controller
         colorPopover = popover
         popover.show(relativeTo: colorButton.bounds, of: colorButton, preferredEdge: .maxY)
+    }
+
+    private func applyPickedColor(_ color: RGBAColor) {
+        currentStyle.color = color
+        refreshStyleButtons()
+        onStyleChange?(currentStyle)
     }
 
     @objc private func penTapped() {
@@ -403,7 +431,7 @@ final class AnnotateToolbar: NSView {
 
 /// 无边框图标按钮，带悬停高亮。工具条与弹层共用。
 @MainActor
-final class HoverButton: NSButton {
+class HoverButton: NSButton {
     /// 需要滚轮交互的按钮（颜色按钮调透明度）挂在这里，其余按钮滚轮照常向上传递。
     var onScroll: ((CGFloat) -> Void)?
     /// 点击时的修饰键。生产读全局状态，验收 harness 注入 ⌘ 模拟快捷保存。
@@ -440,13 +468,26 @@ final class HoverButton: NSButton {
     }
 }
 
-/// 12 色圆点网格加一排透明度档位。swatches / alphaSwatches 暴露给验收 harness 程序化点击。
+/// 调色板弹层：有序色块网格、透明度档位、自定义入口与导入导出。
+/// swatches / alphaSwatches / 四个动作按钮暴露给验收 harness 程序化点击。
 @MainActor
 final class ColorPaletteView: NSView {
     var onPick: ((RGBAColor) -> Void)?
+    var onPickCustom: ((RGBAColor) -> Void)?
+    /// 颜色面板里选完立即应用，但不关闭调色板弹层。
+    var onAddCustom: ((RGBAColor) -> Void)?
     var onPickAlpha: ((CGFloat) -> Void)?
+    /// 色块内容或顺序变化后回调，供外部持久化。
+    var onPaletteChange: ((PaletteModel) -> Void)?
+    var onSizeChange: ((NSSize) -> Void)?
+
+    private(set) var model: PaletteModel
     private(set) var swatches: [HoverButton] = []
     private(set) var alphaSwatches: [HoverButton] = []
+    private(set) var customButton: HoverButton!
+    private(set) var exportButton: HoverButton!
+    private(set) var importButton: HoverButton!
+    private(set) var resetButton: HoverButton!
 
     /// 透明度档位。记号笔另有固定 0.45 渲染叠加，这里的 alpha 是用户可见的那一档。
     static let alphaPresets: [CGFloat] = [1, 0.8, 0.6, 0.4, 0.25]
@@ -457,44 +498,75 @@ final class ColorPaletteView: NSView {
         static let padding: CGFloat = 10
         static let spacing: CGFloat = 6
         static let alphaGap: CGFloat = 8
+        static let actionGap: CGFloat = 8
+        static let actionHeight: CGFloat = 22
+        static let rowGap: CGFloat = 6
+        static let bottomActionWidths: [CGFloat] = [42, 42, 56]
     }
 
-    init(selected: RGBAColor) {
-        let rows = (RGBAColor.palette.count + Metrics.columns - 1) / Metrics.columns
-        let gridWidth = CGFloat(Metrics.columns) * Metrics.side
-            + CGFloat(Metrics.columns - 1) * Metrics.spacing
-        let alphaWidth = CGFloat(ColorPaletteView.alphaPresets.count) * Metrics.side
-            + CGFloat(ColorPaletteView.alphaPresets.count - 1) * Metrics.spacing
-        let width = Metrics.padding * 2 + max(gridWidth, alphaWidth)
-        let height = Metrics.padding * 2
-            + CGFloat(rows) * Metrics.side
-            + CGFloat(rows - 1) * Metrics.spacing
-            + Metrics.alphaGap + Metrics.side
-        super.init(frame: NSRect(x: 0, y: 0, width: width, height: height))
+    private var selectedColor: RGBAColor
+
+    init(model: PaletteModel, selected: RGBAColor) {
+        self.model = model
+        selectedColor = selected
+        super.init(frame: NSRect(origin: .zero, size: Self.size(for: model)))
         wantsLayer = true
         layer?.backgroundColor = NSColor(white: 0.14, alpha: 0.96).cgColor
         layer?.cornerRadius = 6
+        rebuild()
+    }
 
-        let gridX = Metrics.padding + (width - Metrics.padding * 2 - gridWidth) / 2
-        for (index, color) in RGBAColor.palette.enumerated() {
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    private static func computeWidth() -> CGFloat {
+        let gridWidth = CGFloat(Metrics.columns) * Metrics.side
+            + CGFloat(Metrics.columns - 1) * Metrics.spacing
+        let alphaWidth = CGFloat(alphaPresets.count) * Metrics.side
+            + CGFloat(alphaPresets.count - 1) * Metrics.spacing
+        return Metrics.padding * 2 + max(gridWidth, alphaWidth)
+    }
+
+    private static func size(for model: PaletteModel) -> NSSize {
+        let rows = max(1, (model.colors.count + Metrics.columns - 1) / Metrics.columns)
+        let gridHeight = CGFloat(rows) * Metrics.side + CGFloat(rows - 1) * Metrics.spacing
+        let height = Metrics.padding * 2 + gridHeight
+            + Metrics.alphaGap + Metrics.side
+            + Metrics.actionGap + Metrics.actionHeight * 2 + Metrics.rowGap
+        return NSSize(width: computeWidth(), height: height)
+    }
+
+    /// 色块增删与排序都会重建，数量变化时同步弹层尺寸。
+    private func rebuild() {
+        subviews.forEach { $0.removeFromSuperview() }
+        swatches.removeAll()
+        alphaSwatches.removeAll()
+        frame.size = Self.size(for: model)
+        onSizeChange?(frame.size)
+
+        let gridWidth = CGFloat(Metrics.columns) * Metrics.side
+            + CGFloat(Metrics.columns - 1) * Metrics.spacing
+        let gridX = (frame.width - gridWidth) / 2
+        let top = frame.height - Metrics.padding
+        for (index, color) in model.colors.enumerated() {
             let column = index % Metrics.columns
             let row = index / Metrics.columns
-            let swatch = HoverButton()
+            let swatch = PaletteSwatchButton()
             swatch.isBordered = false
             swatch.refusesFirstResponder = true
             swatch.image = AnnotateToolbar.dotImage(
                 diameter: 18,
                 color: AnnotateToolbar.nsColor(color),
-                ringed: Self.sameRGB(color, selected)
+                ringed: Self.sameRGB(color, selectedColor)
             )
-            swatch.toolTip = "颜色 \(index + 1)"
+            swatch.toolTip = model.isCustom(at: index) ? "自定义颜色" : "颜色 \(index + 1)"
             swatch.target = self
             swatch.action = #selector(picked(_:))
             swatch.tag = index
+            swatch.swatchIndex = index
+            swatch.palette = self
             swatch.frame = NSRect(
                 x: gridX + CGFloat(column) * (Metrics.side + Metrics.spacing),
-                y: height - Metrics.padding - Metrics.side
-                    - CGFloat(row) * (Metrics.side + Metrics.spacing),
+                y: top - Metrics.side - CGFloat(row) * (Metrics.side + Metrics.spacing),
                 width: Metrics.side,
                 height: Metrics.side
             )
@@ -502,8 +574,12 @@ final class ColorPaletteView: NSView {
             swatches.append(swatch)
         }
 
-        for (index, alpha) in ColorPaletteView.alphaPresets.enumerated() {
-            var shade = selected
+        let alphaY = Metrics.padding + Metrics.rowGap + Metrics.actionHeight * 2 + Metrics.actionGap
+        let alphaWidth = CGFloat(Self.alphaPresets.count) * Metrics.side
+            + CGFloat(Self.alphaPresets.count - 1) * Metrics.spacing
+        let alphaX = (frame.width - alphaWidth) / 2
+        for (index, alpha) in Self.alphaPresets.enumerated() {
+            var shade = selectedColor
             shade.a = alpha
             let swatch = HoverButton()
             swatch.isBordered = false
@@ -511,35 +587,206 @@ final class ColorPaletteView: NSView {
             swatch.image = AnnotateToolbar.dotImage(
                 diameter: 18,
                 color: AnnotateToolbar.nsColor(shade),
-                ringed: abs(selected.a - alpha) < 0.001
+                ringed: abs(selectedColor.a - alpha) < 0.001
             )
             swatch.toolTip = "透明度 \(Int((alpha * 100).rounded()))%"
             swatch.target = self
             swatch.action = #selector(pickedAlpha(_:))
             swatch.tag = index
             swatch.frame = NSRect(
-                x: Metrics.padding + CGFloat(index) * (Metrics.side + Metrics.spacing),
-                y: Metrics.padding,
+                x: alphaX + CGFloat(index) * (Metrics.side + Metrics.spacing),
+                y: alphaY,
                 width: Metrics.side,
                 height: Metrics.side
             )
             addSubview(swatch)
             alphaSwatches.append(swatch)
         }
+
+        let innerWidth = frame.width - Metrics.padding * 2
+        let bottomY = Metrics.padding
+        let bottomWidth = Metrics.bottomActionWidths.reduce(0, +)
+            + CGFloat(Metrics.bottomActionWidths.count - 1) * Metrics.spacing
+        var x = (frame.width - bottomWidth) / 2
+        var buttons: [HoverButton] = []
+        let bottomActions: [(String, String, Selector)] = [
+            ("导出", "导出调色板 JSON", #selector(exportTapped)),
+            ("导入", "导入调色板 JSON", #selector(importTapped)),
+            ("恢复默认", "恢复默认调色板", #selector(resetTapped)),
+        ]
+        for (index, entry) in bottomActions.enumerated() {
+            let button = makeActionButton(entry.0, toolTip: entry.1, action: entry.2)
+            button.frame = NSRect(
+                x: x,
+                y: bottomY,
+                width: Metrics.bottomActionWidths[index],
+                height: Metrics.actionHeight
+            )
+            addSubview(button)
+            buttons.append(button)
+            x += Metrics.bottomActionWidths[index] + Metrics.spacing
+        }
+        let custom = makeActionButton("自定义颜色…", toolTip: "自定义颜色…", action: #selector(customTapped))
+        custom.frame = NSRect(
+            x: Metrics.padding,
+            y: bottomY + Metrics.actionHeight + Metrics.rowGap,
+            width: innerWidth,
+            height: Metrics.actionHeight
+        )
+        addSubview(custom)
+
+        customButton = custom
+        exportButton = buttons[0]
+        importButton = buttons[1]
+        resetButton = buttons[2]
     }
 
-    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    private func makeActionButton(_ title: String, toolTip: String, action: Selector) -> HoverButton {
+        let button = HoverButton()
+        button.isBordered = false
+        button.refusesFirstResponder = true
+        button.attributedTitle = NSAttributedString(
+            string: title,
+            attributes: [
+                .foregroundColor: NSColor.white,
+                .font: NSFont.systemFont(ofSize: 11, weight: .medium),
+            ]
+        )
+        button.toolTip = toolTip
+        button.target = self
+        button.action = action
+        return button
+    }
 
     private static func sameRGB(_ lhs: RGBAColor, _ rhs: RGBAColor) -> Bool {
         lhs.r == rhs.r && lhs.g == rhs.g && lhs.b == rhs.b
     }
 
+    /// 颜色面板选色与验收注入共用：加入自定义色后立即应用。
+    func addCustomColor(_ color: RGBAColor) {
+        guard PaletteModel.isValid(color) else { return }
+        selectedColor = color
+        let added = model.addCustom(color)
+        rebuild()
+        if added { onPaletteChange?(model) }
+        onAddCustom?(color)
+    }
+
+    fileprivate func dropSwatch(from source: Int, at windowPoint: NSPoint) {
+        let point = convert(windowPoint, from: nil)
+        guard let destination = swatches.firstIndex(where: { $0.frame.contains(point) }),
+              destination != source else { return }
+        model.move(from: source, to: destination)
+        rebuild()
+        onPaletteChange?(model)
+    }
+
     @objc private func picked(_ sender: NSButton) {
-        onPick?(RGBAColor.palette[sender.tag])
+        guard model.colors.indices.contains(sender.tag) else { return }
+        let color = model.colors[sender.tag]
+        selectedColor = color
+        if model.isCustom(at: sender.tag) {
+            onPickCustom?(color)
+        } else {
+            onPick?(color)
+        }
     }
 
     @objc private func pickedAlpha(_ sender: NSButton) {
         onPickAlpha?(ColorPaletteView.alphaPresets[sender.tag])
+    }
+
+    @objc private func customTapped() {
+        let panel = NSColorPanel.shared
+        panel.showsAlpha = true
+        // 连续模式会在拖色时灌进几十个中间色，提交时再收一个。
+        panel.isContinuous = false
+        panel.color = AnnotateToolbar.nsColor(selectedColor)
+        ColorPanelRouter.shared.palette = self
+        panel.setTarget(ColorPanelRouter.shared)
+        panel.setAction(#selector(ColorPanelRouter.colorChanged(_:)))
+        panel.orderFront(nil)
+    }
+
+    @objc private func exportTapped() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = "yaosnap-palette.json"
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let url = panel.url,
+              let data = try? model.jsonData() else { return }
+        try? data.write(to: url, options: .atomic)
+    }
+
+    @objc private func importTapped() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url,
+              let data = try? Data(contentsOf: url),
+              let imported = PaletteModel.decode(data) else { return }
+        model = imported
+        rebuild()
+        onPaletteChange?(model)
+    }
+
+    @objc private func resetTapped() {
+        model.reset()
+        rebuild()
+        onPaletteChange?(model)
+    }
+}
+
+/// 色块拖拽：按下记录起点，松开时按落点换位。拖拽期间不重建视图，
+/// 避免正在接收鼠标事件的按钮被移出层级。
+@MainActor
+private final class PaletteSwatchButton: HoverButton {
+    weak var palette: ColorPaletteView?
+    var swatchIndex = 0
+    private var dragOrigin: NSPoint?
+    private var dragged = false
+
+    override func mouseDown(with event: NSEvent) {
+        dragOrigin = convert(event.locationInWindow, from: nil)
+        dragged = false
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let origin = dragOrigin else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        if hypot(point.x - origin.x, point.y - origin.y) > 3 {
+            dragged = true
+        }
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        defer {
+            dragOrigin = nil
+            dragged = false
+        }
+        if dragged {
+            palette?.dropSwatch(from: swatchIndex, at: event.locationInWindow)
+        } else {
+            performClick(nil)
+        }
+    }
+}
+
+/// NSColorPanel 是单例，target 固定在常驻 router 上，
+/// 弹层销毁后 weak palette 自动失效，不会留下悬空 target。
+@MainActor
+private final class ColorPanelRouter: NSObject {
+    static let shared = ColorPanelRouter()
+    weak var palette: ColorPaletteView?
+
+    @objc func colorChanged(_ sender: NSColorPanel) {
+        guard let converted = sender.color.usingColorSpace(.sRGB) else { return }
+        palette?.addCustomColor(RGBAColor(
+            r: converted.redComponent,
+            g: converted.greenComponent,
+            b: converted.blueComponent,
+            a: converted.alphaComponent
+        ))
     }
 }
 
