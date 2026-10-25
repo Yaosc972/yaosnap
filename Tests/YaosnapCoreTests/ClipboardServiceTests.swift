@@ -1,4 +1,5 @@
 import AppKit
+import ImageIO
 import Testing
 @testable import YaosnapCore
 
@@ -47,5 +48,31 @@ struct ClipboardServiceTests {
         #expect(ClipboardService.copyToPasteboard(image, scale: 2))
         let pasted = NSImage(pasteboard: NSPasteboard.general)
         #expect(pasted?.size == NSSize(width: 20, height: 10))
+    }
+
+    @Test func copyFileWritesPNGAndPutsFileURLOnPasteboard() throws {
+        let image = makeImage(width: 24, height: 12)
+        #expect(ClipboardService.copyFile(image, scale: 2))
+
+        let pasteboard = NSPasteboard.general
+        #expect(pasteboard.types?.contains(.fileURL) == true)
+
+        let objects = pasteboard.readObjects(
+            forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]
+        ) as? [NSURL]
+        let nsURL = try #require(objects?.first)
+        let url = nsURL as URL
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        #expect(url.isFileURL)
+        #expect(url.pathExtension == "png")
+
+        let data = try Data(contentsOf: url)
+        #expect(data.prefix(8) == Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]))
+
+        let source = try #require(CGImageSourceCreateWithData(data as CFData, nil))
+        let decoded = try #require(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        #expect(decoded.width == 24)
+        #expect(decoded.height == 12)
     }
 }
