@@ -74,6 +74,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self, selector: #selector(handleSnipShare(_:)), name: .snipShareRequested, object: nil)
         NotificationCenter.default.addObserver(
             self, selector: #selector(handleSnipSave(_:)), name: .snipSaveRequested, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(handleSnipTextRecognize(_:)), name: .snipTextRecognizeRequested, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(handleSnipBarcodeScan(_:)), name: .snipBarcodeScanRequested, object: nil)
         print("Yaosnap launched")
         settings = settingsStore.load()
         applyRuntimeSettings()
@@ -189,6 +193,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func handleSnipSave(_ notification: Notification) {
         snipController.savePendingImage(notification)
+    }
+
+    @objc private func handleSnipTextRecognize(_ notification: Notification) {
+        snipController.recognizeTextPending(notification)
+    }
+
+    @objc private func handleSnipBarcodeScan(_ notification: Notification) {
+        snipController.scanBarcodePending(notification)
     }
 
     private static func menuState(from controller: PinController) -> PinGroupMenuState {

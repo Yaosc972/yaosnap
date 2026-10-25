@@ -10,6 +10,9 @@ import YaosnapCore
 @MainActor
 final class ObserverWiring {
     let controller = SnipController()
+    /// 记录通知是否真的被接线，防止 AppDelegate 与 harness 同时漏注册同一类事件。
+    private(set) var textRecognizeRequests = 0
+    private(set) var barcodeScanRequests = 0
 
     init() {
         let center = NotificationCenter.default
@@ -17,12 +20,18 @@ final class ObserverWiring {
         center.addObserver(self, selector: #selector(committed(_:)), name: .snipCommitted, object: nil)
         center.addObserver(self, selector: #selector(copyRequested(_:)), name: .snipCopyRequested, object: nil)
         center.addObserver(self, selector: #selector(saveRequested(_:)), name: .snipSaveRequested, object: nil)
+        center.addObserver(
+            self, selector: #selector(textRecognizeRequested(_:)), name: .snipTextRecognizeRequested, object: nil)
+        center.addObserver(
+            self, selector: #selector(barcodeScanRequested(_:)), name: .snipBarcodeScanRequested, object: nil)
     }
 
     @objc private func escape(_ notification: Notification) { controller.cancel() }
     @objc private func committed(_ notification: Notification) { controller.commitSelection(notification) }
     @objc private func copyRequested(_ notification: Notification) { controller.copyPendingImage(notification) }
     @objc private func saveRequested(_ notification: Notification) { controller.savePendingImage(notification) }
+    @objc private func textRecognizeRequested(_ notification: Notification) { textRecognizeRequests += 1 }
+    @objc private func barcodeScanRequested(_ notification: Notification) { barcodeScanRequests += 1 }
 }
 
 @MainActor
@@ -921,6 +930,22 @@ final class Harness {
 
     // MARK: - 主流程
 
+    /// 工具条的提取文字与识别码走通知派发，接线漏注册时按钮点击毫无反应。
+    /// 这里只验证通知有接收者，识别本身由 TextRecognizer / BarcodeScanner 单测覆盖。
+    func runToolbarNotificationWiring() {
+        let wiring = ObserverWiring()
+        NotificationCenter.default.post(name: .snipTextRecognizeRequested, object: nil)
+        NotificationCenter.default.post(name: .snipBarcodeScanRequested, object: nil)
+        pump(0.1)
+        if wiring.textRecognizeRequests == 1, wiring.barcodeScanRequests == 1 {
+            pass("TOOLBAR-WIRING", "提取文字与识别码通知都有接收者")
+        } else {
+            fail(
+                "TOOLBAR-WIRING",
+                "通知未被接线 text=\(wiring.textRecognizeRequests) barcode=\(wiring.barcodeScanRequests)")
+        }
+    }
+
     func runAll() {
         if !ScreenCaptureService.hasPermission() {
             print("FATAL 屏幕录制权限缺失，无法执行验收")
@@ -936,6 +961,7 @@ final class Harness {
         runSave()
         runEscape()
         runActionBar()
+        runToolbarNotificationWiring()
         runMaskAndHover()
         runWhiteboardExport()
         runTransparentWhiteboardExport()
