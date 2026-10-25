@@ -35,7 +35,13 @@ struct TextRecognizerTests {
     }
 
     @Test func recognizesChineseAndDigits() {
-        let text = TextRecognizer.recognizeText(in: makeTextImage("测试文字 123"))
+        // Vision 首次调用要加载识别模型，冷启动偶尔返回空结果，重试几次再判定。
+        var text = ""
+        for _ in 0..<3 {
+            text = TextRecognizer.recognizeText(in: makeTextImage("测试文字 123"))
+            if !text.isEmpty { break }
+            Thread.sleep(forTimeInterval: 0.5)
+        }
         let compact = text.filter { !$0.isWhitespace }
         #expect(compact.contains("测试文字"), "识别结果: \(text)")
         #expect(compact.contains("123"), "识别结果: \(text)")
