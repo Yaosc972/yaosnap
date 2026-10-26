@@ -11,7 +11,9 @@ public final class HotkeyManager {
     }
 
     private var registrations: [UInt32: Registration] = [:]
-    private var nextID: UInt32 = 1
+    /// Carbon 热键 ID 在整个进程内唯一，多个 manager 实例必须共用同一序列，
+    /// 否则不同 manager 的同号热键会被对方的事件处理器当成自己的。
+    private static var nextID: UInt32 = 1
     private var eventHandler: EventHandlerRef?
     private var handlerInstalled = false
 
@@ -36,7 +38,12 @@ public final class HotkeyManager {
                     nil,
                     &hotKeyID
                 )
-                manager.registrations[hotKeyID.id]?.handler()
+                // 同一应用下可能有多个 manager 各装一个处理器，事件链在第一个返回 noErr 时停止。
+                // 没匹配到自己的热键时必须放行，否则会吞掉另一个 manager 的热键。
+                guard let registration = manager.registrations[hotKeyID.id] else {
+                    return OSStatus(eventNotHandledErr)
+                }
+                registration.handler()
                 return noErr
             },
             1,
@@ -68,8 +75,8 @@ public final class HotkeyManager {
     @discardableResult
     public func register(_ hotkey: Hotkey, handler: @escaping Handler) -> Bool {
         guard handlerInstalled else { return false }
-        let id = nextID
-        nextID += 1
+        let id = Self.nextID
+        Self.nextID += 1
         var ref: EventHotKeyRef?
         // signature 'yaos'
         let hotKeyID = EventHotKeyID(signature: OSType(0x79616F73), id: id)
