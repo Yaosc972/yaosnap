@@ -152,6 +152,7 @@ final class OverlayView: NSView {
         bar.onScanBarcode = { [weak self] in self?.requestBarcodeScan() }
         bar.onSave = { [weak self] in self?.requestSave() }
         bar.onQuickSave = { [weak self] in self?.requestSave(quick: true) }
+        bar.onPin = { [weak self] in self?.requestPin() }
         bar.onShare = { [weak self] in self?.requestShare() }
         bar.onCancel = { [weak self] in self?.requestCancel() }
         bar.isHidden = true

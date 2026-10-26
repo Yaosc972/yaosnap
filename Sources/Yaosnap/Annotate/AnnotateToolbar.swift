@@ -13,10 +13,12 @@ final class AnnotateToolbar: NSView {
     var onExtractText: (() -> Void)?
     var onScanBarcode: (() -> Void)?
     var onSave: (() -> Void)?
-    /// ⌘ + 保存按钮：写快捷保存目录。
+    /// ⇧ + 保存按钮：写快捷保存目录。
     var onQuickSave: (() -> Void)?
     var onShare: (() -> Void)?
     var onCancel: (() -> Void)?
+    /// 工具条「贴到屏幕」按钮，与中键走同一条路径。
+    var onPin: (() -> Void)?
 
     private enum Metrics {
         static let buttonSide: CGFloat = 30
@@ -53,6 +55,7 @@ final class AnnotateToolbar: NSView {
     private(set) var textButton: HoverButton!
     private(set) var barcodeButton: HoverButton!
     private(set) var saveButton: HoverButton!
+    private(set) var pinButton: HoverButton!
     private(set) var shareButton: HoverButton!
     private(set) var ratioLabel: NSTextField!
     private(set) var colorPopover: NSPopover?
@@ -212,6 +215,12 @@ final class AnnotateToolbar: NSView {
             action: #selector(saveTapped)
         )
         place(saveButton)
+        pinButton = makeHoverButton(
+            symbol: "pin",
+            title: "贴到屏幕",
+            action: #selector(pinTapped)
+        )
+        place(pinButton)
         shareButton = makeHoverButton(
             symbol: "square.and.arrow.up",
             title: "分享",
@@ -553,6 +562,7 @@ final class AnnotateToolbar: NSView {
     }
     @objc private func cancelTapped() { onCancel?() }
     @objc private func shareTapped() { onShare?() }
+    @objc private func pinTapped() { onPin?() }
 }
 
 /// 无边框图标按钮，带悬停高亮。工具条与弹层共用。

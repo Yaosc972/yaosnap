@@ -2211,8 +2211,7 @@ final class AnnotateHarness {
 
     /// 截图状态中键单击：把选区内容贴成置顶窗口，回调带选区点尺寸与 CG 全局左上角，
     /// 成功后写入历史并结束会话。
-    private func runPinFromOverlay() {
-        guard let (window, view) = beginSession("PIN-MOUSE") else { return }
+    private func runPinFromOverlay() {        guard let (window, view) = beginSession("PIN-MOUSE") else { return }
         drag(view, window: window, from: CGPoint(x: 150, y: 150), to: CGPoint(x: 650, y: 550))
         let selection = view.selectionRect
 
@@ -2273,6 +2272,41 @@ final class AnnotateHarness {
             return
         }
         pass("PIN-MOUSE", "中键贴图尺寸 \(Int(paste.pointSize.width))x\(Int(paste.pointSize.height))，位置 \(topLeft)，历史最新条目已更新，会话已结束")
+        endSession()
+    }
+
+    /// 工具条「贴到屏幕」按钮与中键共用同一条贴图路径。
+    private func runPinButton() {
+        guard let (window, view) = beginSession("PIN-BUTTON") else { return }
+        drag(view, window: window, from: CGPoint(x: 150, y: 150), to: CGPoint(x: 650, y: 550))
+
+        var pinned = false
+        controller.onPinImage = { _, _ in
+            pinned = true
+            return true
+        }
+        defer { controller.onPinImage = nil }
+
+        guard let bar = view.subviews.compactMap({ $0 as? AnnotateToolbar }).first,
+              let pinButton = bar.pinButton else {
+            fail("PIN-BUTTON", "工具条上找不到贴到屏幕按钮")
+            endSession()
+            return
+        }
+        guard pinButton.toolTip == "贴到屏幕" else {
+            fail("PIN-BUTTON", "按钮标题不符：\(pinButton.toolTip ?? "nil")")
+            endSession()
+            return
+        }
+        pinButton.performClick(nil)
+        pump(0.3)
+
+        guard pinned else {
+            fail("PIN-BUTTON", "点击贴到屏幕按钮未触发贴图回调")
+            endSession()
+            return
+        }
+        pass("PIN-BUTTON", "工具条贴到屏幕按钮触发贴图回调")
         endSession()
     }
 
@@ -3237,6 +3271,7 @@ final class AnnotateHarness {
         runArrowNudge()
         runWASDNudge()
         runPinFromOverlay()
+        runPinButton()
         runLineStyleDash()
         runArrowHeads()
         runShapeResizeHandle()
