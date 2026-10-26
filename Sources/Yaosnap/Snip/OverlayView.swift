@@ -153,6 +153,8 @@ final class OverlayView: NSView {
         bar.onSave = { [weak self] in self?.requestSave() }
         bar.onQuickSave = { [weak self] in self?.requestSave(quick: true) }
         bar.onPin = { [weak self] in self?.requestPin() }
+        bar.onUndo = { [weak self] in self?.undoLastAnnotation() }
+        bar.onRedo = { [weak self] in self?.redoLastAnnotation() }
         bar.onShare = { [weak self] in self?.requestShare() }
         bar.onCancel = { [weak self] in self?.requestCancel() }
         bar.isHidden = true
@@ -1282,7 +1284,15 @@ final class OverlayView: NSView {
         } else if case .selected = phase {
             phase = .selected(ids: remaining)
         }
+        refreshUndoButtons()
         needsDisplay = true
+    }
+
+    private func refreshUndoButtons() {
+        toolbar.updateUndoState(
+            canUndo: annotationHistory.canUndo,
+            canRedo: annotationHistory.canRedo
+        )
     }
 
     /// 文字缩放 / 旋转不进撤销栈，但一旦真的改变形状，旧的重做分支就失效。
@@ -1592,6 +1602,7 @@ final class OverlayView: NSView {
     private func pushUndoSnapshot() {
         guard let snapshot = currentSnapshot() else { return }
         annotationHistory.record(snapshot)
+        refreshUndoButtons()
     }
 
     private func isDraftValid(_ draft: Annotation) -> Bool {
@@ -1909,6 +1920,7 @@ final class OverlayView: NSView {
             return
         }
         toolbar.isHidden = false
+        refreshUndoButtons()
         toolbar.frame.origin = ToolbarPlacement.origin(
             toolbarSize: toolbar.frame.size,
             selection: selectionRect,

@@ -19,6 +19,8 @@ final class AnnotateToolbar: NSView {
     var onCancel: (() -> Void)?
     /// 工具条「贴到屏幕」按钮，与中键走同一条路径。
     var onPin: (() -> Void)?
+    var onUndo: (() -> Void)?
+    var onRedo: (() -> Void)?
 
     private enum Metrics {
         static let buttonSide: CGFloat = 30
@@ -57,6 +59,8 @@ final class AnnotateToolbar: NSView {
     private(set) var saveButton: HoverButton!
     private(set) var pinButton: HoverButton!
     private(set) var shareButton: HoverButton!
+    private(set) var undoButton: HoverButton!
+    private(set) var redoButton: HoverButton!
     private(set) var ratioLabel: NSTextField!
     private(set) var colorPopover: NSPopover?
     private(set) var penPopover: NSPopover?
@@ -125,6 +129,12 @@ final class AnnotateToolbar: NSView {
         ratioLabel.stringValue = ratio.title
     }
 
+    /// 撤销栈变化后同步按钮可用状态，无历史时按钮置灰。
+    func updateUndoState(canUndo: Bool, canRedo: Bool) {
+        undoButton.isEnabled = canUndo
+        redoButton.isEnabled = canRedo
+    }
+
     /// 切到选择工具。形状按钮全部取消高亮。
     func selectMode() {
         isSelectMode = true
@@ -183,6 +193,18 @@ final class AnnotateToolbar: NSView {
         place(backgroundButton)
         arrowHeadsButton = makeHoverButton(symbol: nil, title: "箭头", action: #selector(arrowHeadsTapped))
         place(arrowHeadsButton)
+        undoButton = makeHoverButton(
+            symbol: "arrow.uturn.backward",
+            title: "撤销",
+            action: #selector(undoTapped)
+        )
+        place(undoButton)
+        redoButton = makeHoverButton(
+            symbol: "arrow.uturn.forward",
+            title: "重做",
+            action: #selector(redoTapped)
+        )
+        place(redoButton)
         separator()
         ratioLabel = NSTextField(labelWithString: initialAspectRatio.title)
         ratioLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
@@ -563,6 +585,8 @@ final class AnnotateToolbar: NSView {
     @objc private func cancelTapped() { onCancel?() }
     @objc private func shareTapped() { onShare?() }
     @objc private func pinTapped() { onPin?() }
+    @objc private func undoTapped() { onUndo?() }
+    @objc private func redoTapped() { onRedo?() }
 }
 
 /// 无边框图标按钮，带悬停高亮。工具条与弹层共用。

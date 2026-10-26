@@ -953,8 +953,7 @@ final class AnnotateHarness {
     }
 
     /// ⌘Z 撤销最后一笔；空栈时 beep 不崩溃。
-    private func runUndo() {
-        guard let (window, view) = beginSession("UNDO") else { return }
+    private func runUndo() {        guard let (window, view) = beginSession("UNDO") else { return }
         drag(view, window: window, from: CGPoint(x: 150, y: 150), to: CGPoint(x: 750, y: 600))
         let selection = view.selectionRect
         press(view, window: window, path: [
@@ -989,6 +988,46 @@ final class AnnotateHarness {
         } else {
             fail("UNDO", "空栈 ⌘Z 后状态异常 selection=\(view.selectionRect)")
         }
+        endSession()
+    }
+
+    /// 工具条撤销 / 重做按钮：点击生效，空栈时置灰。
+    private func runUndoRedoButtons() {
+        guard let (window, view) = beginSession("UNDO-BUTTONS") else { return }
+        drag(view, window: window, from: CGPoint(x: 150, y: 150), to: CGPoint(x: 750, y: 600))
+        guard let bar = view.subviews.compactMap({ $0 as? AnnotateToolbar }).first else {
+            fail("UNDO-BUTTONS", "工具条缺失")
+            endSession()
+            return
+        }
+        guard !bar.undoButton.isEnabled, !bar.redoButton.isEnabled else {
+            fail("UNDO-BUTTONS", "空历史时撤销与重做应置灰")
+            endSession()
+            return
+        }
+        let selection = view.selectionRect
+        press(view, window: window, path: [
+            CGPoint(x: selection.minX + 40, y: selection.minY + 40),
+            CGPoint(x: selection.minX + 200, y: selection.minY + 120),
+        ])
+        guard bar.undoButton.isEnabled, !bar.redoButton.isEnabled else {
+            fail("UNDO-BUTTONS", "画一笔后撤销应可用、重做应置灰")
+            endSession()
+            return
+        }
+        bar.undoButton.performClick(nil)
+        guard view.annotations.isEmpty else {
+            fail("UNDO-BUTTONS", "点撤销后应清空，实际 \(view.annotations.count)")
+            endSession()
+            return
+        }
+        bar.redoButton.performClick(nil)
+        guard view.annotations.count == 1 else {
+            fail("UNDO-BUTTONS", "点重做后应恢复 1 笔，实际 \(view.annotations.count)")
+            endSession()
+            return
+        }
+        pass("UNDO-BUTTONS", "按钮撤销与重做生效，空栈时置灰")
         endSession()
     }
 
@@ -3236,6 +3275,7 @@ final class AnnotateHarness {
         runShapeCopies()
         runToolStyleMemory()
         runUndo()
+        runUndoRedoButtons()
         runRedo()
         runQuickSave()
         runQuickSaveShortcut()
