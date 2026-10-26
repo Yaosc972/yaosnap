@@ -448,6 +448,48 @@ final class PinHarness {
         pump()
     }
 
+    private func runContextMenu() {
+        guard let window = pinFreshWindow(), let view = window.contentView else {
+            fail("PIN-MENU", "没有贴图窗口")
+            return
+        }
+        guard let event = NSEvent.mouseEvent(
+            with: .rightMouseDown,
+            location: CGPoint(x: 10, y: 10),
+            modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 0,
+            clickCount: 1,
+            pressure: 1
+        ), let menu = view.menu(for: event) else {
+            fail("PIN-MENU", "右键菜单未生成")
+            window.close()
+            return
+        }
+        let titles = menu.items.map(\.title)
+        let expected = [
+            "复制图像", "图像另存为…", "窗口阴影", "缩放", "图像处理",
+            "裁剪", "粘贴", "移动到分组", "关闭", "销毁",
+        ]
+        let missing = expected.filter { !titles.contains($0) }
+        guard missing.isEmpty else {
+            fail("PIN-MENU", "缺少菜单项 \(missing)，实际 \(titles)")
+            window.close()
+            return
+        }
+        let effects = menu.items.first { $0.title == "图像处理" }?.submenu?.items.map(\.title) ?? []
+        guard effects.contains("向左旋转"), effects.contains("向右旋转"),
+              effects.contains("水平翻转"), effects.contains("垂直翻转") else {
+            fail("PIN-MENU", "图像处理子菜单不全 \(effects)")
+            window.close()
+            return
+        }
+        pass("PIN-MENU", "右键菜单 \(titles.count) 项，图像处理子菜单四项齐全")
+        window.close()
+    }
+
     private func runImageEffects() {
         guard let window = pinFreshWindow(), let view = window.contentView,
               let original = sampledPixel(of: window, atRelative: CGPoint(x: 0.5, y: 0.5)),
@@ -647,6 +689,75 @@ final class PinHarness {
         } else {
             fail("PIN-RESTORE", "恢复后 frame \(restored.frame) transform \(restored.transform)")
         }
+    }
+
+    private func runPinHistory() {
+        controller.setRestoreCapacity(5)
+        var historyFrames: [CGRect] = []
+        for size in [(40, 30), (60, 40), (80, 50)] {
+            putImage(width: size.0, height: size.1)
+            guard controller.pinFromPasteboard(), let pin = allPinWindows().last else {
+                fail("PIN-HISTORY", "准备历史贴图失败 size=\(size)")
+                return
+            }
+            historyFrames.append(pin.frame)
+            pin.close()
+            pump()
+        }
+        guard historyFrames.count == 3 else {
+            fail("PIN-HISTORY", "历史准备不足 \(historyFrames.count)")
+            return
+        }
+
+        putImage(width: 100, height: 60)
+        guard controller.pinFromPasteboard(), let host = allPinWindows().last else {
+            fail("PIN-HISTORY", "翻页载体贴图失败")
+            return
+        }
+        pump()
+        let hostFrame = host.frame
+
+        guard let forward = keyEvent(keyCode: 47, characters: ".", window: host) else {
+            fail("PIN-HISTORY", "构造句号事件失败")
+            host.close()
+            return
+        }
+        host.contentView?.keyDown(with: forward)
+        pump()
+        guard host.frame == historyFrames[0] else {
+            fail("PIN-HISTORY", "句号后 frame \(host.frame)，期望最早一张 \(historyFrames[0])")
+            host.close()
+            return
+        }
+
+        guard let forwardAgain = keyEvent(keyCode: 47, characters: ".", window: host) else {
+            fail("PIN-HISTORY", "构造第二次句号事件失败")
+            host.close()
+            return
+        }
+        host.contentView?.keyDown(with: forwardAgain)
+        pump()
+        guard host.frame == historyFrames[1] else {
+            fail("PIN-HISTORY", "再按句号后 frame \(host.frame)，期望第二张 \(historyFrames[1])")
+            host.close()
+            return
+        }
+
+        guard let back = keyEvent(keyCode: 43, characters: ",", window: host) else {
+            fail("PIN-HISTORY", "构造逗号事件失败")
+            host.close()
+            return
+        }
+        host.contentView?.keyDown(with: back)
+        pump()
+        guard host.frame == historyFrames[0] else {
+            fail("PIN-HISTORY", "逗号后 frame \(host.frame)，期望回到最早一张 \(historyFrames[0])")
+            host.close()
+            return
+        }
+        pass("PIN-HISTORY", "句号与逗号在历史间翻页，窗口位置随历史项还原")
+        host.close()
+        controller.setRestoreCapacity(1)
     }
 
     private func runPassthrough() {
@@ -878,11 +989,13 @@ final class PinHarness {
         runZoom()
         runRotate()
         runOpacity()
+        runContextMenu()
         runImageEffects()
         runCrop()
         runMiddleReset()
         runControlW()
         runRestoreClosed()
+        runPinHistory()
         runPassthrough()
         runGroupSwitch()
         runSolo()

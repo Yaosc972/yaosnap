@@ -56,6 +56,11 @@ public struct PinRestoreList<Entry> {
     public mutating func takeMostRecent() -> Entry? {
         entries.popLast()
     }
+
+    /// 历史翻页用：按索引读取但不消费，0 是最早关闭的一张。
+    public func entry(at index: Int) -> Entry? {
+        entries.indices.contains(index) ? entries[index] : nil
+    }
 }
 
 public enum PinHitTest {

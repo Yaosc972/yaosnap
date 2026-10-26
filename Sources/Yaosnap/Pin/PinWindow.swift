@@ -5,7 +5,7 @@ import YaosnapCore
 @MainActor
 final class PinWindow: NSWindow {
     private let pinView = PinContentView(frame: .zero)
-    let pasteImage: PasteImage
+    private(set) var pasteImage: PasteImage
     /// 控制器分配的身份，分组与 Solo 只按它记账，不用窗口对象。
     let pinID: Int
     /// 多选与整组拖动由控制器协调，窗口只把交互意图转过去。
@@ -18,7 +18,7 @@ final class PinWindow: NSWindow {
     /// Shift+Esc 销毁的贴图不进恢复列表，普通关闭才进。
     private(set) var canRestore = true
     /// 初始适配到屏幕 80% 后的尺寸。transform.scale 从 1 起，首次变换才不会跳回原图尺寸。
-    let basePointSize: CGSize
+    private(set) var basePointSize: CGSize
 
     /// 每次裁剪前的保留区域，⌘Z 逐级退回。原始的 pasteImage 始终未改动。
     private var cropHistory: [CGRect?] = []
@@ -115,10 +115,60 @@ final class PinWindow: NSWindow {
         makeFirstResponder(pinView)
     }
 
+    /// 历史翻页：把窗口内容、变换、位置一次性换成历史里的另一张。
+    func applyHistory(_ entry: PinRestoreEntry) {
+        pasteImage = entry.image
+        basePointSize = entry.basePointSize
+        transform = entry.transform
+        alphaValue = entry.transform.opacity
+        imageCache = nil
+        refreshImage()
+        pinView.transform = entry.transform
+        pinView.needsDisplay = true
+        setFrame(entry.frame, display: true)
+        invalidateCursorRects(for: pinView)
+    }
+
+    /// 逗号看更早关闭的贴图，句号看更新的。
+    func stepHistory(by direction: Int) {
+        pinController?.stepHistory(by: direction, in: self)
+    }
+
     /// 销毁：关闭且不留下可恢复的副本。
     func destroy() {
         canRestore = false
         close()
+    }
+
+    /// 当前视觉状态（裁剪、滤镜、旋转、翻转）的位图，供复制与另存为使用。
+    func flattenedImage() -> CGImage? {
+        guard let base = imageCache?.image else { return nil }
+        let turns = transform.quarterTurns
+        let flipH = transform.flipHorizontal
+        let flipV = transform.flipVertical
+        guard turns != 0 || flipH || flipV else { return base }
+        let rotated = turns % 2 != 0
+        let outWidth = rotated ? base.height : base.width
+        let outHeight = rotated ? base.width : base.height
+        guard let context = CGContext(
+            data: nil,
+            width: outWidth,
+            height: outHeight,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: base.colorSpace ?? CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        context.translateBy(x: CGFloat(outWidth) / 2, y: CGFloat(outHeight) / 2)
+        context.rotate(by: CGFloat(turns) * .pi / 2)
+        context.scaleBy(x: flipH ? -1 : 1, y: flipV ? -1 : 1)
+        context.draw(base, in: CGRect(
+            x: -CGFloat(base.width) / 2,
+            y: -CGFloat(base.height) / 2,
+            width: CGFloat(base.width),
+            height: CGFloat(base.height)
+        ))
+        return context.makeImage()
     }
 
     override var canBecomeKey: Bool { true }
@@ -314,6 +364,72 @@ private final class PinContentView: NSView {
     private var cropSelection: CGRect?
 
     private let hotZone: CGFloat = 8
+    private var hoverTracking: NSTrackingArea?
+    private lazy var toolbar = makeToolbar()
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard window != nil, toolbar.superview == nil else { return }
+        addSubview(toolbar)
+        toolbar.isHidden = true
+        needsLayout = true
+    }
+
+    override func layout() {
+        super.layout()
+        let size = toolbar.intrinsicContentSize
+        toolbar.frame = CGRect(
+            x: floor((bounds.width - size.width) / 2),
+            y: bounds.height - size.height - 2,
+            width: size.width,
+            height: size.height
+        )
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        needsLayout = true
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverTracking { removeTrackingArea(hoverTracking) }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        hoverTracking = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        toolbar.updateStyle(scale: transform.scale)
+        toolbar.isHidden = false
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        toolbar.isHidden = true
+    }
+
+    private func makeToolbar() -> PinToolbar {
+        let bar = PinToolbar()
+        bar.onZoomOut = { [weak self] in self?.pinWindow?.adjustScale(by: -0.1) }
+        bar.onZoomIn = { [weak self] in self?.pinWindow?.adjustScale(by: 0.1) }
+        bar.onRotateLeft = { [weak self] in self?.pinWindow?.rotate(byQuarterTurns: -1) }
+        bar.onRotateRight = { [weak self] in self?.pinWindow?.rotate(byQuarterTurns: 1) }
+        bar.onFlipHorizontal = { [weak self] in self?.pinWindow?.toggleFlipHorizontal() }
+        bar.onFlipVertical = { [weak self] in self?.pinWindow?.toggleFlipVertical() }
+        bar.onGrayscale = { [weak self] in self?.pinWindow?.toggleGrayscale() }
+        bar.onInverted = { [weak self] in self?.pinWindow?.toggleInverted() }
+        bar.onCopy = { [weak self] in self?.copyImageFromMenu() }
+        bar.onSave = { [weak self] in self?.saveImageFromMenu() }
+        bar.onClose = { [weak self] in self?.pinWindow?.close() }
+        return bar
+    }
+
+    private var pinWindow: PinWindow? { window as? PinWindow }
 
     /// 棋盘格瓦片按模式缓存，颜色只有四种组合，重复构造 CGImage 是纯浪费。
     private static var checkerTiles: [PinBackground: CGImage] = [:]
@@ -567,23 +683,106 @@ private final class PinContentView: NSView {
     override func menu(for event: NSEvent) -> NSMenu? {
         guard let pinWindow = window as? PinWindow else { return nil }
         let menu = NSMenu()
-        menu.addItem(effectItem(title: "灰度", isOn: transform.isGrayscale, action: #selector(toggleGrayscaleFromMenu)))
-        menu.addItem(effectItem(title: "反色", isOn: transform.isInverted, action: #selector(toggleInvertedFromMenu)))
 
+        menu.addItem(actionItem("复制图像", #selector(copyImageFromMenu)))
+        menu.addItem(actionItem("图像另存为…", #selector(saveImageFromMenu)))
+        menu.addItem(.separator())
+
+        let shadow = actionItem("窗口阴影", #selector(toggleShadowFromMenu))
+        shadow.state = pinWindow.hasShadow ? .on : .off
+        menu.addItem(shadow)
+        menu.addItem(.separator())
+
+        let scaleItem = NSMenuItem(title: "缩放", action: nil, keyEquivalent: "")
+        scaleItem.submenu = makeScaleMenu(current: pinWindow.transform.scale)
+        menu.addItem(scaleItem)
+
+        let effectsItem = NSMenuItem(title: "图像处理", action: nil, keyEquivalent: "")
+        effectsItem.submenu = makeEffectsMenu(pinWindow: pinWindow)
+        menu.addItem(effectsItem)
+
+        let crop = actionItem("裁剪", #selector(beginCropFromMenu))
+        crop.isEnabled = !pinWindow.transform.isThumbnail
+        menu.addItem(crop)
+        menu.addItem(.separator())
+
+        menu.addItem(actionItem("粘贴", #selector(pasteFromMenu)))
+
+        if let controller = pinWindow.pinController {
+            let move = NSMenuItem(title: "移动到分组", action: nil, keyEquivalent: "")
+            move.submenu = makeGroupMenu(controller: controller, pinID: pinWindow.pinID)
+            menu.addItem(move)
+            if controller.selectedPinCount > 0 {
+                menu.addItem(actionItem("选中的贴图加入当前分组", #selector(joinSelectionFromMenu)))
+            }
+        }
+        menu.addItem(.separator())
+
+        menu.addItem(actionItem("关闭", #selector(closeFromMenu)))
+        menu.addItem(actionItem("销毁", #selector(destroyFromMenu)))
+        menu.addItem(.separator())
+
+        let size = NSMenuItem(
+            title: "\(Int(pinWindow.frame.width)) × \(Int(pinWindow.frame.height))",
+            action: nil,
+            keyEquivalent: ""
+        )
+        size.isEnabled = false
+        menu.addItem(size)
+        return menu
+    }
+
+    private func actionItem(_ title: String, _ action: Selector) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        item.target = self
+        return item
+    }
+
+    private func makeScaleMenu(current: CGFloat) -> NSMenu {
+        let menu = NSMenu()
+        for percent in [50, 100, 200] {
+            let value = CGFloat(percent) / 100
+            let item = actionItem("\(percent)%", #selector(scaleSelected(_:)))
+            item.representedObject = value
+            item.state = abs(current - value) < 0.01 ? .on : .off
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        menu.addItem(actionItem("适应屏幕", #selector(fitToScreenFromMenu)))
+        return menu
+    }
+
+    private func makeEffectsMenu(pinWindow: PinWindow) -> NSMenu {
+        let menu = NSMenu()
+        menu.addItem(actionItem("向左旋转", #selector(rotateLeftFromMenu)))
+        menu.addItem(actionItem("向右旋转", #selector(rotateRightFromMenu)))
+        menu.addItem(actionItem("水平翻转", #selector(flipHorizontalFromMenu)))
+        menu.addItem(actionItem("垂直翻转", #selector(flipVerticalFromMenu)))
+        menu.addItem(.separator())
+        menu.addItem(effectItem(
+            title: "灰度",
+            isOn: pinWindow.transform.isGrayscale,
+            action: #selector(toggleGrayscaleFromMenu)
+        ))
+        menu.addItem(effectItem(
+            title: "反色",
+            isOn: pinWindow.transform.isInverted,
+            action: #selector(toggleInvertedFromMenu)
+        ))
+        menu.addItem(.separator())
         let backgroundItem = NSMenuItem(title: "背景", action: nil, keyEquivalent: "")
         backgroundItem.submenu = makeBackgroundMenu(current: pinWindow.background)
         menu.addItem(backgroundItem)
+        return menu
+    }
 
-        menu.addItem(.separator())
-        let crop = NSMenuItem(title: "裁剪", action: #selector(beginCropFromMenu), keyEquivalent: "")
-        crop.target = self
-        crop.isEnabled = !transform.isThumbnail
-        menu.addItem(crop)
-
-        if let controller = pinWindow.pinController, controller.selectedPinCount > 0 {
-            let join = NSMenuItem(title: "选中的贴图加入当前分组", action: #selector(joinSelectionFromMenu), keyEquivalent: "")
-            join.target = self
-            menu.addItem(join)
+    private func makeGroupMenu(controller: PinController, pinID: Int) -> NSMenu {
+        let menu = NSMenu()
+        for group in controller.pinGroups {
+            let item = actionItem(group.name, #selector(groupSelected(_:)))
+            item.representedObject = group.id
+            item.state = group.id == controller.activePinGroupID ? .on : .off
+            menu.addItem(item)
         }
         return menu
     }
@@ -627,6 +826,83 @@ private final class PinContentView: NSView {
 
     @objc private func beginCropFromMenu() {
         beginCrop()
+    }
+
+    @objc private func copyImageFromMenu() {
+        guard let pinWindow = window as? PinWindow,
+              let image = pinWindow.flattenedImage() else {
+            NSSound.beep()
+            return
+        }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.writeObjects([NSImage(cgImage: image, size: pinWindow.pasteImage.pointSize)])
+    }
+
+    @objc private func saveImageFromMenu() {
+        guard let pinWindow = window as? PinWindow,
+              let image = pinWindow.flattenedImage() else {
+            NSSound.beep()
+            return
+        }
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = ImageOutput.defaultFileName()
+        panel.canCreateDirectories = true
+        panel.begin { response in
+            guard response == .OK, let url = panel.url,
+                  let data = ImageOutput.pngData(from: image) else { return }
+            try? data.write(to: url)
+        }
+    }
+
+    @objc private func toggleShadowFromMenu() {
+        guard let pinWindow = window as? PinWindow else { return }
+        pinWindow.hasShadow.toggle()
+    }
+
+    @objc private func scaleSelected(_ sender: NSMenuItem) {
+        guard let value = sender.representedObject as? CGFloat else { return }
+        (window as? PinWindow)?.setScale(value)
+    }
+
+    @objc private func fitToScreenFromMenu() {
+        guard let pinWindow = window as? PinWindow else { return }
+        pinWindow.setScale(1)
+        pinWindow.clampToVisibleFrame()
+    }
+
+    @objc private func rotateLeftFromMenu() {
+        (window as? PinWindow)?.rotate(byQuarterTurns: -1)
+    }
+
+    @objc private func rotateRightFromMenu() {
+        (window as? PinWindow)?.rotate(byQuarterTurns: 1)
+    }
+
+    @objc private func flipHorizontalFromMenu() {
+        (window as? PinWindow)?.toggleFlipHorizontal()
+    }
+
+    @objc private func flipVerticalFromMenu() {
+        (window as? PinWindow)?.toggleFlipVertical()
+    }
+
+    @objc private func pasteFromMenu() {
+        (window as? PinWindow)?.pinController?.pinFromPasteboard()
+    }
+
+    @objc private func groupSelected(_ sender: NSMenuItem) {
+        guard let groupID = sender.representedObject as? Int,
+              let pinWindow = window as? PinWindow else { return }
+        pinWindow.pinController?.assign(pinID: pinWindow.pinID, toGroup: groupID)
+    }
+
+    @objc private func closeFromMenu() {
+        (window as? PinWindow)?.close()
+    }
+
+    @objc private func destroyFromMenu() {
+        (window as? PinWindow)?.destroy()
     }
 
     override func otherMouseDown(with event: NSEvent) {
@@ -710,6 +986,10 @@ private final class PinContentView: NSView {
             pinWindow.cycleBackground()
         case "c":
             beginCrop()
+        case ",":
+            pinWindow.stepHistory(by: -1)
+        case ".":
+            pinWindow.stepHistory(by: 1)
         default:
             super.keyDown(with: event)
         }

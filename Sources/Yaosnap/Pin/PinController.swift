@@ -6,6 +6,8 @@ import YaosnapCore
 final class PinController: NSObject, NSWindowDelegate {
     private var pinned: [PinWindow] = []
     private var restoreList: PinRestoreList<PinRestoreEntry>
+    /// 逗号句号翻历史时的当前位置，nil 表示窗口显示的不是历史项。
+    private var historyCursor: Int?
     private var lastPinned: PasteImage?
     private var groups = PinBoard()
     private var nextPinID = 1
@@ -133,6 +135,15 @@ final class PinController: NSObject, NSWindowDelegate {
         // applyVisibility 只显示激活组，顺带清掉多选集合。
         applyVisibility()
         print("[pin] selection joined group=\(groups.activeGroupID) count=\(ids.count)")
+        return true
+    }
+
+    /// 把单个贴图移到指定分组，右键菜单「移动到分组」用。
+    @discardableResult
+    func assign(pinID: Int, toGroup groupID: Int) -> Bool {
+        guard groups.group(id: groupID) != nil else { return false }
+        groups.assign(pinID: pinID, toGroup: groupID)
+        applyVisibility()
         return true
     }
 
@@ -358,6 +369,7 @@ final class PinController: NSObject, NSWindowDelegate {
 
     private func present(_ image: PasteImage, on screen: NSScreen, at topLeft: CGPoint?) {
         lastPinned = image
+        historyCursor = nil
         // 贴一张新图是想看到它：Solo 退出并把原可见集合还回去。
         if groups.soloPinID != nil {
             groups.endSolo()
@@ -379,7 +391,22 @@ final class PinController: NSObject, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    /// 逗号看更早关闭的一张，句号看更新的。只换当前窗口，不动恢复列表。
+    func stepHistory(by direction: Int, in window: PinWindow) {
+        guard restoreList.count > 0 else {
+            NSSound.beep()
+            return
+        }
+        let base = historyCursor ?? (direction > 0 ? -1 : restoreList.count)
+        let target = min(max(base + direction, 0), restoreList.count - 1)
+        guard let entry = restoreList.entry(at: target) else { return }
+        historyCursor = target
+        window.applyHistory(entry)
+        print("[pin] history index=\(target) count=\(restoreList.count)")
+    }
+
     private func restore(_ entry: PinRestoreEntry) {
+        historyCursor = nil
         lastPinned = entry.image
         if groups.soloPinID != nil {
             groups.endSolo()
