@@ -39,6 +39,7 @@ final class AnnotateObserverWiring {
         center.addObserver(self, selector: #selector(textRequested(_:)), name: .snipTextRecognizeRequested, object: nil)
         center.addObserver(self, selector: #selector(barcodeRequested(_:)), name: .snipBarcodeScanRequested, object: nil)
         center.addObserver(self, selector: #selector(saveRequested(_:)), name: .snipSaveRequested, object: nil)
+        center.addObserver(self, selector: #selector(pinRequested(_:)), name: .snipPinRequested, object: nil)
     }
 
     @objc private func escape(_ notification: Notification) { controller.cancel() }
@@ -47,6 +48,7 @@ final class AnnotateObserverWiring {
     @objc private func textRequested(_ notification: Notification) { controller.recognizeTextPending(notification) }
     @objc private func barcodeRequested(_ notification: Notification) { controller.scanBarcodePending(notification) }
     @objc private func saveRequested(_ notification: Notification) { controller.savePendingImage(notification) }
+    @objc private func pinRequested(_ notification: Notification) { controller.pinPendingImage(notification) }
 }
 
 @MainActor
@@ -1915,19 +1917,34 @@ final class AnnotateHarness {
             endSession()
             return
         }
+        // Snipaste 语义：1/2 相对降/升一档（到边界不动），5 直接选档。
+        let start = bar.currentStyle.pen.rawValue
+        keyDown(18, characters: "1", in: window, view: view)
+        guard bar.currentStyle.pen.rawValue == start - 1 else {
+            fail("DIGIT-PEN", "数字键 1 应降一档，\(start) → \(bar.currentStyle.pen.rawValue)")
+            endSession()
+            return
+        }
+        keyDown(18, characters: "1", in: window, view: view)
         keyDown(18, characters: "1", in: window, view: view)
         guard bar.currentStyle.pen == .p1 else {
-            fail("DIGIT-PEN", "数字键 1 应选 p1，实际 \(bar.currentStyle.pen)")
+            fail("DIGIT-PEN", "连续按 1 应钳制在 p1，实际 \(bar.currentStyle.pen)")
+            endSession()
+            return
+        }
+        keyDown(19, characters: "2", in: window, view: view)
+        guard bar.currentStyle.pen.rawValue == 2 else {
+            fail("DIGIT-PEN", "数字键 2 应升一档，实际 \(bar.currentStyle.pen)")
             endSession()
             return
         }
         keyDown(23, characters: "5", in: window, view: view)
         guard bar.currentStyle.pen == .p5 else {
-            fail("DIGIT-PEN", "数字键 5 应选 p5，实际 \(bar.currentStyle.pen)")
+            fail("DIGIT-PEN", "数字键 5 应直接选 p5，实际 \(bar.currentStyle.pen)")
             endSession()
             return
         }
-        pass("DIGIT-PEN", "数字键 1/5 切换笔尖档位")
+        pass("DIGIT-PEN", "数字键 1/2 相对调档并钳制边界，5 直接选 p5")
         endSession()
     }
 
@@ -2135,6 +2152,127 @@ final class AnnotateHarness {
         }
 
         pass("ARROW-NUDGE", "方向键平移、Ctrl 扩大、Shift 缩小均按 1pt 生效")
+        endSession()
+    }
+
+    /// 按住左键 + W A S D 与方向键同一套调整语义；松开左键恢复光标移动。
+    /// 按压状态直接置位（同 module），selecting 拖拽相位不在本用例范围。
+    private func runWASDNudge() {
+        guard let (window, view) = beginSession("WASD-NUDGE") else { return }
+        drag(view, window: window, from: CGPoint(x: 200, y: 200), to: CGPoint(x: 700, y: 600))
+
+        view.isLeftButtonDown = true
+        defer { view.isLeftButtonDown = false }
+
+        let before = view.selectionRect
+        keyDown(13, characters: "w", in: window, view: view)
+        let afterMove = view.selectionRect
+        guard afterMove == CGRect(
+            x: before.minX, y: before.minY + 1, width: before.width, height: before.height
+        ) else {
+            fail("WASD-NUDGE", "按住左键 W 后 \(afterMove)，期望 \(before) 上移 1pt")
+            endSession()
+            return
+        }
+
+        let beforeExpand = view.selectionRect
+        keyDown(13, characters: "w", in: window, view: view, modifierFlags: .control)
+        guard view.selectionRect.height == beforeExpand.height + 1 else {
+            fail("WASD-EXPAND", "Control+W 后 \(view.selectionRect)，期望高度 +1")
+            endSession()
+            return
+        }
+
+        let beforeShrink = view.selectionRect
+        keyDown(13, characters: "w", in: window, view: view, modifierFlags: .shift)
+        guard view.selectionRect == CGRect(
+            x: beforeShrink.minX,
+            y: beforeShrink.minY,
+            width: beforeShrink.width,
+            height: beforeShrink.height - 1
+        ) else {
+            fail("WASD-SHRINK", "Shift+W 后 \(view.selectionRect)，期望高度 -1")
+            endSession()
+            return
+        }
+
+        view.isLeftButtonDown = false
+        let beforeCursor = view.selectionRect
+        keyDown(13, characters: "w", in: window, view: view)
+        guard view.selectionRect == beforeCursor else {
+            fail("WASD-CURSOR", "松开左键后 W 不应再动选区 \(view.selectionRect)")
+            endSession()
+            return
+        }
+
+        pass("WASD-NUDGE", "按住左键 WASD 平移 / Control 扩大 / Shift 缩小，松开恢复光标模式")
+        endSession()
+    }
+
+    /// 截图状态中键单击：把选区内容贴成置顶窗口，回调带选区点尺寸与 CG 全局左上角，
+    /// 成功后写入历史并结束会话。
+    private func runPinFromOverlay() {
+        guard let (window, view) = beginSession("PIN-MOUSE") else { return }
+        drag(view, window: window, from: CGPoint(x: 150, y: 150), to: CGPoint(x: 650, y: 550))
+        let selection = view.selectionRect
+
+        var pinnedPaste: PasteImage?
+        var pinnedTopLeft: CGPoint?
+        controller.onPinImage = { paste, topLeft in
+            pinnedPaste = paste
+            pinnedTopLeft = topLeft
+            return true
+        }
+        defer { controller.onPinImage = nil }
+
+        // NSEvent.mouseEvent 构造的 otherMouseDown buttonNumber 是 0，真实中键是 2，
+        // 用 CGEvent 的 center 键构造才能走生产代码的中键分支。
+        let cgDown = CGEvent(
+            mouseEventSource: nil, mouseType: .otherMouseDown,
+            mouseCursorPosition: CGPoint(x: 400, y: 300), mouseButton: .center
+        )!
+        guard let down = NSEvent(cgEvent: cgDown) else {
+            fail("PIN-MOUSE", "无法构造中键事件")
+            endSession()
+            return
+        }
+        view.otherMouseDown(with: down)
+        pump(0.4)
+
+        guard let paste = pinnedPaste, let topLeft = pinnedTopLeft else {
+            fail("PIN-MOUSE", "中键未触发贴图回调")
+            endSession()
+            return
+        }
+        guard paste.pointSize == CGSize(width: selection.width, height: selection.height) else {
+            fail("PIN-MOUSE", "贴图点尺寸 \(paste.pointSize) 与选区 \(selection.size) 不符")
+            endSession()
+            return
+        }
+        // 选区 CG 全局左上角 = toGlobalRect 的原点（主屏左上原点，y 向下）。
+        let expectedTopLeft = RectMath.toGlobalRect(
+            viewRect: selection,
+            displayBounds: view.shot.bounds,
+            viewHeight: view.bounds.height
+        ).origin
+        guard abs(topLeft.x - expectedTopLeft.x) < 0.5, abs(topLeft.y - expectedTopLeft.y) < 0.5 else {
+            fail("PIN-MOUSE", "贴图位置 \(topLeft) 偏离选区全局左上角 \(expectedTopLeft)")
+            endSession()
+            return
+        }
+        guard visibleOverlayWindows.isEmpty else {
+            fail("PIN-MOUSE", "贴图后覆盖层应全部消失")
+            endSession()
+            return
+        }
+        // 历史容量 10 已满时新增会把尾部挤出，条数不变，改验最新条目就是这次贴图。
+        guard let latest = controller.historySnapshot.first,
+              latest.displaySize == CGSize(width: selection.width, height: selection.height) else {
+            fail("PIN-MOUSE", "贴图后历史最新条目应是本次选区，实际 \(controller.historySnapshot.first?.displaySize ?? .zero)")
+            endSession()
+            return
+        }
+        pass("PIN-MOUSE", "中键贴图尺寸 \(Int(paste.pointSize.width))x\(Int(paste.pointSize.height))，位置 \(topLeft)，历史最新条目已更新，会话已结束")
         endSession()
     }
 
@@ -2576,7 +2714,7 @@ final class AnnotateHarness {
         endSession()
     }
 
-    /// ⌘ + 保存按钮：不弹面板，直接写注入的快捷保存目录。
+    /// ⇧ + 保存按钮：不弹面板，直接写注入的快捷保存目录。
     private func runQuickSave() {
         guard let (window, view) = beginSession("QUICKSAVE") else { return }
         drag(view, window: window, from: CGPoint(x: 150, y: 150), to: CGPoint(x: 750, y: 600))
@@ -2593,7 +2731,7 @@ final class AnnotateHarness {
             try? FileManager.default.removeItem(at: directory)
         }
         controller.quickSaveDirectory = directory
-        saveButton.currentModifiers = { [.command] }
+        saveButton.currentModifiers = { [.shift] }
         saveButton.performClick(nil)
         pump(0.4)
 
@@ -2604,7 +2742,32 @@ final class AnnotateHarness {
             endSession()
             return
         }
-        pass("QUICKSAVE", "⌘ 点击保存写入 \(pngs[0])，未弹面板")
+        pass("QUICKSAVE", "⇧ 点击保存写入 \(pngs[0])，未弹面板")
+        endSession()
+    }
+
+    /// ⌘⇧S 与 ⇧ 点保存按钮走同一条快捷保存路径。
+    private func runQuickSaveShortcut() {
+        guard let (window, view) = beginSession("QUICKSAVE-SHORTCUT") else { return }
+        drag(view, window: window, from: CGPoint(x: 150, y: 150), to: CGPoint(x: 750, y: 600))
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("yaosnap-quicksave-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            controller.quickSaveDirectory = nil
+            try? FileManager.default.removeItem(at: directory)
+        }
+        controller.quickSaveDirectory = directory
+        keyDown(1, characters: "s", in: window, view: view, modifierFlags: [.command, .shift])
+        pump(0.5)
+
+        let files = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+        let pngs = files.filter { $0.hasSuffix(".png") }
+        guard pngs.count == 1 else {
+            fail("QUICKSAVE-SHORTCUT", "⌘⇧S 后快捷保存目录应有 1 个 PNG，实际 \(files)")
+            endSession()
+            return
+        }
+        pass("QUICKSAVE-SHORTCUT", "⌘⇧S 写入 \(pngs[0])，未弹面板")
         endSession()
     }
 
@@ -3041,6 +3204,7 @@ final class AnnotateHarness {
         runUndo()
         runRedo()
         runQuickSave()
+        runQuickSaveShortcut()
         runAspectRatio()
         runShadowExport()
         runRecognition()
@@ -3071,6 +3235,8 @@ final class AnnotateHarness {
         runPaletteCustomization()
         runMagnifierAndColorSampling()
         runArrowNudge()
+        runWASDNudge()
+        runPinFromOverlay()
         runLineStyleDash()
         runArrowHeads()
         runShapeResizeHandle()

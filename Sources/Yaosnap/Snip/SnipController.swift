@@ -43,6 +43,10 @@ final class SnipController {
     private var sharePicker: NSSharingServicePicker?
     /// 快捷保存根目录。验收 harness 注入临时目录，生产用 ~/Pictures/Yaosnap。
     var quickSaveDirectory: URL?
+    /// 中键贴图回调。topLeft 是选区的 CG 全局坐标左上角（主屏左上原点，y 向下），
+    /// 与 PinController.pin(at:) 的 --pos 语义一致；选区无屏幕信息时为 nil（贴到鼠标所在屏）。
+    /// 返回 false 表示贴图失败，与复制失败一样保留截图会话。
+    var onPinImage: ((PasteImage, CGPoint?) -> Bool)?
 
     /// 延时截屏只跑计时器，到点才抓帧开会话，期间不显示覆盖层。
     private var delayDeadline: Date?
@@ -422,6 +426,25 @@ final class SnipController {
             return
         }
         print("[snip] copied")
+        remember(image, displaySize: pending.viewRect.size, region: pending.region)
+        cancel()
+    }
+
+    /// 中键贴图：不带阴影边距，贴图窗口自身的投影负责观感；位置是选区原位。
+    func pinPendingImage(_ notification: Notification) {
+        guard let pending = validatedPending(for: notification, action: "贴图") else { return }
+        guard let image = renderPendingOutput(pending, applyShadow: false) else {
+            abortWithError("合成标注图像失败")
+            return
+        }
+        let paste = PasteImage(image: image, pointSize: pending.viewRect.size)
+        // CaptureRegion.rect 已是主屏左上原点（y 向下）的 CG 全局坐标，原点即选区左上角。
+        let topLeft = pending.region?.rect.origin
+        guard onPinImage?(paste, topLeft) ?? false else {
+            print("[snip] error: 贴图失败")
+            NSSound.beep()
+            return
+        }
         remember(image, displaySize: pending.viewRect.size, region: pending.region)
         cancel()
     }

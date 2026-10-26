@@ -545,7 +545,7 @@ final class AnnotateToolbar: NSView {
     @objc private func extractTextTapped() { onExtractText?() }
     @objc private func scanBarcodeTapped() { onScanBarcode?() }
     @objc private func saveTapped() {
-        if saveButton.currentModifiers().contains(.command) {
+        if saveButton.currentModifiers().contains(.shift) {
             onQuickSave?()
         } else {
             onSave?()
@@ -560,7 +560,7 @@ final class AnnotateToolbar: NSView {
 class HoverButton: NSButton {
     /// 需要滚轮交互的按钮（颜色按钮调透明度）挂在这里，其余按钮滚轮照常向上传递。
     var onScroll: ((CGFloat) -> Void)?
-    /// 点击时的修饰键。生产读全局状态，验收 harness 注入 ⌘ 模拟快捷保存。
+    /// 点击时的修饰键。生产读全局状态，验收 harness 注入 ⇧ 模拟快捷保存。
     var currentModifiers: () -> NSEvent.ModifierFlags = { NSEvent.modifierFlags }
 
     override func scrollWheel(with event: NSEvent) {

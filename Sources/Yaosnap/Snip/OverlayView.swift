@@ -330,9 +330,23 @@ final class OverlayView: NSView {
         needsDisplay = true
     }
 
+    /// 本视图内的左键按压会话。覆盖层全屏捕获，与 NSEvent.pressedMouseButtons 等价，
+    /// 且可被验收 harness 程序化置位。
+    var isLeftButtonDown = false
+
+    /// Snipaste 语义：截图状态中键单击 = 贴到屏幕并结束会话。
+    override func otherMouseDown(with event: NSEvent) {
+        guard event.buttonNumber == 2, canOutput, !selectionRect.isEmpty else {
+            super.otherMouseDown(with: event)
+            return
+        }
+        requestPin()
+    }
+
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         magnifierCursor = point
+        isLeftButtonDown = true
         defer { refreshMagnifier() }
         switch phase {
         case .idle:
@@ -587,6 +601,7 @@ final class OverlayView: NSView {
 
     override func mouseUp(with event: NSEvent) {
         magnifierCursor = convert(event.locationInWindow, from: nil)
+        isLeftButtonDown = false
         defer { refreshMagnifier() }
         switch phase {
         case .selecting:
@@ -654,7 +669,7 @@ final class OverlayView: NSView {
             canvas?.selectedIDs = []
             commitSelection()
         case .idle, .ready, .polylineEditing, .editing, .selected:
-            break // ready 下单击保留选区，等待 Enter / 双击 / ⌘S
+            break // ready 下单击保留选区，等待 Enter / 双击 / 保存
         }
     }
 
@@ -880,8 +895,14 @@ final class OverlayView: NSView {
                 return
             }
             selectTool(kind == .line ? .arrow : .line)
-        // ⌘S 只认 command，⌘⌃S / ⌘⌥S 不是保存快捷键
-        case 1 where event.modifierFlags.intersection([.command, .control, .option]) == .command:
+        // ⌘⇧S 快捷保存，⌘S 弹面板；⌘⌃S / ⌘⌥S 都不是保存快捷键
+        case 1 where event.modifierFlags.intersection([.command, .control, .option, .shift]) == [.command, .shift]:
+            guard canOutput, !selectionRect.isEmpty else {
+                NSSound.beep()
+                return
+            }
+            requestSave(quick: true)
+        case 1 where event.modifierFlags.intersection([.command, .control, .option, .shift]) == .command:
             guard canOutput, !selectionRect.isEmpty else {
                 NSSound.beep()
                 return
@@ -1006,7 +1027,7 @@ final class OverlayView: NSView {
         }
     }
 
-    /// 能出图的阶段。拖动中途按 Enter / ⌘S 会把半成品输出，所以排除 moving 与缩放。
+    /// 能出图的阶段。拖动中途按 Enter / 保存会把半成品输出，所以排除 moving 与缩放。
     private var canOutput: Bool {
         switch phase {
         case .ready, .selected: return true
@@ -1078,18 +1099,31 @@ final class OverlayView: NSView {
         publishSelection()
     }
 
-    /// W A S D 逐像素移动系统光标。文字编辑时事件由编辑器接收，不会走到这里。
+    /// W A S D：裸键逐像素移动系统光标；按住左键且在 ready / selected 相位时与方向键
+    /// 同一套调整语义（Snipaste：Hold left button + W A S D 移动 / 扩大 / 缩小选区）。
+    /// 拖拽选区与画标注中不接管，保持原来的光标移动，避免两套输入同时改选区。
+    /// 文字编辑时事件由编辑器接收，不会走到这里。
     private func handleCursorKey(_ event: NSEvent) -> Bool {
         if case .editing = phase { return false }
-        guard event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty,
-              let key = event.charactersIgnoringModifiers?.lowercased() else { return false }
-        let directions: [String: NudgeDirection] = [
-            "w": .up, "a": .left, "s": .down, "d": .right,
-        ]
-        guard let direction = directions[key] else { return false }
+        guard let key = event.charactersIgnoringModifiers?.lowercased(),
+              let direction = Self.cursorDirections[key] else { return false }
+        if isLeftButtonDown, isReadyOrSelected {
+            switch event.modifierFlags.intersection([.command, .control, .option, .shift]) {
+            case []: applyNudge(direction, mode: .move)
+            case .control: applyNudge(direction, mode: .expand)
+            case .shift: applyNudge(direction, mode: .shrink)
+            default: return false
+            }
+            return true
+        }
+        guard event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty else { return false }
         moveSystemCursor(direction)
         return true
     }
+
+    private static let cursorDirections: [String: NudgeDirection] = [
+        "w": .up, "a": .left, "s": .down, "d": .right,
+    ]
 
     private func moveSystemCursor(_ direction: NudgeDirection) {
         guard let current = effectiveMagnifierCursor else { return }
@@ -1267,9 +1301,19 @@ final class OverlayView: NSView {
               let key = event.charactersIgnoringModifiers?.uppercased(), !key.isEmpty
         else { return false }
         let first = String(key.prefix(1))
-        if let digit = Int(first), let pen = PenSize(rawValue: digit) {
-            applyPen(pen)
-            return true
+        if let digit = Int(first) {
+            // Snipaste：1/2 相对降/升一档，3-5 直接选档（超集保留）。
+            // 越界时 PenSize(rawValue:) 为 nil，按下不动，按键已消费。
+            switch digit {
+            case 1, 2:
+                let raw = toolStore.currentStyle.pen.rawValue + (digit == 1 ? -1 : 1)
+                if let pen = PenSize(rawValue: raw) { applyPen(pen) }
+                return true
+            case 3, 4, 5:
+                applyPen(PenSize(rawValue: digit)!)
+                return true
+            default: break
+            }
         }
         if first == "V" {
             pendingShortcut = nil
@@ -1919,6 +1963,14 @@ final class OverlayView: NSView {
         )
     }
 
+    private func requestPin() {
+        NotificationCenter.default.post(
+            name: .snipPinRequested,
+            object: nil,
+            userInfo: [SnipNotificationKey.displayID: shot.displayID]
+        )
+    }
+
     private func requestShare() {
         NotificationCenter.default.post(
             name: .snipShareRequested,
@@ -2281,6 +2333,7 @@ extension Notification.Name {
     static let snipTextRecognizeRequested = Notification.Name("snipTextRecognizeRequested")
     static let snipBarcodeScanRequested = Notification.Name("snipBarcodeScanRequested")
     static let snipSaveRequested = Notification.Name("snipSaveRequested")
+    static let snipPinRequested = Notification.Name("snipPinRequested")
 }
 
 /// 截图通知 userInfo 的键。收成封闭枚举，避免字符串字面量在两端拼错。
@@ -2292,7 +2345,7 @@ enum SnipNotificationKey: Hashable {
     /// 实际输出源与像素裁剪矩形。历史回放时可能是历史截图。
     case sourceImage
     case cropRectPx
-    /// ⌘ + 保存按钮：直接写快捷保存目录，不弹面板。
+    /// ⇧ + 保存按钮 / ⌘⇧S：直接写快捷保存目录，不弹面板。
     case quickSave
     /// 复制请求发出时的修饰键，决定「按住 ⌥ 时」是否落文件。
     case modifierFlags
