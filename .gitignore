@@ -4,3 +4,7 @@ Build/
 .env-tools/
 
 .audit/
+
+# 本机工作文档，不随仓库分发
+HANDOFF.md
+docs/

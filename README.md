@@ -128,7 +128,6 @@ The build script works with Command Line Tools only, no Xcode. It detects a loca
 - `Sources/snip`: the `snip` command line parser and URL dispatcher.
 - `Tests/YaosnapCoreTests`: unit tests.
 - `Tools/verify`: end to end harnesses.
-- `docs`: design notes and the Snipaste behavior checklist.
 
 ## Scope
 
