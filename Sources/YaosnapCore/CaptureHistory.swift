@@ -9,17 +9,21 @@ public struct CaptureHistoryEntry {
     public let createdAt: Date
     /// 选区在源屏上的位置，重复上次区域时使用。
     public let region: CaptureRegion?
+    /// 当时的整屏冻结帧，回放时铺满屏幕；来源不是整屏时为 nil。
+    public let fullFrame: CGImage?
 
     public init(
         image: CGImage,
         displaySize: CGSize,
         createdAt: Date = Date(),
-        region: CaptureRegion? = nil
+        region: CaptureRegion? = nil,
+        fullFrame: CGImage? = nil
     ) {
         self.image = image
         self.displaySize = displaySize
         self.createdAt = createdAt
         self.region = region
+        self.fullFrame = fullFrame
     }
 
     public var scaleX: CGFloat {

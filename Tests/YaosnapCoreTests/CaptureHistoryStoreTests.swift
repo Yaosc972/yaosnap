@@ -160,4 +160,22 @@ struct CaptureHistoryStoreTests {
         let first = try #require(loaded.first)
         #expect(first.region == region)
     }
+
+    @Test func appendThenLoadPreservesFullFrame() throws {
+        let directory = temporaryDirectory()
+        defer { try? fileManager.removeItem(at: directory) }
+        let store = CaptureHistoryStore(directory: directory, limit: 5)
+        let entry = CaptureHistoryEntry(
+            image: try makeImage(width: 40, height: 30),
+            displaySize: CGSize(width: 20, height: 15),
+            createdAt: Date(timeIntervalSince1970: 1_700_000_100),
+            fullFrame: try makeImage(width: 60, height: 40)
+        )
+        try store.append(entry)
+
+        let loaded = try CaptureHistoryStore(directory: directory, limit: 5).load()
+        let first = try #require(loaded.first)
+        #expect(first.fullFrame?.width == 60)
+        #expect(first.fullFrame?.height == 40)
+    }
 }

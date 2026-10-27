@@ -15,6 +15,8 @@ final class SnipController {
         let scale: CGFloat
         /// 选区在源屏上的位置，成功输出后写进历史供重复上次区域使用。
         let region: CaptureRegion?
+        /// 来源覆盖整屏时留一份整屏帧，回放时铺满屏幕。
+        let fullFrame: CGImage?
     }
 
     /// 打开保存面板时的快照。面板期间其他屏仍可提交，保存只能写这里的内容。
@@ -23,6 +25,7 @@ final class SnipController {
         let image: CGImage
         let displaySize: CGSize
         let region: CaptureRegion?
+        let fullFrame: CGImage?
     }
 
     private var windows: [SnipOverlayWindow] = []
@@ -395,13 +398,25 @@ final class SnipController {
                 displayBounds: $0
             )
         }
+        // 来源是整屏冻结帧时另存一份，回放才能还原选区外的画面。
+        let fullFrame: CGImage?
+        if let shot = shots.first(where: { $0.displayID == displayID }) {
+            let expectedWidth = Int((shot.bounds.width * shot.scale).rounded())
+            let expectedHeight = Int((shot.bounds.height * shot.scale).rounded())
+            fullFrame = sourceImage.width == expectedWidth && sourceImage.height == expectedHeight
+                ? sourceImage
+                : nil
+        } else {
+            fullFrame = nil
+        }
         pendingRegion = PendingRegion(
             displayID: displayID,
             viewRect: viewRect,
             sourceImage: sourceImage,
             cropRectPx: cropRectPx,
             scale: outputScale,
-            region: region
+            region: region,
+            fullFrame: fullFrame
         )
     }
 
@@ -426,7 +441,7 @@ final class SnipController {
             return
         }
         print("[snip] copied")
-        remember(image, displaySize: pending.viewRect.size, region: pending.region)
+        remember(image, displaySize: pending.viewRect.size, region: pending.region, fullFrame: pending.fullFrame)
         cancel()
     }
 
@@ -445,7 +460,7 @@ final class SnipController {
             NSSound.beep()
             return
         }
-        remember(image, displaySize: pending.viewRect.size, region: pending.region)
+        remember(image, displaySize: pending.viewRect.size, region: pending.region, fullFrame: pending.fullFrame)
         cancel()
     }
 
@@ -460,7 +475,12 @@ final class SnipController {
             return
         }
         if notification.userInfo?[.quickSave] as? Bool == true {
-            quickSave(image, displaySize: pending.viewRect.size, region: pending.region)
+            quickSave(
+                image,
+                displaySize: pending.viewRect.size,
+                region: pending.region,
+                fullFrame: pending.fullFrame
+            )
             return
         }
         let parent = overlayWindow(for: pending.displayID) ?? NSApp.keyWindow ?? windows.first
@@ -478,7 +498,8 @@ final class SnipController {
             panel: panel,
             image: image,
             displaySize: pending.viewRect.size,
-            region: pending.region
+            region: pending.region,
+            fullFrame: pending.fullFrame
         )
         // 保存面板里需要可见鼠标
         setCrosshair(false)
@@ -608,7 +629,7 @@ final class SnipController {
         do {
             try data.write(to: url)
             print("[snip] saved to \(url.path)")
-            remember(job.image, displaySize: job.displaySize, region: job.region)
+            remember(job.image, displaySize: job.displaySize, region: job.region, fullFrame: job.fullFrame)
             cancel()
         } catch {
             print("[snip] error: 写入 \(url.path) 失败: \(error.localizedDescription)")
@@ -623,7 +644,12 @@ final class SnipController {
     }
 
     /// ⌘ + 保存按钮：直接写快捷保存目录，成功路径与面板保存一致，只是不弹面板。
-    private func quickSave(_ image: CGImage, displaySize: CGSize, region: CaptureRegion?) {
+    private func quickSave(
+        _ image: CGImage,
+        displaySize: CGSize,
+        region: CaptureRegion?,
+        fullFrame: CGImage?
+    ) {
         guard let data = ImageOutput.pngData(from: image) else {
             print("[snip] error: PNG 编码失败")
             NSSound.beep()
@@ -634,7 +660,7 @@ final class SnipController {
         do {
             let url = try store.write(data)
             print("[snip] quick saved to \(url.path)")
-            remember(image, displaySize: displaySize, region: region)
+            remember(image, displaySize: displaySize, region: region, fullFrame: fullFrame)
             NSSound(named: "Glass")?.play()
             cancel()
         } catch {
@@ -769,11 +795,17 @@ final class SnipController {
     }
 
     /// 最近成功输出的截图按时间倒序保留，最多 10 张；内存与磁盘同步。
-    private func remember(_ image: CGImage, displaySize: CGSize, region: CaptureRegion?) {
+    private func remember(
+        _ image: CGImage,
+        displaySize: CGSize,
+        region: CaptureRegion?,
+        fullFrame: CGImage? = nil
+    ) {
         let entry = CaptureHistoryEntry(
             image: image,
             displaySize: displaySize,
-            region: region
+            region: region,
+            fullFrame: fullFrame
         )
         history.insert(entry, at: 0)
         if history.count > Self.historyLimit {

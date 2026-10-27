@@ -14,6 +14,8 @@ public final class CaptureHistoryStore {
         let displayHeight: Double
         /// 旧索引没有这个字段，缺失时回放退回等比居中。
         var region: StoredRegion?
+        /// 整屏冻结帧的文件名，旧索引没有。
+        var fullFrameFileName: String?
     }
 
     /// 选区在源屏上的位置，回放时按它还原原始大小与位置。
@@ -100,7 +102,12 @@ public final class CaptureHistoryStore {
                     height: record.displayHeight
                 ),
                 createdAt: record.createdAt,
-                region: record.region?.captureRegion
+                region: record.region?.captureRegion,
+                fullFrame: record.fullFrameFileName.flatMap { name in
+                    let url = directory.appendingPathComponent(name)
+                    guard fileManager.fileExists(atPath: url.path) else { return nil }
+                    return Self.loadImage(at: url)
+                }
             ))
         }
         return entries
@@ -121,6 +128,17 @@ public final class CaptureHistoryStore {
             options: .atomic
         )
 
+        // 整屏帧单独存一个文件，回放时铺满屏幕用。
+        var fullFrameFileName: String?
+        if let frame = entry.fullFrame, let frameData = ImageOutput.pngData(from: frame) {
+            let name = "full-" + fileName
+            try frameData.write(
+                to: directory.appendingPathComponent(name),
+                options: .atomic
+            )
+            fullFrameFileName = name
+        }
+
         // 索引损坏时以空表继续，新图仍然可写；旧文件可能成为孤儿，但不影响可用性。
         var records = (try? readIndex()) ?? []
         records.insert(IndexEntry(
@@ -128,7 +146,8 @@ public final class CaptureHistoryStore {
             createdAt: entry.createdAt,
             displayWidth: Double(entry.displaySize.width),
             displayHeight: Double(entry.displaySize.height),
-            region: entry.region.map(StoredRegion.init)
+            region: entry.region.map(StoredRegion.init),
+            fullFrameFileName: fullFrameFileName
         ), at: 0)
 
         let capacity = max(0, limit)
@@ -137,6 +156,9 @@ public final class CaptureHistoryStore {
             records.removeSubrange(capacity...)
             for item in removed {
                 try? fileManager.removeItem(at: fileURL(named: item.fileName))
+                if let full = item.fullFrameFileName {
+                    try? fileManager.removeItem(at: fileURL(named: full))
+                }
             }
         }
         try writeIndex(records)

@@ -1178,9 +1178,23 @@ final class OverlayView: NSView {
         resetSelection()
         applyHistoryImage()
         if historyIndex > 0 {
-            applyInitialSelection(activeImageRect)
+            let entry = history[historyIndex - 1]
+            applyInitialSelection(historyRegionRect(entry) ?? activeImageRect)
         }
         needsDisplay = true
+    }
+
+    /// 历史条目在源屏上的选区矩形，与原屏信息对不上时返回 nil。
+    private func historyRegionRect(_ entry: CaptureHistoryEntry) -> CGRect? {
+        guard let region = entry.region, region.displayID == shot.displayID else { return nil }
+        return RectMath.clamp(
+            RectMath.toViewRect(
+                globalRect: region.rect,
+                displayBounds: shot.bounds,
+                viewHeight: bounds.height
+            ),
+            to: bounds
+        )
     }
 
     private func applyHistoryImage() {
@@ -1193,20 +1207,17 @@ final class OverlayView: NSView {
             return
         }
         let entry = history[historyIndex - 1]
-        // 回放按原截图的位置与大小显示，与原屏信息对不上时才退回等比居中。
-        let rect: CGRect
-        if let region = entry.region, region.displayID == shot.displayID {
-            rect = RectMath.clamp(
-                RectMath.toViewRect(
-                    globalRect: region.rect,
-                    displayBounds: shot.bounds,
-                    viewHeight: bounds.height
-                ),
-                to: bounds
-            )
-        } else {
-            rect = Self.fittedImageRect(for: entry, in: bounds)
+        // 有整屏帧时铺满视图，选区单独由 region 决定，与 Snipaste 的回放一致。
+        if let frame = entry.fullFrame {
+            activeImageRect = bounds
+            activeImage = NSImage(cgImage: frame, size: bounds.size)
+            activeSource = frame
+            activeScaleX = CGFloat(frame.width) / bounds.width
+            activeScaleY = CGFloat(frame.height) / bounds.height
+            return
         }
+        // 旧条目只有选区图，退回按原位置摆放或等比居中。
+        let rect = historyRegionRect(entry) ?? Self.fittedImageRect(for: entry, in: bounds)
         activeImageRect = rect
         activeImage = NSImage(cgImage: entry.image, size: rect.size)
         activeSource = entry.image
@@ -1244,7 +1255,8 @@ final class OverlayView: NSView {
     /// 不能在 init 里选中，提交通知需要回查已入列的 shots。
     func selectReplayedHistory() {
         guard historyIndex > 0 else { return }
-        applyInitialSelection(activeImageRect)
+        let entry = history[historyIndex - 1]
+        applyInitialSelection(historyRegionRect(entry) ?? activeImageRect)
         needsDisplay = true
     }
 
