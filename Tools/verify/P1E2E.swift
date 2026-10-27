@@ -602,8 +602,8 @@ final class Harness {
             fail("ACTIONBAR-IDLE", "未选区时工具条应隐藏")
         }
 
-        // 选区要宽过 450pt 工具条，右对齐才不被屏幕边界钳制
-        drag(view, window: window, from: CGPoint(x: 50, y: 150), to: CGPoint(x: 980, y: 700))
+        // 选区要宽过工具条，右对齐才不被屏幕边界钳制
+        drag(view, window: window, from: CGPoint(x: 50, y: 150), to: CGPoint(x: 1400, y: 700))
         let rect = view.selectionRect
         if !bar.isHidden {
             pass("ACTIONBAR-SHOW", "选区确定后工具条显示 frame=\(bar.frame)")

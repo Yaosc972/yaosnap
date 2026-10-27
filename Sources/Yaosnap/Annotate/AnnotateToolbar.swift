@@ -250,6 +250,11 @@ final class AnnotateToolbar: NSView {
         )
         place(shareButton)
         place(makeHoverButton(symbol: "xmark", title: "取消", action: #selector(cancelTapped)))
+        // 宽度按实际排布收口，增删按钮不必再同步 Metrics.width。
+        setFrameSize(NSSize(
+            width: x - Metrics.spacing + Metrics.padding,
+            height: Metrics.height
+        ))
     }
 
     private func makeHoverButton(
