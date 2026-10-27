@@ -138,4 +138,26 @@ struct CaptureHistoryStoreTests {
         #expect(fileManager.fileExists(atPath: directory.path))
         #expect(try store.load().count == 1)
     }
+
+    @Test func appendThenLoadPreservesRegion() throws {
+        let directory = temporaryDirectory()
+        defer { try? fileManager.removeItem(at: directory) }
+        let store = CaptureHistoryStore(directory: directory, limit: 5)
+        let region = CaptureRegion(
+            displayID: 1,
+            rect: CGRect(x: 120, y: 60, width: 400, height: 300),
+            displayBounds: CGRect(x: 0, y: 0, width: 1470, height: 956)
+        )
+        let entry = CaptureHistoryEntry(
+            image: try makeImage(width: 800, height: 600),
+            displaySize: CGSize(width: 400, height: 300),
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+            region: region
+        )
+        try store.append(entry)
+
+        let loaded = try CaptureHistoryStore(directory: directory, limit: 5).load()
+        let first = try #require(loaded.first)
+        #expect(first.region == region)
+    }
 }

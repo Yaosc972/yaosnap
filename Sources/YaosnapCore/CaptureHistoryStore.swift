@@ -12,6 +12,42 @@ public final class CaptureHistoryStore {
         let createdAt: Date
         let displayWidth: Double
         let displayHeight: Double
+        /// 旧索引没有这个字段，缺失时回放退回等比居中。
+        var region: StoredRegion?
+    }
+
+    /// 选区在源屏上的位置，回放时按它还原原始大小与位置。
+    private struct StoredRegion: Codable {
+        let displayID: UInt32
+        let x: Double
+        let y: Double
+        let width: Double
+        let height: Double
+        let displayBoundsWidth: Double
+        let displayBoundsHeight: Double
+
+        init(_ region: CaptureRegion) {
+            displayID = region.displayID
+            x = region.rect.origin.x
+            y = region.rect.origin.y
+            width = region.rect.width
+            height = region.rect.height
+            displayBoundsWidth = region.displayBounds.width
+            displayBoundsHeight = region.displayBounds.height
+        }
+
+        var captureRegion: CaptureRegion {
+            CaptureRegion(
+                displayID: displayID,
+                rect: CGRect(x: x, y: y, width: width, height: height),
+                displayBounds: CGRect(
+                    x: 0,
+                    y: 0,
+                    width: displayBoundsWidth,
+                    height: displayBoundsHeight
+                )
+            )
+        }
     }
 
     public enum StoreError: Error, Equatable {
@@ -64,7 +100,7 @@ public final class CaptureHistoryStore {
                     height: record.displayHeight
                 ),
                 createdAt: record.createdAt,
-                region: nil
+                region: record.region?.captureRegion
             ))
         }
         return entries
@@ -91,7 +127,8 @@ public final class CaptureHistoryStore {
             fileName: fileName,
             createdAt: entry.createdAt,
             displayWidth: Double(entry.displaySize.width),
-            displayHeight: Double(entry.displaySize.height)
+            displayHeight: Double(entry.displaySize.height),
+            region: entry.region.map(StoredRegion.init)
         ), at: 0)
 
         let capacity = max(0, limit)

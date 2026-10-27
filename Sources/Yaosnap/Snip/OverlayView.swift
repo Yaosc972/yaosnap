@@ -1193,7 +1193,20 @@ final class OverlayView: NSView {
             return
         }
         let entry = history[historyIndex - 1]
-        let rect = Self.fittedImageRect(for: entry, in: bounds)
+        // 回放按原截图的位置与大小显示，与原屏信息对不上时才退回等比居中。
+        let rect: CGRect
+        if let region = entry.region, region.displayID == shot.displayID {
+            rect = RectMath.clamp(
+                RectMath.toViewRect(
+                    globalRect: region.rect,
+                    displayBounds: shot.bounds,
+                    viewHeight: bounds.height
+                ),
+                to: bounds
+            )
+        } else {
+            rect = Self.fittedImageRect(for: entry, in: bounds)
+        }
         activeImageRect = rect
         activeImage = NSImage(cgImage: entry.image, size: rect.size)
         activeSource = entry.image
