@@ -5,6 +5,7 @@ import YaosnapCore
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItemController: StatusItemController?
     private let hotkeyManager = HotkeyManager()
+    private let functionKeyMonitor = FunctionKeyMonitor()
     private let fixedHotkeyManager = HotkeyManager()
     private let snipController = SnipController()
     private let pinController = PinController()
@@ -132,10 +133,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func registerHotkeys() {
         hotkeyManager.unregisterAll()
+        functionKeyMonitor.unregisterAll()
         var failures = Set<HotkeyAction>()
         for binding in settings.hotkeyBindings {
             let handler = Self.handler(for: binding.action, snip: snipController, pin: pinController)
-            if !hotkeyManager.register(binding.hotkey, handler: handler) {
+            let hotkey = binding.hotkey
+            let registered: Bool
+            if FunctionKeyMonitor.requiresEventTap(
+                keyCode: hotkey.keyCode,
+                modifiers: hotkey.modifiers
+            ) {
+                // 亮度键 Carbon 收不到事件，改走键盘层监听。
+                registered = functionKeyMonitor.register(keyCode: hotkey.keyCode, handler: handler)
+            } else {
+                registered = hotkeyManager.register(hotkey, handler: handler)
+            }
+            if !registered {
                 failures.insert(binding.action)
             }
         }
