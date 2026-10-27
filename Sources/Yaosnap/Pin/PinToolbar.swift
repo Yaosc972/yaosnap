@@ -14,10 +14,11 @@ final class PinToolbar: NSView {
     var onCopy: (() -> Void)?
     var onSave: (() -> Void)?
     var onClose: (() -> Void)?
+    var onAnnotate: (() -> Void)?
 
-    private static let buttonSide: CGFloat = 22
-    private static let padding: CGFloat = 6
-    private static let spacing: CGFloat = 2
+    static let buttonSide: CGFloat = 22
+    static let padding: CGFloat = 6
+    static let spacing: CGFloat = 2
 
     private let sizeLabel = NSTextField(labelWithString: "大小: 100%")
     private var stack: NSStackView!
@@ -33,20 +34,22 @@ final class PinToolbar: NSView {
         sizeLabel.alignment = .right
 
         let views: [NSView] = [
-            button("minus.magnifyingglass", "缩小", #selector(zoomOutTapped)),
-            button("plus.magnifyingglass", "放大", #selector(zoomInTapped)),
-            separator(),
-            button("rotate.left", "向左旋转", #selector(rotateLeftTapped)),
-            button("rotate.right", "向右旋转", #selector(rotateRightTapped)),
-            button("flip.horizontal", "水平翻转", #selector(flipHorizontalTapped)),
-            button("flip.vertical", "垂直翻转", #selector(flipVerticalTapped)),
-            separator(),
-            button("circle.lefthalf.filled", "灰度", #selector(grayscaleTapped)),
-            button("circle.righthalf.filled", "反色", #selector(invertedTapped)),
-            separator(),
-            button("doc.on.doc", "复制图像", #selector(copyTapped)),
-            button("square.and.arrow.down", "另存为", #selector(saveTapped)),
-            button("xmark", "关闭", #selector(closeTapped)),
+            Self.button("minus.magnifyingglass", "缩小", #selector(zoomOutTapped), target: self),
+            Self.button("plus.magnifyingglass", "放大", #selector(zoomInTapped), target: self),
+            Self.separator(),
+            Self.button("rotate.left", "向左旋转", #selector(rotateLeftTapped), target: self),
+            Self.button("rotate.right", "向右旋转", #selector(rotateRightTapped), target: self),
+            Self.button("flip.horizontal", "水平翻转", #selector(flipHorizontalTapped), target: self),
+            Self.button("flip.vertical", "垂直翻转", #selector(flipVerticalTapped), target: self),
+            Self.separator(),
+            Self.button("circle.lefthalf.filled", "灰度", #selector(grayscaleTapped), target: self),
+            Self.button("circle.righthalf.filled", "反色", #selector(invertedTapped), target: self),
+            Self.separator(),
+            Self.button("pencil.tip", "标注", #selector(annotateTapped), target: self),
+            Self.separator(),
+            Self.button("doc.on.doc", "复制图像", #selector(copyTapped), target: self),
+            Self.button("square.and.arrow.down", "另存为", #selector(saveTapped), target: self),
+            Self.button("xmark", "关闭", #selector(closeTapped), target: self),
             sizeLabel,
         ]
 
@@ -81,14 +84,15 @@ final class PinToolbar: NSView {
         sizeLabel.stringValue = "大小: \(Int((scale * 100).rounded()))%"
     }
 
-    private func button(_ symbol: String, _ title: String, _ action: Selector) -> NSButton {
+    /// 顶栏与标注底栏共用的图标按钮工厂。
+    static func button(_ symbol: String, _ title: String, _ action: Selector, target: AnyObject) -> NSButton {
         let button = NSButton()
         button.isBordered = false
         button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)
         button.imagePosition = .imageOnly
         button.contentTintColor = NSColor(white: 1, alpha: 0.9)
         button.toolTip = title
-        button.target = self
+        button.target = target
         button.action = action
         button.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
@@ -98,7 +102,7 @@ final class PinToolbar: NSView {
         return button
     }
 
-    private func separator() -> NSView {
+    static func separator() -> NSView {
         let line = NSBox()
         line.boxType = .separator
         line.translatesAutoresizingMaskIntoConstraints = false
@@ -114,6 +118,7 @@ final class PinToolbar: NSView {
     @objc private func flipVerticalTapped() { onFlipVertical?() }
     @objc private func grayscaleTapped() { onGrayscale?() }
     @objc private func invertedTapped() { onInverted?() }
+    @objc private func annotateTapped() { onAnnotate?() }
     @objc private func copyTapped() { onCopy?() }
     @objc private func saveTapped() { onSave?() }
     @objc private func closeTapped() { onClose?() }

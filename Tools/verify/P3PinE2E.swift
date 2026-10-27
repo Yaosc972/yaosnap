@@ -398,6 +398,133 @@ final class PinHarness {
         return allPinWindows().first { !before.contains($0.windowNumber) }
     }
 
+    /// 把 CGImage 规范成固定 sRGB 像素数据，两张图直接比较就能发现标注差异。
+    private func bitmapData(_ image: CGImage) -> Data? {
+        guard image.width > 0, image.height > 0,
+              let ctx = CGContext(
+                  data: nil,
+                  width: image.width,
+                  height: image.height,
+                  bitsPerComponent: 8,
+                  bytesPerRow: image.width * 4,
+                  space: CGColorSpaceCreateDeviceRGB(),
+                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+              ) else { return nil }
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        guard let data = ctx.data else { return nil }
+        return Data(bytes: data, count: image.width * image.height * 4)
+    }
+
+    /// 按下、拖动、抬起三步模拟画一笔标注。
+    private func dragAnnotation(
+        _ view: PinContentView,
+        window: PinWindow,
+        from: CGPoint,
+        to: CGPoint
+    ) {
+        guard let down = mouseDragEvent(.leftMouseDown, at: from, window: window),
+              let drag = mouseDragEvent(.leftMouseDragged, at: to, window: window),
+              let up = mouseDragEvent(.leftMouseUp, at: to, window: window) else {
+            fail("PIN-ANNOTATE", "构造标注拖拽失败")
+            return
+        }
+        view.mouseDown(with: down)
+        view.mouseDragged(with: drag)
+        view.mouseUp(with: up)
+    }
+
+    private func runAnnotate() {
+        controller.closeAll()
+        pump()
+        guard let window = pinFreshWindow(),
+              let view = window.contentView as? PinContentView,
+              let before = window.flattenedImage() else {
+            fail("PIN-ANNOTATE", "没有新建贴图窗口或导出图不可用")
+            return
+        }
+        view.setAnnotateMode(true)
+        // zoom=1 无旋转时视图坐标即画布坐标，探测矩形底边中点。
+        let probe = CGPoint(x: 0.5, y: 10.0 / 30.0)
+        let beforePixel = sampledPixel(of: window, atRelative: probe)
+        guard view.annotationTool == .rect else {
+            fail("PIN-ANNOTATE", "进入标注模式后工具不是矩形")
+            window.close()
+            return
+        }
+        dragAnnotation(view, window: window, from: CGPoint(x: 10, y: 10), to: CGPoint(x: 30, y: 20))
+        pump(0.1)
+        guard view.annotations.count == 1, view.annotations[0].shape.kind == .rect else {
+            fail("PIN-ANNOTATE", "标注数 \(view.annotations.count)，期望 1 笔矩形")
+            window.close()
+            return
+        }
+        guard let after = window.flattenedImage(),
+              let beforeData = bitmapData(before),
+              let afterData = bitmapData(after),
+              beforeData != afterData else {
+            fail("PIN-ANNOTATE", "导出图与标注前相同，标注未进入导出")
+            window.close()
+            return
+        }
+        pass("PIN-ANNOTATE", "拖拽产生 1 笔矩形标注，导出图像与标注前不同")
+
+        if let beforePixel,
+           let afterPixel = sampledPixel(of: window, atRelative: probe),
+           abs(afterPixel.r - beforePixel.r)
+               + abs(afterPixel.g - beforePixel.g)
+               + abs(afterPixel.b - beforePixel.b) > 15 {
+            pass("PIN-ANNOTATE-PIXEL", "预览同位置像素 \(beforePixel)→\(afterPixel) 已带标注")
+        } else {
+            fail(
+                "PIN-ANNOTATE-PIXEL",
+                "预览未画出标注 \(String(describing: beforePixel))→\(String(describing: sampledPixel(of: window, atRelative: probe)))"
+            )
+        }
+
+        dragAnnotation(view, window: window, from: CGPoint(x: 5, y: 5), to: CGPoint(x: 25, y: 15))
+        pump(0.05)
+        guard view.annotations.count == 2 else {
+            fail("PIN-ANNOTATE-UNDO", "第二笔后标注数 \(view.annotations.count)，期望 2")
+            window.close()
+            return
+        }
+        guard let undo = keyEvent(
+            keyCode: 6,
+            characters: "z",
+            modifiers: [.command],
+            window: window
+        ) else {
+            fail("PIN-ANNOTATE-UNDO", "构造 ⌘Z 失败")
+            window.close()
+            return
+        }
+        view.keyDown(with: undo)
+        pump(0.05)
+        if view.annotations.count == 1 {
+            pass("PIN-ANNOTATE-UNDO", "⌘Z 撤销最后一笔，数量回到 1")
+        } else {
+            fail("PIN-ANNOTATE-UNDO", "撤销后标注数 \(view.annotations.count)，期望 1")
+        }
+
+        guard let esc = keyEvent(keyCode: 53, characters: "\u{1b}", window: window) else {
+            fail("PIN-ANNOTATE-ESC", "构造 Esc 失败")
+            window.close()
+            return
+        }
+        view.keyDown(with: esc)
+        pump(0.05)
+        if window.isVisible, view.annotationTool == nil {
+            pass("PIN-ANNOTATE-ESC", "Esc 退出标注模式且窗口保留")
+        } else {
+            fail(
+                "PIN-ANNOTATE-ESC",
+                "annotationTool=\(String(describing: view.annotationTool)) visible=\(window.isVisible)"
+            )
+        }
+        window.close()
+        pump()
+    }
+
     private func runZoom() {
         guard let window = pinFreshWindow() else {
             fail("PIN-ZOOM", "没有新建贴图窗口")
@@ -1003,6 +1130,7 @@ final class PinHarness {
         runMultiDrag()
         runMultiEscape()
         runBackground()
+        runAnnotate()
         controller.closeAll()
         print("SUMMARY passes=\(passes) failures=\(failures)")
         exit(failures == 0 ? 0 : 1)

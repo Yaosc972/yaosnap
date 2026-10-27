@@ -13,6 +13,7 @@ swiftc -O -target "$(uname -m)-apple-macos12.0" \
     Sources/Yaosnap/Pin/PinWindow.swift \
     Sources/Yaosnap/Pin/PinController.swift \
     Sources/Yaosnap/Pin/PinToolbar.swift \
+    Sources/Yaosnap/Pin/PinAnnotateBar.swift \
     Tools/verify/P3PinE2E.swift \
     "$PWD/.build/release/YaosnapCore.o" \
     -o /tmp/yaosnap-verify/build/p3pinharness

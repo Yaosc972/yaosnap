@@ -122,6 +122,8 @@ final class PinWindow: NSWindow {
         transform = entry.transform
         alphaValue = entry.transform.opacity
         imageCache = nil
+        // 标注属于被换下的那张图，翻页后不留到新图上。
+        pinView.clearAnnotations()
         refreshImage()
         pinView.transform = entry.transform
         pinView.needsDisplay = true
@@ -140,34 +142,53 @@ final class PinWindow: NSWindow {
         close()
     }
 
-    /// 当前视觉状态（裁剪、滤镜、旋转、翻转）的位图，供复制与另存为使用。
+    /// 当前视觉状态（裁剪、滤镜、旋转、翻转）加标注的位图，供复制与另存为使用。
     func flattenedImage() -> CGImage? {
-        guard let base = imageCache?.image else { return nil }
+        guard let cache = imageCache else { return nil }
+        let base = cache.image
+        let annotations = pinView.annotations
         let turns = transform.quarterTurns
         let flipH = transform.flipHorizontal
         let flipV = transform.flipVertical
-        guard turns != 0 || flipH || flipV else { return base }
         let rotated = turns % 2 != 0
-        let outWidth = rotated ? base.height : base.width
-        let outHeight = rotated ? base.width : base.height
+        let needsTransform = turns != 0 || flipH || flipV
+        // 无变换也无标注时直接返回原图，避免一次无谓的位图拷贝。
+        guard needsTransform || !annotations.isEmpty else { return base }
         guard let context = CGContext(
             data: nil,
-            width: outWidth,
-            height: outHeight,
+            width: rotated ? base.height : base.width,
+            height: rotated ? base.width : base.height,
             bitsPerComponent: 8,
             bytesPerRow: 0,
             space: base.colorSpace ?? CGColorSpaceCreateDeviceRGB(),
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
         ) else { return nil }
-        context.translateBy(x: CGFloat(outWidth) / 2, y: CGFloat(outHeight) / 2)
-        context.rotate(by: CGFloat(turns) * .pi / 2)
-        context.scaleBy(x: flipH ? -1 : 1, y: flipV ? -1 : 1)
+        context.translateBy(x: CGFloat(context.width) / 2, y: CGFloat(context.height) / 2)
+        if needsTransform {
+            context.rotate(by: CGFloat(turns) * .pi / 2)
+            context.scaleBy(x: flipH ? -1 : 1, y: flipV ? -1 : 1)
+        }
         context.draw(base, in: CGRect(
             x: -CGFloat(base.width) / 2,
             y: -CGFloat(base.height) / 2,
             width: CGFloat(base.width),
             height: CGFloat(base.height)
         ))
+        // 标注画布是固定点尺寸（cache.pointSize），与窗口缩放无关；导出上下文是像素，先放大。
+        if !annotations.isEmpty, cache.pointSize.width > 0 {
+            let scale = CGFloat(base.width) / cache.pointSize.width
+            context.saveGState()
+            context.translateBy(x: -CGFloat(cache.pointSize.width) / 2, y: -CGFloat(cache.pointSize.height) / 2)
+            context.scaleBy(x: scale, y: scale)
+            let input = RenderInput(
+                base: base,
+                cropOriginPx: .zero,
+                canvasSize: cache.pointSize,
+                scale: scale
+            )
+            AnnotationRenderer.draw(annotations, draft: nil, input: input, into: context)
+            context.restoreGState()
+        }
         return context.makeImage()
     }
 
@@ -295,6 +316,8 @@ final class PinWindow: NSWindow {
         }
         guard let imageCache else { return }
         pinView.image = NSImage(cgImage: imageCache.image, size: imageCache.pointSize)
+        // 标注渲染需要当前裁剪/滤镜后的位图，与显示图同步。
+        pinView.baseCGImage = imageCache.image
         pinView.baseSize = transform.displayedSize(
             original: basePointSize,
             imagePixelSize: pixelSize
@@ -344,9 +367,12 @@ final class PinWindow: NSWindow {
 }
 
 /// 键盘变换、双击关闭、边缘缩放、滚轮缩放与拖动移动。
+/// 标注状态做成 internal 可读，验收 harness 直接驱动坐标变换与撤销。
 @MainActor
-private final class PinContentView: NSView {
+final class PinContentView: NSView {
     var image: NSImage?
+    /// 标注渲染用的当前位图（裁剪与滤镜已生效），由 PinWindow.refreshImage 同步。
+    var baseCGImage: CGImage?
     var baseSize: CGSize = .zero
     var transform: PinTransform = .identity
     var background: PinBackground = .transparent
@@ -355,6 +381,19 @@ private final class PinContentView: NSView {
             if isSelected != oldValue { needsDisplay = true }
         }
     }
+
+    /// 标注属于图像画布（baseSize，不随窗口缩放）。annotationTool 非 nil 即处于标注模式，
+    /// 此时鼠标事件画形状而非拖动窗口。
+    private(set) var annotations: [Annotation] = []
+    private var annotationDraft: Annotation?
+    private var annotationHistory = SnapshotHistory<[Annotation]>()
+    var annotationTool: ShapeKind?
+    var annotationStyle: Style = ShapeCatalog.entry(for: .rect)?.defaultStyle
+        ?? Style(color: RGBAColor.palette[0], pen: .p3)
+    /// 进入标注模式时的快照，取消按钮用它回滚本次会话的全部标注（含撤销栈）。
+    private var annotationsBeforeMode: [Annotation] = []
+    private var annotationHistoryBeforeMode = SnapshotHistory<[Annotation]>()
+    private var annotationStart: CGPoint?
 
     private var dragStart: NSPoint?
     private var windowStart: NSPoint?
@@ -366,12 +405,19 @@ private final class PinContentView: NSView {
     private let hotZone: CGFloat = 8
     private var hoverTracking: NSTrackingArea?
     private lazy var toolbar = makeToolbar()
+    private lazy var annotateBar = makeAnnotateBar()
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        guard window != nil, toolbar.superview == nil else { return }
-        addSubview(toolbar)
-        toolbar.isHidden = true
+        guard window != nil else { return }
+        if toolbar.superview == nil {
+            addSubview(toolbar)
+            toolbar.isHidden = true
+        }
+        if annotateBar.superview == nil {
+            addSubview(annotateBar)
+            annotateBar.isHidden = true
+        }
         needsLayout = true
     }
 
@@ -383,6 +429,15 @@ private final class PinContentView: NSView {
             y: bounds.height - size.height - 2,
             width: size.width,
             height: size.height
+        )
+        let barSize = annotateBar.intrinsicContentSize
+        // 窗口窄于底栏时钳到左缘，宁可截断也不叠出边界。
+        let x = min(max(0, floor((bounds.width - barSize.width) / 2)), max(0, bounds.width - barSize.width))
+        annotateBar.frame = CGRect(
+            x: x,
+            y: 2,
+            width: barSize.width,
+            height: barSize.height
         )
     }
 
@@ -425,7 +480,25 @@ private final class PinContentView: NSView {
         bar.onInverted = { [weak self] in self?.pinWindow?.toggleInverted() }
         bar.onCopy = { [weak self] in self?.copyImageFromMenu() }
         bar.onSave = { [weak self] in self?.saveImageFromMenu() }
+        bar.onAnnotate = { [weak self] in
+            guard let self else { return }
+            self.setAnnotateMode(self.annotationTool == nil)
+        }
         bar.onClose = { [weak self] in self?.pinWindow?.close() }
+        return bar
+    }
+
+    private func makeAnnotateBar() -> PinAnnotateBar {
+        let bar = PinAnnotateBar()
+        bar.onSelectTool = { [weak self] kind in
+            guard let self else { return }
+            self.annotationTool = kind
+            self.refreshAnnotateBar()
+        }
+        bar.onCycleColor = { [weak self] in self?.cycleAnnotationColor() }
+        bar.onUndo = { [weak self] in self?.undoLastAnnotation() }
+        bar.onFinish = { [weak self] in self?.setAnnotateMode(false) }
+        bar.onCancel = { [weak self] in self?.setAnnotateMode(false, discardingAnnotations: true) }
         return bar
     }
 
@@ -497,9 +570,188 @@ private final class PinContentView: NSView {
             width: size.width,
             height: size.height
         ))
+        if !annotations.isEmpty || annotationDraft != nil {
+            drawAnnotations(into: context, displaySize: size)
+        }
         context.restoreGState()
         drawSelectionRing(context)
         drawCropOverlay(context)
+    }
+
+    /// 标注属于图像：与图像共用同一变换，窗口缩放旋转翻转时跟随。
+    /// 画布点尺寸固定为 baseSize（缩放无关），显示时按 zoom 摆进当前 rect。
+    private func drawAnnotations(into context: CGContext, displaySize: CGSize) {
+        guard let base = baseCGImage, baseSize.width > 0, baseSize.height > 0 else { return }
+        let zoom = displaySize.width / baseSize.width
+        let input = RenderInput(
+            base: base,
+            cropOriginPx: .zero,
+            canvasSize: baseSize,
+            scale: CGFloat(base.width) / baseSize.width
+        )
+        context.saveGState()
+        context.translateBy(x: -displaySize.width / 2, y: -displaySize.height / 2)
+        context.scaleBy(x: zoom, y: zoom)
+        AnnotationRenderer.draw(annotations, draft: annotationDraft, input: input, into: context)
+        context.restoreGState()
+    }
+
+    /// 视图点 → 画布点（原点图像左下）。逆序撤销 draw 里的中心平移、镜像、旋转与显示倍率。
+    private func canvasPoint(fromView point: CGPoint) -> CGPoint {
+        var x = point.x - bounds.midX
+        var y = point.y - bounds.midY
+        if transform.flipHorizontal { x = -x }
+        if transform.flipVertical { y = -y }
+        let angle = CGFloat(transform.quarterTurns) * .pi / 2
+        let rx = x * cos(angle) - y * sin(angle)
+        let ry = x * sin(angle) + y * cos(angle)
+        let displaySize = transform.unrotatedSize(base: baseSize)
+        let zoom = baseSize.width > 0 ? displaySize.width / baseSize.width : 1
+        return CGPoint(x: rx / zoom + baseSize.width / 2, y: ry / zoom + baseSize.height / 2)
+    }
+
+    // MARK: - 标注
+
+    /// 进入 / 退出标注模式。取消时回滚到进入前的标注集。
+    func setAnnotateMode(_ active: Bool, discardingAnnotations: Bool = false) {
+        if active {
+            guard annotationTool == nil else { return }
+            annotationsBeforeMode = annotations
+            annotationHistoryBeforeMode = annotationHistory
+            annotationTool = .rect
+            annotateBar.isHidden = false
+        } else {
+            guard annotationTool != nil else { return }
+            if discardingAnnotations {
+                annotations = annotationsBeforeMode
+                annotationHistory = annotationHistoryBeforeMode
+            }
+            annotationTool = nil
+            annotationDraft = nil
+            annotationStart = nil
+            annotateBar.isHidden = true
+        }
+        refreshAnnotateBar()
+        needsDisplay = true
+        needsLayout = true
+    }
+
+    /// 历史翻页换了图像，旧画布上的标注一并作废。
+    func clearAnnotations() {
+        annotations = []
+        annotationHistory.removeAll()
+        annotationDraft = nil
+        annotationStart = nil
+        refreshAnnotateBar()
+        needsDisplay = true
+    }
+
+    private func refreshAnnotateBar() {
+        annotateBar.updateState(
+            tool: annotationTool ?? .rect,
+            color: annotationStyle.color,
+            canUndo: annotationHistory.canUndo
+        )
+    }
+
+    /// 颜色按钮循环调色板前 6 色；当前色不在其中时回到首色。
+    private func cycleAnnotationColor() {
+        let palette = Array(RGBAColor.palette.prefix(6))
+        if let index = palette.firstIndex(of: annotationStyle.color) {
+            annotationStyle.color = palette[(index + 1) % palette.count]
+        } else {
+            annotationStyle.color = palette[0]
+        }
+        refreshAnnotateBar()
+    }
+
+    private func beginAnnotationStroke(_ tool: ShapeKind, at viewPoint: CGPoint) {
+        let point = canvasPoint(fromView: viewPoint)
+        guard tool != .text else {
+            // 第一版文字无输入框，点击处直接落一个占位标注。
+            commit(Annotation(
+                shape: .text("文字", origin: point, fontSize: annotationStyle.pen.textFontSize, rotation: 0),
+                style: annotationStyle
+            ))
+            annotationStart = nil
+            return
+        }
+        annotationStart = point
+        switch tool {
+        case .rect:
+            annotationDraft = Annotation(shape: .rect(CGRect(origin: point, size: .zero)), style: annotationStyle)
+        case .ellipse:
+            annotationDraft = Annotation(shape: .ellipse(CGRect(origin: point, size: .zero)), style: annotationStyle)
+        case .arrow:
+            annotationDraft = Annotation(shape: .arrow(from: point, to: point), style: annotationStyle)
+        case .brush:
+            annotationDraft = Annotation(shape: .brush([point]), style: annotationStyle)
+        default:
+            break
+        }
+        needsDisplay = true
+    }
+
+    private func updateAnnotationDraft(at viewPoint: CGPoint) {
+        guard let start = annotationStart, let tool = annotationTool else { return }
+        let point = canvasPoint(fromView: viewPoint)
+        switch tool {
+        case .rect, .ellipse:
+            let rect = RectMath.normalizedRect(from: start, to: point)
+            annotationDraft?.shape = tool == .rect ? .rect(rect) : .ellipse(rect)
+        case .arrow:
+            annotationDraft?.shape = .arrow(from: start, to: point)
+        case .brush:
+            if case .brush(var points)? = annotationDraft?.shape {
+                points.append(point)
+                annotationDraft?.shape = .brush(points)
+            }
+        default:
+            break
+        }
+        needsDisplay = true
+    }
+
+    private func finishAnnotationStroke(at viewPoint: CGPoint) {
+        guard let tool = annotationTool, let start = annotationStart else {
+            annotationStart = nil
+            return
+        }
+        annotationStart = nil
+        let point = canvasPoint(fromView: viewPoint)
+        // 微动不算一笔，误触不会在图上留下小点。
+        guard hypot(point.x - start.x, point.y - start.y) > 2,
+              var draft = annotationDraft else {
+            annotationDraft = nil
+            needsDisplay = true
+            return
+        }
+        switch tool {
+        case .rect, .ellipse:
+            let rect = RectMath.normalizedRect(from: start, to: point)
+            draft.shape = tool == .rect ? .rect(rect) : .ellipse(rect)
+        case .arrow:
+            draft.shape = .arrow(from: start, to: point)
+        default:
+            break
+        }
+        annotationDraft = draft
+        commit(draft)
+    }
+
+    private func commit(_ annotation: Annotation) {
+        annotationHistory.record(annotations)
+        annotations.append(annotation)
+        annotationDraft = nil
+        refreshAnnotateBar()
+        needsDisplay = true
+    }
+
+    private func undoLastAnnotation() {
+        guard let previous = annotationHistory.undo(current: annotations) else { return }
+        annotations = previous
+        refreshAnnotateBar()
+        needsDisplay = true
     }
 
     /// 背景铺在图像之下；图像自身的透明区域会露出它。
@@ -595,6 +847,11 @@ private final class PinContentView: NSView {
             needsDisplay = true
             return
         }
+        // 标注模式吞掉所有点击，双击关闭与 Shift 多选都不生效。
+        if let tool = annotationTool {
+            beginAnnotationStroke(tool, at: point)
+            return
+        }
         if event.clickCount == 2 {
             if event.modifierFlags.contains(.shift) {
                 pinWindow.toggleThumbnail()
@@ -632,6 +889,10 @@ private final class PinContentView: NSView {
             needsDisplay = true
             return
         }
+        if annotationTool != nil {
+            updateAnnotationDraft(at: convert(event.locationInWindow, from: nil))
+            return
+        }
         if let resizeState {
             updateResize(resizeState, in: pinWindow, mouse: NSEvent.mouseLocation)
             return
@@ -647,6 +908,10 @@ private final class PinContentView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
+        if annotationTool != nil {
+            finishAnnotationStroke(at: convert(event.locationInWindow, from: nil))
+            return
+        }
         if isCropping {
             let selection = cropSelection
             endCropMode()
@@ -930,6 +1195,11 @@ private final class PinContentView: NSView {
             return
         }
         if event.keyCode == 53 {
+            // 标注模式下 Esc 只退出标注，标注保留，窗口不关。
+            if annotationTool != nil {
+                setAnnotateMode(false)
+                return
+            }
             if isCropping {
                 endCropMode()
             } else if event.modifierFlags.contains(.shift) {
@@ -945,7 +1215,13 @@ private final class PinContentView: NSView {
         let characters = event.charactersIgnoringModifiers ?? ""
         let key = characters.lowercased()
         if flags.contains(.command) {
-            if key == "z", pinWindow.undoLastCrop() { return }
+            if key == "z" {
+                if annotationTool != nil {
+                    undoLastAnnotation()
+                    return
+                }
+                if pinWindow.undoLastCrop() { return }
+            }
             super.keyDown(with: event)
             return
         }
@@ -985,7 +1261,7 @@ private final class PinContentView: NSView {
         case "b":
             pinWindow.cycleBackground()
         case "c":
-            beginCrop()
+            if annotationTool == nil { beginCrop() }
         case ",":
             pinWindow.stepHistory(by: -1)
         case ".":
@@ -996,6 +1272,10 @@ private final class PinContentView: NSView {
     }
 
     override func cancelOperation(_ sender: Any?) {
+        if annotationTool != nil {
+            setAnnotateMode(false)
+            return
+        }
         if isCropping {
             endCropMode()
             return
