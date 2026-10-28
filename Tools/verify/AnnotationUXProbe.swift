@@ -59,6 +59,24 @@ func drag(_ view: OverlayView, _ window: NSWindow, from: CGPoint, to: CGPoint) {
 }
 
 @MainActor
+func keyDown(_ view: OverlayView, _ window: NSWindow, keyCode: UInt16) {
+    guard let event = NSEvent.keyEvent(
+        with: .keyDown,
+        location: .zero,
+        modifierFlags: [],
+        timestamp: ProcessInfo.processInfo.systemUptime,
+        windowNumber: window.windowNumber,
+        context: nil,
+        characters: "",
+        charactersIgnoringModifiers: "",
+        isARepeat: false,
+        keyCode: keyCode
+    ) else { return }
+    view.keyDown(with: event)
+    pump(0.1)
+}
+
+@MainActor
 func shapeBounds(_ view: OverlayView, index: Int) -> CGRect? {
     let annotations = view.annotations
     guard annotations.indices.contains(index) else { return nil }
@@ -121,6 +139,16 @@ func run() {
         } else {
             print("PROBE-B INCONCLUSIVE shape count changed")
         }
+    }
+
+    let beforeDelete = view.annotations.count
+    keyDown(view, window, keyCode: 51)
+    let afterDelete = view.annotations.count
+    print("PROBE-C before=\(beforeDelete) after=\(afterDelete)")
+    if afterDelete == beforeDelete - 1 {
+        print("PROBE-C PASS delete removed the shape that was showing handles")
+    } else {
+        print("PROBE-C FAIL delete did nothing without a selection")
     }
 
     wiring.controller.cancel()

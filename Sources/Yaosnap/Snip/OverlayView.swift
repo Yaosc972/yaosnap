@@ -885,7 +885,24 @@ final class OverlayView: NSView {
     }
 
     private func deleteSelected() {
-        guard case .selected(let ids) = phase, let canvas, !ids.isEmpty else {
+        guard let canvas else {
+            NSSound.beep()
+            return
+        }
+        switch phase {
+        case .selected, .ready:
+            break
+        default:
+            NSSound.beep()
+            return
+        }
+        let ids: Set<UUID>
+        if case .selected(let selected) = phase, !selected.isEmpty {
+            ids = selected
+        } else if !canvas.handleIDs.isEmpty {
+            // 未自动选中时画完的形状只显示手柄，Delete 同样应删掉它。
+            ids = canvas.handleIDs
+        } else {
             NSSound.beep()
             return
         }
@@ -897,6 +914,7 @@ final class OverlayView: NSView {
         pushUndoSnapshot()
         canvas.annotations = AnnotationSelection.removing(existing, from: canvas.annotations)
         canvas.selectedIDs = []
+        canvas.handleIDs = []
         phase = .ready
     }
 
