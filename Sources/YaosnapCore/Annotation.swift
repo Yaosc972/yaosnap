@@ -197,6 +197,35 @@ public enum Shape: Equatable, Codable {
         }
     }
 
+    /// 只命中描边附近，空心的矩形 / 圆角矩形 / 椭圆内部不算命中。
+    /// 实心形状（填充矩形、文字、序号、路径类）沿用 contains。
+    public func strokeHit(_ point: CGPoint, tolerance: CGFloat) -> Bool {
+        switch self {
+        case .rect(let rect), .roundedRect(let rect, _):
+            return Self.nearRectEdge(point, rect: rect, tolerance: tolerance)
+        case .ellipse(let rect):
+            let rx = rect.width / 2
+            let ry = rect.height / 2
+            guard rx > 0, ry > 0 else { return false }
+            let nx = (point.x - rect.midX) / rx
+            let ny = (point.y - rect.midY) / ry
+            let value = (nx * nx + ny * ny).squareRoot()
+            return abs(value - 1) * min(rx, ry) <= tolerance
+        case .magnify, .mosaicRect:
+            return contains(point, tolerance: tolerance)
+        default:
+            return contains(point, tolerance: tolerance)
+        }
+    }
+
+    private static func nearRectEdge(_ point: CGPoint, rect: CGRect, tolerance: CGFloat) -> Bool {
+        let outer = rect.insetBy(dx: -tolerance, dy: -tolerance)
+        guard outer.contains(point) else { return false }
+        let dx = min(abs(point.x - rect.minX), abs(point.x - rect.maxX))
+        let dy = min(abs(point.y - rect.minY), abs(point.y - rect.maxY))
+        return min(dx, dy) <= tolerance
+    }
+
     /// 整体平移。文本的 origin 也要跟着走，否则包围盒会留在原位。
     public func translated(by delta: CGPoint) -> Shape {
         func moved(_ point: CGPoint) -> CGPoint {

@@ -442,6 +442,10 @@ final class OverlayView: NSView {
                 requestCopy()
                 return
             }
+            if let hit = anyShapeHandleHit(at: rawCanvasPoint(from: point)) {
+                beginShapeHandleDrag(hit)
+                return
+            }
             // 边缘命中优先于"选区外重画"：贴边按下是调整大小，不是新选区。
             if let edge = SelectionEdge.hit(
                 point: point,
@@ -481,7 +485,7 @@ final class OverlayView: NSView {
                 beginTextHandleDrag(hit)
                 return
             }
-            if let hit = shapeHandleHit(at: rawCanvasPoint(from: point)) {
+            if let hit = anyShapeHandleHit(at: rawCanvasPoint(from: point)) {
                 beginShapeHandleDrag(hit)
                 return
             }
@@ -505,7 +509,9 @@ final class OverlayView: NSView {
             }
             // 画完自动选中后仍在 draw 模式：按在选中的形状上直接拖，按在别处开新一笔。
             let start = canvasPoint(from: point)
-            if let hit = hitAnnotation(at: start), ids.contains(hit.id) {
+            if let hit = hitAnnotation(at: start),
+               ids.contains(hit.id),
+               hit.shape.strokeHit(start, tolerance: Self.hitTolerance + hit.style.pen.lineWidth / 2) {
                 phase = .moving(
                     ids: ids,
                     grab: start,
@@ -868,6 +874,7 @@ final class OverlayView: NSView {
     /// 清除选中。阶段退回 ready，选区与标注不动。
     private func clearSelection() {
         canvas?.selectedIDs = []
+        canvas?.handleIDs = []
         marqueeRect = .zero
         switch phase {
         case .selected, .moving, .resizingShape, .marquee:
@@ -1576,15 +1583,15 @@ final class OverlayView: NSView {
         }
     }
 
-    /// 选中面状形状的四角命中。线状形状没有控制点，仍只显示包围盒。
-    private func shapeHandleHit(at point: CGPoint) -> (id: UUID, corner: ShapeHandle)? {
-        guard case .selected(let ids) = phase, ids.count == 1, let id = ids.first,
-              let shape = canvas?.annotations.first(where: { $0.id == id })?.shape,
-              shape.supportsResizeHandles else { return nil }
-        for corner in ShapeHandle.allCases {
-            let anchor = corner.point(in: shape.bounds)
-            if hypot(point.x - anchor.x, point.y - anchor.y) <= Self.handleHitRadius {
-                return (id, corner)
+    /// 任意可缩放形状的四角命中，不要求已选中。后画的形状优先。
+    private func anyShapeHandleHit(at point: CGPoint) -> (id: UUID, corner: ShapeHandle)? {
+        guard let annotations = canvas?.annotations else { return nil }
+        for annotation in annotations.reversed() where annotation.shape.supportsResizeHandles {
+            for corner in ShapeHandle.allCases {
+                let anchor = corner.point(in: annotation.shape.bounds)
+                if hypot(point.x - anchor.x, point.y - anchor.y) <= Self.handleHitRadius {
+                    return (annotation.id, corner)
+                }
             }
         }
         return nil
@@ -1594,6 +1601,7 @@ final class OverlayView: NSView {
         guard let canvas,
               let shape = canvas.annotations.first(where: { $0.id == hit.id })?.shape,
               shape.supportsResizeHandles else { return }
+        canvas.handleIDs = []
         canvas.selectedIDs = [hit.id]
         phase = .resizingShape(id: hit.id, corner: hit.corner, original: shape, recorded: false)
     }
@@ -1682,6 +1690,7 @@ final class OverlayView: NSView {
     /// 选区内按当前工具起一笔 draft。单击不落形状（点序列除外，单击即圆点）。
     private func beginDraft(at viewPoint: CGPoint) {
         guard let canvas else { return }
+        canvas.handleIDs = []
         let start = canvasPoint(from: viewPoint)
         if toolStore.currentKind == .text {
             beginTextEditing(at: viewPoint)
@@ -1718,6 +1727,10 @@ final class OverlayView: NSView {
         if autoSelectOnCreation {
             canvas.selectedIDs = [draft.id]
             phase = .selected(ids: [draft.id])
+        } else {
+            // 不选中也要回到 ready，否则下一笔会沿用上一笔的起点继续画。
+            canvas.handleIDs = [draft.id]
+            phase = .ready
         }
     }
 

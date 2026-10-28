@@ -130,4 +130,32 @@ struct AnnotationTests {
         #expect(RGBAColor.palette.count == 12)
         #expect(RGBAColor.palette.allSatisfy { $0.a == 1 })
     }
+
+    @Test func strokeHitOnlyMatchesRectEdge() {
+        let shape = Shape.rect(CGRect(x: 10, y: 10, width: 100, height: 100))
+        #expect(!shape.strokeHit(CGPoint(x: 60, y: 60), tolerance: 4), "空心矩形内部不算命中")
+        #expect(shape.strokeHit(CGPoint(x: 10, y: 60), tolerance: 4), "左边描边算命中")
+        #expect(shape.strokeHit(CGPoint(x: 110, y: 60), tolerance: 4), "右边描边算命中")
+        #expect(shape.strokeHit(CGPoint(x: 60, y: 10), tolerance: 4), "下边描边算命中")
+        #expect(shape.strokeHit(CGPoint(x: 60, y: 110), tolerance: 4), "上边描边算命中")
+        #expect(!shape.strokeHit(CGPoint(x: 300, y: 60), tolerance: 4), "远离描边不算命中")
+    }
+
+    @Test func strokeHitOnlyMatchesEllipseEdge() {
+        let shape = Shape.ellipse(CGRect(x: 0, y: 0, width: 100, height: 100))
+        #expect(!shape.strokeHit(CGPoint(x: 50, y: 50), tolerance: 4), "椭圆内部不算命中")
+        #expect(!shape.strokeHit(CGPoint(x: 0, y: 0), tolerance: 4), "包围盒四角不算命中")
+        #expect(shape.strokeHit(CGPoint(x: 0, y: 50), tolerance: 4), "椭圆左边界算命中")
+        #expect(shape.strokeHit(CGPoint(x: 50, y: 100), tolerance: 4), "椭圆上边界算命中")
+    }
+
+    @Test func strokeHitKeepsFilledShapeSemantics() {
+        let magnify = Shape.magnify(CGRect(x: 0, y: 0, width: 100, height: 100), zoom: 2)
+        #expect(magnify.strokeHit(CGPoint(x: 50, y: 50), tolerance: 4), "放大镜内部仍算命中")
+        let mosaic = Shape.mosaicRect(CGRect(x: 0, y: 0, width: 100, height: 100))
+        #expect(mosaic.strokeHit(CGPoint(x: 50, y: 50), tolerance: 4), "马赛克矩形内部仍算命中")
+        let line = Shape.line(from: CGPoint(x: 0, y: 0), to: CGPoint(x: 100, y: 0))
+        #expect(line.strokeHit(CGPoint(x: 50, y: 2), tolerance: 4), "线状形状沿用 contains")
+        #expect(!line.strokeHit(CGPoint(x: 50, y: 50), tolerance: 4), "离线的点不算命中")
+    }
 }

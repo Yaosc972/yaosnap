@@ -23,6 +23,10 @@ final class AnnotationCanvas: NSView {
     var selectedIDs: Set<UUID> = [] {
         didSet { needsDisplay = true }
     }
+    /// draw 模式下画完的形状只显示手柄、不进入选中高亮，供立刻拖动缩放。
+    var handleIDs: Set<UUID> = [] {
+        didSet { if handleIDs != oldValue { needsDisplay = true } }
+    }
     var currentStyle: Style {
         didSet { needsDisplay = true }
     }
@@ -68,6 +72,18 @@ final class AnnotationCanvas: NSView {
 
     private func drawSelectionHighlight(in ctx: CGContext) {
         let selected = annotations.filter { selectedIDs.contains($0.id) }
+        let handlesOnly = annotations.filter {
+            handleIDs.contains($0.id) && !selectedIDs.contains($0.id)
+        }
+        if selected.isEmpty, handlesOnly.count == 1, handlesOnly[0].shape.supportsResizeHandles {
+            let shape = handlesOnly[0].shape
+            ctx.saveGState()
+            ctx.setStrokeColor(RGBAColor.palette[5].cgColor)
+            ctx.setLineWidth(1.5)
+            drawHandleSquares(ShapeHandle.allCases.map { $0.point(in: shape.bounds) }, in: ctx)
+            ctx.restoreGState()
+            return
+        }
         guard !selected.isEmpty else { return }
         ctx.saveGState()
         ctx.setStrokeColor(RGBAColor.palette[5].cgColor)
