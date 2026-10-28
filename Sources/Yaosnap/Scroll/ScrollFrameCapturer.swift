@@ -43,15 +43,26 @@ final class ScreenScrollFrameCapturer: ScrollFrameCapturing {
             }
 
             guard let display = content.displays.first(where: { $0.displayID == displayID }) else {
+                // 缓存内容可能已过期（显示器拔插/会话变化），清掉以免永久卡在回退路径。
+                cachedContent = nil
                 return nil
             }
             let ownApplications = content.applications.filter {
                 $0.processID == ProcessInfo.processInfo.processIdentifier
             }
+            // 枚举结果里没有本进程时，应用级排除什么也排不掉，会把自己的遮罩/边框拼进图里；
+            // 此时宁可放弃 SCK，交给确定性的“抓本窗口之下”回退。
+            guard !ownApplications.isEmpty else {
+                return nil
+            }
+            // 同时按 windowID 精确定位覆盖层窗口做窗口级排除，不依赖 applications 列表。
+            let ownWindows = content.windows.filter {
+                $0.windowID == CGWindowID(excludedWindowNumber)
+            }
             let filter = SCContentFilter(
                 display: display,
                 excludingApplications: ownApplications,
-                exceptingWindows: []
+                exceptingWindows: ownWindows
             )
             let config = SCStreamConfiguration()
             config.sourceRect = CGRect(
