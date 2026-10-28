@@ -627,6 +627,8 @@ final class SnipController {
         }
         let config = translationConfig()
         let displayID = pending.displayID
+        (overlayWindow(for: displayID)?.contentView as? OverlayView)?
+            .showBusyMessage("翻译中…")
         let target = (notification.userInfo?[.translationTarget] as? String)
             .flatMap(TranslationTarget.init(rawValue:)) ?? .auto
         let source = pending.sourceImage
@@ -677,8 +679,9 @@ final class SnipController {
         guard !text.isEmpty else {
             print("[snip] 翻译没有识别到文字")
             NSSound.beep()
-            (overlayWindow(for: displayID)?.contentView as? OverlayView)?
-                .showToolbarMessage("选区里没有识别到文字")
+            let overlay = overlayWindow(for: displayID)?.contentView as? OverlayView
+            overlay?.hideBusyMessage()
+            overlay?.showToolbarMessage("选区里没有识别到文字")
             return
         }
         let provider = translationProvider(for: config)
@@ -710,6 +713,7 @@ final class SnipController {
             NSSound.beep()
             return
         }
+        (overlay.contentView as? OverlayView)?.hideBusyMessage()
         let alert = NSAlert()
         alert.messageText = "翻译失败"
         alert.informativeText = error.localizedDescription

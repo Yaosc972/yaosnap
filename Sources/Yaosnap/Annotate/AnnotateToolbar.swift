@@ -80,6 +80,17 @@ final class AnnotateToolbar: NSView {
         label.isHidden = true
         return label
     }()
+    /// showBusy 的转圈指示，与提示文字同一行。
+    private lazy var busySpinner: NSProgressIndicator = {
+        let indicator = NSProgressIndicator()
+        indicator.style = .spinning
+        indicator.controlSize = .small
+        indicator.isDisplayedWhenStopped = false
+        indicator.isHidden = true
+        // 深色气泡上用深色外观，系统转圈才会画成白色，默认的深灰几乎看不见。
+        indicator.appearance = NSAppearance(named: .darkAqua)
+        return indicator
+    }()
     private var messageToken = 0
 
     /// 提示条只是显示层，不吃点击，避免覆盖期间下面的按钮点不动。
@@ -455,8 +466,7 @@ final class AnnotateToolbar: NSView {
     }
 
     /// 识别结果在工具条上短暂提示。后一次提示会让前一次的隐藏计时失效。
-    func showMessage(_ text: String) {
-        guard !text.isEmpty else { return }
+    func showMessage(_ text: String) {        guard !text.isEmpty else { return }
         messageLabel.stringValue = text
         let height: CGFloat = 24
         let fitting = messageLabel.attributedStringValue.size().width
@@ -474,6 +484,51 @@ final class AnnotateToolbar: NSView {
             guard let self, self.messageToken == token else { return }
             self.messageLabel.isHidden = true
         }
+    }
+
+    /// 常驻忙碌提示，带转圈指示，直到 hideBusy 才消失。翻译这类网络等待用它。
+    func showBusy(_ text: String) {
+        messageLabel.stringValue = text
+        let height: CGFloat = 24
+        let spinnerSide: CGFloat = 14
+        let textWidth = ceil(messageLabel.attributedStringValue.size().width)
+        let width = min(
+            bounds.width - Metrics.padding * 2,
+            textWidth + spinnerSide + 40
+        )
+        let box = NSRect(
+            x: (bounds.width - width) / 2,
+            y: (bounds.height - height) / 2,
+            width: width,
+            height: height
+        )
+        busySpinner.frame = NSRect(
+            x: box.minX + 12,
+            y: box.minY + (height - spinnerSide) / 2,
+            width: spinnerSide,
+            height: spinnerSide
+        )
+        messageLabel.frame = NSRect(
+            x: busySpinner.frame.maxX + 8,
+            y: box.minY,
+            width: textWidth + 8,
+            height: height
+        )
+        if busySpinner.superview == nil {
+            addSubview(busySpinner)
+        }
+        busySpinner.isHidden = false
+        busySpinner.startAnimation(nil)
+        messageLabel.isHidden = false
+        // 让 showMessage 的自动隐藏失效，避免等待中提示先消失。
+        messageToken += 1
+    }
+
+    func hideBusy() {
+        busySpinner.stopAnimation(nil)
+        busySpinner.isHidden = true
+        messageLabel.isHidden = true
+        messageToken += 1
     }
 
     // MARK: - 弹层

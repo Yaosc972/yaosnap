@@ -2065,6 +2065,14 @@ final class OverlayView: NSView {
         toolbar.showMessage(text)
     }
 
+    func showBusyMessage(_ text: String) {
+        toolbar.showBusy(text)
+    }
+
+    func hideBusyMessage() {
+        toolbar.hideBusy()
+    }
+
     private func requestSave(quick: Bool = false) {
         var info: [AnyHashable: Any] = [SnipNotificationKey.displayID: shot.displayID]
         if quick { info[SnipNotificationKey.quickSave] = true }
