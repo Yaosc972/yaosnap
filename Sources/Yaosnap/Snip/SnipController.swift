@@ -558,8 +558,10 @@ final class SnipController {
             return
         }
         let displayID = pending.displayID
+        let source = pending.sourceImage
+        let cropRect = pending.cropRectPx
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let text = TextRecognizer.recognizeText(in: image)
+            let text = Self.recognizeTextWithFallback(in: image, source: source, cropRect: cropRect)
             Task { @MainActor in
                 self?.finishTextRecognition(text, displayID: displayID)
             }
@@ -627,12 +629,32 @@ final class SnipController {
         let displayID = pending.displayID
         let target = (notification.userInfo?[.translationTarget] as? String)
             .flatMap(TranslationTarget.init(rawValue:)) ?? .auto
+        let source = pending.sourceImage
+        let cropRect = pending.cropRectPx
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let text = TextRecognizer.recognizeText(in: image)
+            let text = Self.recognizeTextWithFallback(in: image, source: source, cropRect: cropRect)
             Task { @MainActor [weak self] in
                 self?.translateRecognizedText(text, config: config, target: target, displayID: displayID)
             }
         }
+    }
+
+    /// 选区偏小或框得太紧时 Vision 会返回空，向外扩一圈从源图重裁再试一次。
+    private static func recognizeTextWithFallback(
+        in image: CGImage,
+        source: CGImage,
+        cropRect: CGRect
+    ) -> String {
+        let text = TextRecognizer.recognizeText(in: image)
+        guard text.isEmpty else { return text }
+        let bounds = CGRect(x: 0, y: 0, width: source.width, height: source.height)
+        let expanded = RectMath.expandedForOCR(cropRect, within: bounds)
+        guard expanded != cropRect,
+              let crop = source.cropping(to: expanded) else {
+            return ""
+        }
+        print("[snip] OCR 空结果，扩大选区重试 \(Int(expanded.width))x\(Int(expanded.height))")
+        return TextRecognizer.recognizeText(in: crop)
     }
 
     /// Settings 未标 Sendable，跨线程只取翻译要用的三个值。

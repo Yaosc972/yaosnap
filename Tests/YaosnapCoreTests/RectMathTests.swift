@@ -73,4 +73,23 @@ struct RectMathTests {
         // 视图左下角 (112,750) 对应全局矩形 (-1400,100,100,50) 的左下角 (-1400,150)
         #expect(point == CGPoint(x: -1400, y: 150))
     }
+
+    @Test func expandedForOCRKeepsCenterAndClampsToBounds() {
+        let bounds = CGRect(x: 0, y: 0, width: 1000, height: 800)
+        let rect = CGRect(x: 400, y: 300, width: 200, height: 100)
+        let expanded = RectMath.expandedForOCR(rect, within: bounds)
+        #expect(abs(expanded.width - 280) < 0.01)
+        #expect(abs(expanded.height - 140) < 0.01)
+        #expect(abs(expanded.midX - rect.midX) < 0.01)
+        #expect(abs(expanded.midY - rect.midY) < 0.01)
+
+        let atEdge = RectMath.expandedForOCR(
+            CGRect(x: 0, y: 0, width: 100, height: 100),
+            within: bounds
+        )
+        #expect(atEdge.minX == 0)
+        #expect(atEdge.minY == 0)
+        // 左侧出界 20pt 被裁掉，宽度剩 120
+        #expect(atEdge.width == 120)
+    }
 }

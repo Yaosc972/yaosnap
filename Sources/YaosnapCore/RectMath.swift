@@ -72,6 +72,26 @@ public enum RectMath {
         return clipped.isNull ? .zero : clipped
     }
 
+    /// OCR 兜底：以选区中心向外等比扩张，便于 Vision 检测到完整文字行。
+    public static func expandedForOCR(
+        _ rect: CGRect,
+        within bounds: CGRect,
+        scale: CGFloat = 1.4
+    ) -> CGRect {
+        guard !rect.isEmpty, scale > 1 else { return rect }
+        let width = rect.width * scale
+        let height = rect.height * scale
+        return clamp(
+            CGRect(
+                x: rect.midX - width / 2,
+                y: rect.midY - height / 2,
+                width: width,
+                height: height
+            ),
+            to: bounds
+        )
+    }
+
     /// CG 全局坐标 → 某屏覆盖窗口内的视图坐标
     public static func toViewRect(
         globalRect: CGRect,
