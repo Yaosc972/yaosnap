@@ -68,11 +68,21 @@ final class ScrollCaptureController {
             defer { self.inFlight = false }
             guard isRunning else { return }
             guard let frame = await capturer.capture(globalRect: globalRect) else { return }
+            // 抓帧期间可能已 finish()/cancel()：此时不能再喂引擎，
+            // 否则会在取消后回调 onUpdate，甚至弹出"已达上限"提示。
+            guard isRunning else { return }
             guard let state = engine.consume(frame: frame) else { return }
             if state.changed, let image = engine.image {
-                let grewEnough = lastReportedHeight == 0
+                // 反向滚动裁剪会让拼接图变矮；先把基线降下来，并让缩短本身触发一次刷新，
+                // 否则高度差为负，预览会一直卡住直到用户滚回旧的基线之上。
+                let shrank = image.height < lastReportedHeight
+                if shrank {
+                    lastReportedHeight = image.height
+                }
+                let shouldReport = lastReportedHeight == 0
+                    || shrank
                     || image.height - lastReportedHeight >= Self.previewUpdateThresholdPx
-                if grewEnough {
+                if shouldReport {
                     lastReportedHeight = image.height
                     onUpdate?(image, state.frameCount)
                 }
