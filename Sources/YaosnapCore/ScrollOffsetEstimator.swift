@@ -25,8 +25,19 @@ public struct VisionScrollOffsetEstimator: ScrollOffsetEstimating {
     private let maximumHorizontalMovement: CGFloat = 3
     private let minimumOverlapFraction: CGFloat = 0.15
     private let minimumConsensusCount = 4
-    /// Vision 对无关画面的置信度也可能报 1.0，需用像素一致性二次校验。
-    private let maximumMeanChannelDifference: CGFloat = 12
+
+    /// 校验用降采样倍数：缩到 1/4 宽高后像素数仅 1/16，6K 帧也不再产生数百 MB 临时缓冲。
+    private let validationDownsampleScale = 4
+    /// 降采样图上的块尺寸；16×16 降采样块约等于原图 64×64 区域，足以体现局部内容。
+    private let validationTileSize = 16
+    /// 匹配块的 RGB 三通道平均绝对差上限（0–255）。相同内容实测接近 0，无关噪声约 85。
+    private let tileMatchDifferenceThreshold: CGFloat = 6
+    /// 块内 RGB 动态范围下限。纯色块没有鉴别力，不计入统计，避免黑底/空白稀释差异。
+    private let minimumTileActivityRange = 8
+    /// 有鉴别力的块少于该数量时无法判断，保守返回不一致。
+    private let minimumActiveTileCount = 4
+    /// 匹配块占比下限。固定标题栏/工具栏只占少数块，不会拖累合法滚动帧。
+    private let matchingTileFractionThreshold: CGFloat = 0.6
 
     public init() {}
 
@@ -38,6 +49,8 @@ public struct VisionScrollOffsetEstimator: ScrollOffsetEstimating {
 
         let frameHeight = CGFloat(current.height)
         let bands = comparisonBands(width: current.width, height: current.height)
+        // 两帧只在降采样后转换一次，供共识与全帧回退两条路径复用。
+        let comparison = downsampledComparison(current: current, previous: previous)
 
         var bandOffsets: [CGFloat] = []
         for band in bands {
@@ -50,13 +63,15 @@ public struct VisionScrollOffsetEstimator: ScrollOffsetEstimating {
         }
 
         if let consensus = consensusOffset(in: bandOffsets, minimumCount: minimumConsensusCount),
-           hasMatchingContent(current: current, previous: previous, offset: consensus.offsetPx) {
+           let comparison,
+           hasMatchingContent(comparison, offsetPx: consensus.offsetPx, sourceHeight: current.height) {
             return consensus
         }
 
         guard let full = translation(from: current, to: previous),
               abs(full.y) <= frameHeight * (1 - minimumOverlapFraction),
-              hasMatchingContent(current: current, previous: previous, offset: full.y) else { return nil }
+              let comparison,
+              hasMatchingContent(comparison, offsetPx: full.y, sourceHeight: current.height) else { return nil }
         return ScrollOffsetEstimate(offsetPx: full.y, confidence: full.confidence)
     }
 
@@ -86,30 +101,40 @@ public struct VisionScrollOffsetEstimator: ScrollOffsetEstimating {
         return ScrollOffsetEstimate(offsetPx: average, confidence: 0.9)
     }
 
-    /// 按候选偏移对齐重叠区，比较像素平均通道差；无关画面差异远高于阈值。
-    private func hasMatchingContent(current: CGImage, previous: CGImage, offset: CGFloat) -> Bool {
-        guard let currentPixels = rgbaPixels(of: current),
-              let previousPixels = rgbaPixels(of: previous) else { return false }
-        let shift = Int(offset.rounded())
-        let quality = [shift, -shift]
-            .compactMap {
-                meanChannelDifference(
-                    currentPixels,
-                    previousPixels,
-                    width: current.width,
-                    height: current.height,
-                    shift: $0
-                )
-            }
-            .min()
-        guard let quality else { return false }
-        return quality <= maximumMeanChannelDifference
+    private struct DownsampledComparison {
+        let current: [UInt8]
+        let previous: [UInt8]
+        let width: Int
+        let height: Int
     }
 
-    /// 位图坐标不翻转：两张图同样绘制，行对应关系只差一个符号，故上面同时尝试 ±shift。
-    private func rgbaPixels(of image: CGImage) -> [UInt8]? {
-        let width = image.width
-        let height = image.height
+    /// 分块一致性校验：固定标题栏等局部失配只占少数块，无关画面则多数块失配。
+    private func hasMatchingContent(
+        _ comparison: DownsampledComparison,
+        offsetPx: CGFloat,
+        sourceHeight: Int
+    ) -> Bool {
+        let shift = Int(
+            (offsetPx * CGFloat(comparison.height) / CGFloat(max(sourceHeight, 1))).rounded()
+        )
+        // ± 仅吸收位图行方向差异，不参与滚动方向判定；方向由 Vision 的 ty 决定。
+        return [shift, -shift].contains { matchingTiles(comparison, shift: $0) }
+    }
+
+    private func downsampledComparison(current: CGImage, previous: CGImage) -> DownsampledComparison? {
+        guard let currentPixels = downsampledPixels(of: current),
+              let previousPixels = downsampledPixels(of: previous) else { return nil }
+        return DownsampledComparison(
+            current: currentPixels,
+            previous: previousPixels,
+            width: max(1, current.width / validationDownsampleScale),
+            height: max(1, current.height / validationDownsampleScale)
+        )
+    }
+
+    private func downsampledPixels(of image: CGImage) -> [UInt8]? {
+        let width = max(1, image.width / validationDownsampleScale)
+        let height = max(1, image.height / validationDownsampleScale)
         guard let context = CGContext(
             data: nil,
             width: width,
@@ -119,38 +144,62 @@ public struct VisionScrollOffsetEstimator: ScrollOffsetEstimating {
             space: CGColorSpaceCreateDeviceRGB(),
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
         ) else { return nil }
+        context.interpolationQuality = .high
         context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
         guard let base = context.data?.assumingMemoryBound(to: UInt8.self) else { return nil }
         return Array(UnsafeBufferPointer(start: base, count: width * height * 4))
     }
 
-    private func meanChannelDifference(
-        _ current: [UInt8],
-        _ previous: [UInt8],
-        width: Int,
-        height: Int,
-        shift: Int
-    ) -> CGFloat? {
-        let start = max(0, -shift)
-        let end = min(height, height - shift)
-        guard end - start >= height / 10 else { return nil }
+    /// 块判定只看重叠区，且只统计有动态范围的块；返回匹配块占比是否达到阈值。
+    private func matchingTiles(_ comparison: DownsampledComparison, shift: Int) -> Bool {
+        let height = comparison.height
+        let width = comparison.width
+        let startRow = max(0, -shift)
+        let endRow = min(height, height - shift)
+        guard endRow - startRow >= validationTileSize else { return false }
+
         let bytesPerRow = width * 4
-        var total = 0
-        var count = 0
-        var y = start
-        while y < end {
-            let currentRow = y * bytesPerRow
-            let previousRow = (y + shift) * bytesPerRow
-            var x = 0
-            while x < width {
-                total += abs(Int(current[currentRow + x * 4]) - Int(previous[previousRow + x * 4]))
-                count += 1
-                x += 2
+        var activeTiles = 0
+        var matchedTiles = 0
+        var tileTop = ((startRow + validationTileSize - 1) / validationTileSize) * validationTileSize
+        while tileTop + validationTileSize <= endRow {
+            let tileBottom = tileTop + validationTileSize
+            var tileLeft = 0
+            while tileLeft < width {
+                let tileRight = min(tileLeft + validationTileSize, width)
+                var difference = 0
+                var samples = 0
+                var minimum = 255
+                var maximum = 0
+                for row in tileTop..<tileBottom {
+                    let currentRow = row * bytesPerRow
+                    let previousRow = (row + shift) * bytesPerRow
+                    for column in tileLeft..<tileRight {
+                        let currentIndex = currentRow + column * 4
+                        let previousIndex = previousRow + column * 4
+                        for channel in 0..<3 {
+                            let currentValue = Int(comparison.current[currentIndex + channel])
+                            let previousValue = Int(comparison.previous[previousIndex + channel])
+                            difference += abs(currentValue - previousValue)
+                            samples += 1
+                            minimum = min(minimum, min(currentValue, previousValue))
+                            maximum = max(maximum, max(currentValue, previousValue))
+                        }
+                    }
+                }
+                if maximum - minimum >= minimumTileActivityRange {
+                    activeTiles += 1
+                    if CGFloat(difference) / CGFloat(max(samples, 1)) <= tileMatchDifferenceThreshold {
+                        matchedTiles += 1
+                    }
+                }
+                tileLeft += validationTileSize
             }
-            y += 2
+            tileTop += validationTileSize
         }
-        guard count > 0 else { return nil }
-        return CGFloat(total) / CGFloat(count)
+
+        guard activeTiles >= minimumActiveTileCount else { return false }
+        return CGFloat(matchedTiles) / CGFloat(activeTiles) >= matchingTileFractionThreshold
     }
 
     private func translation(
