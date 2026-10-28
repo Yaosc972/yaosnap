@@ -141,7 +141,7 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate, N
     let translationTargetPopup = NSPopUpButton()
     let translationEndpointField = NSTextField()
     let deepSeekModelField = NSTextField()
-    let deepSeekKeyField = NSSecureTextField()
+    let deepSeekKeyField = PasteableSecureTextField()
     let saveKeyButton = NSButton(title: "保存", target: nil, action: nil)
     let clearKeyButton = NSButton(title: "清除", target: nil, action: nil)
     let translationKeyStatus = NSTextField(labelWithString: "")
@@ -754,5 +754,22 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate, N
         for recorder in hotkeyRecorders.values where recorder.isRecording {
             recorder.cancelRecording()
         }
+    }
+}
+
+/// NSSecureTextField 默认吞掉 ⌘V，密钥类输入需要粘贴，单开这一条快捷键。
+final class PasteableSecureTextField: NSSecureTextField {
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if event.type == .keyDown, flags == .command,
+           event.charactersIgnoringModifiers?.lowercased() == "v" {
+            if let editor = currentEditor() as? NSTextView {
+                editor.paste(nil)
+            } else {
+                NSApp.sendAction(#selector(NSText.paste(_:)), to: nil, from: self)
+            }
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
     }
 }
