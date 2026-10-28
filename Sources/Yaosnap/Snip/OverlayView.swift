@@ -485,7 +485,7 @@ final class OverlayView: NSView {
             switch toolStore.currentKind {
             case .brush, .marker, .mosaic, .blur:
                 appendDraftPoint(current)
-            case .rect, .roundedRect, .ellipse, .line, .arrow, .polyline, .magnify:
+            case .rect, .roundedRect, .ellipse, .line, .arrow, .polyline, .magnify, .mosaicRect:
                 canvas.draft = makeDraft(origin: origin, current: current)
             case .serial, .text, .eraser:
                 break
@@ -1632,7 +1632,8 @@ final class OverlayView: NSView {
 
     private func isDraftValid(_ draft: Annotation) -> Bool {
         switch draft.shape {
-        case .rect(let rect), .roundedRect(let rect, _), .ellipse(let rect), .magnify(let rect, _):
+        case .rect(let rect), .roundedRect(let rect, _), .ellipse(let rect), .magnify(let rect, _),
+             .mosaicRect(let rect):
             return rect.width >= Self.minimumStrokeSide && rect.height >= Self.minimumStrokeSide
         case .line(let from, let to), .arrow(let from, let to):
             // 水平/垂直线的 bounds 有一边为 0，按位移判断
@@ -1878,6 +1879,11 @@ final class OverlayView: NSView {
             return Annotation(shape: .marker([current]), style: style)
         case .mosaic:
             return Annotation(shape: .mosaic([current]), style: style)
+        case .mosaicRect:
+            return Annotation(
+                shape: .mosaicRect(RectMath.normalizedRect(from: origin, to: current)),
+                style: style
+            )
         case .blur:
             return Annotation(shape: .blur([current]), style: style)
         case .serial:
@@ -1909,7 +1915,7 @@ final class OverlayView: NSView {
         case .marker(let points): updated = grown(points).map { .marker($0) }
         case .mosaic(let points): updated = grown(points).map { .mosaic($0) }
         case .blur(let points): updated = grown(points).map { .blur($0) }
-        case .rect, .roundedRect, .ellipse, .line, .arrow, .polyline, .magnify: updated = nil
+        case .rect, .roundedRect, .ellipse, .line, .arrow, .polyline, .magnify, .mosaicRect: updated = nil
         case .text, .serial: updated = nil
         }
         if let updated {

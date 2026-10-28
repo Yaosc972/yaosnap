@@ -78,6 +78,7 @@ public enum ShapeKind: String, Codable, CaseIterable {
     case brush
     case marker
     case mosaic
+    case mosaicRect
     case blur
     case magnify
     case text
@@ -96,6 +97,8 @@ public enum Shape: Equatable, Codable {
     case brush([CGPoint])
     case marker([CGPoint])
     case mosaic([CGPoint])
+    /// 矩形马赛克：整块区域一次打满，不用沿笔迹划。
+    case mosaicRect(CGRect)
     case blur([CGPoint])
     /// 放大镜：rect 是镜框，镜内显示 rect 中心 1/zoom 区域的放大画面。
     case magnify(CGRect, zoom: CGFloat)
@@ -116,6 +119,7 @@ public enum Shape: Equatable, Codable {
         case .brush: return .brush
         case .marker: return .marker
         case .mosaic: return .mosaic
+        case .mosaicRect: return .mosaicRect
         case .blur: return .blur
         case .magnify: return .magnify
         case .text: return .text
@@ -127,7 +131,7 @@ public enum Shape: Equatable, Codable {
     public var bounds: CGRect {
         switch self {
         case .rect(let rect), .roundedRect(let rect, _), .ellipse(let rect),
-             .magnify(let rect, _):
+             .magnify(let rect, _), .mosaicRect(let rect):
             return rect
         case .line(let from, let to), .arrow(let from, let to):
             return RectMath.normalizedRect(from: from, to: to)
@@ -160,7 +164,8 @@ public enum Shape: Equatable, Codable {
     /// 命中测试。面状形状按包围盒（外扩 tolerance）判断，线状按到路径的距离判断。
     public func contains(_ point: CGPoint, tolerance: CGFloat) -> Bool {
         switch self {
-        case .rect(let rect), .roundedRect(let rect, _), .magnify(let rect, _):
+        case .rect(let rect), .roundedRect(let rect, _), .magnify(let rect, _),
+             .mosaicRect(let rect):
             return rect.insetBy(dx: -tolerance, dy: -tolerance).contains(point)
         case .ellipse(let rect):
             // 按椭圆方程判断，包围盒四角不算命中。
@@ -218,6 +223,8 @@ public enum Shape: Equatable, Codable {
             return .marker(points.map(moved))
         case .mosaic(let points):
             return .mosaic(points.map(moved))
+        case .mosaicRect(let rect):
+            return .mosaicRect(rect.offsetBy(dx: delta.x, dy: delta.y))
         case .blur(let points):
             return .blur(points.map(moved))
         case .text(let string, let origin, let fontSize, let rotation):

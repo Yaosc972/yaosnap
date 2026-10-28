@@ -109,6 +109,14 @@ public enum ShapeCatalog {
             phase: .p2
         ),
         ShapeEntry(
+            kind: .mosaicRect,
+            title: "矩形马赛克",
+            symbol: "rectangle.dashed",
+            shortcut: "MM",
+            defaultStyle: Style(color: RGBAColor.palette[0], pen: .p3),
+            phase: .p2
+        ),
+        ShapeEntry(
             kind: .blur,
             title: "模糊",
             symbol: "cloud.fog",

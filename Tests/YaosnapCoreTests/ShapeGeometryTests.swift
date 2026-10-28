@@ -60,9 +60,9 @@ struct ShapeGeometryTests {
         // 数组顺序即未来工具条顺序
         #expect(ShapeCatalog.entries.map(\.kind) == [
             .rect, .roundedRect, .ellipse, .line, .arrow, .polyline,
-            .brush, .marker, .mosaic, .blur, .text, .serial, .eraser, .magnify,
+            .brush, .marker, .mosaic, .mosaicRect, .blur, .text, .serial, .eraser, .magnify,
         ])
-        #expect(ShapeCatalog.p2.count == 14)
+        #expect(ShapeCatalog.p2.count == 15)
         #expect(ShapeCatalog.entry(for: .rect)?.symbol == "rectangle")
         #expect(ShapeCatalog.entry(for: .polyline)?.symbol == "scribble")
         #expect(ShapeCatalog.entry(for: .mosaic) != nil)

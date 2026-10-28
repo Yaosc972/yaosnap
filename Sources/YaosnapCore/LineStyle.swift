@@ -31,7 +31,7 @@ extension ShapeKind {
     public var supportsLineStyle: Bool {
         switch self {
         case .rect, .roundedRect, .ellipse, .line, .arrow, .polyline, .magnify: return true
-        case .brush, .marker, .mosaic, .blur, .text, .serial, .eraser: return false
+        case .brush, .marker, .mosaic, .mosaicRect, .blur, .text, .serial, .eraser: return false
         }
     }
 }

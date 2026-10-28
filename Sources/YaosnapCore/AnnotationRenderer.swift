@@ -110,6 +110,8 @@ public enum AnnotationRenderer {
             drawInkStroke(points, color: markerColor, lineWidth: lineWidth, blend: .multiply, in: ctx)
         case .mosaic(let points):
             drawMosaic(points, style: annotation.style, input: input, in: ctx)
+        case .mosaicRect(let rect):
+            drawMosaicRect(rect, style: annotation.style, input: input, in: ctx)
         case .blur(let points):
             drawBlur(points, style: annotation.style, input: input, in: ctx)
         case .magnify(let rect, let zoom):
@@ -318,6 +320,29 @@ public enum AnnotationRenderer {
 
     /// 马赛克：采样源必须是 RenderInput.base（原始冻结帧），不是已画标注的合成结果。
     /// clip 用笔画路径的 3 倍线宽描边区域，块图只在该区域内可见。
+    private static func drawMosaicRect(
+        _ rect: CGRect,
+        style: Style,
+        input: RenderInput,
+        in ctx: CGContext
+    ) {
+        guard rect.width > 0, rect.height > 0 else { return }
+        let sampler = BaseSampler(
+            base: input.base,
+            cropOriginPx: input.cropOriginPx,
+            canvasSize: input.canvasSize,
+            scale: input.scale
+        )
+        guard let blocks = sampler.pixelated(
+            region: rect,
+            blockPoints: style.pen.mosaicBlock
+        ) else { return }
+        ctx.saveGState()
+        ctx.clip(to: rect)
+        drawUpright(blocks, in: rect, ctx: ctx)
+        ctx.restoreGState()
+    }
+
     private static func drawMosaic(
         _ points: [CGPoint],
         style: Style,

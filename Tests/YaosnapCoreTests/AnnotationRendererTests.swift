@@ -577,6 +577,49 @@ struct AnnotationRendererTests {
         #expect(isWhite(at(bytes, x: 100, cy: 110, canvasSide: side)))
     }
 
+    @Test func mosaicRectQuantizesTheWholeRegion() {
+        let side = 200
+        let striped = PixelBuffer.solidImage(width: side, height: side, rects: stride(
+            from: 0, to: side, by: 16
+        ).flatMap { x in
+            [
+                (rect: CGRect(x: x, y: 0, width: 8, height: side), color: PixelBuffer.rgb(1, 0, 0)),
+                (rect: CGRect(x: x + 8, y: 0, width: 8, height: side), color: PixelBuffer.rgb(0, 0, 1)),
+            ]
+        })
+        let annotation = Annotation(
+            shape: .mosaicRect(CGRect(x: 40, y: 60, width: 120, height: 80)),
+            style: Style(color: red, pen: .p3)
+        )
+        let ctx = CGContext(
+            data: nil, width: side, height: side,
+            bitsPerComponent: 8, bytesPerRow: side * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )!
+        AnnotationRenderer.drawUpright(striped, in: CGRect(x: 0, y: 0, width: side, height: side), ctx: ctx)
+        AnnotationRenderer.draw(
+            [annotation], draft: nil,
+            input: RenderInput(
+                base: striped,
+                cropOriginPx: .zero,
+                canvasSize: CGSize(width: side, height: side),
+                scale: 1
+            ),
+            into: ctx
+        )
+        let bytes = PixelBuffer.srgbBytes(ctx.makeImage()!, width: side, height: side)!
+
+        // 矩形内同块两点颜色一致
+        let insideA = at(bytes, x: 60, cy: 100, canvasSide: side)
+        let insideB = at(bytes, x: 62, cy: 100, canvasSide: side)
+        #expect(insideA.r == insideB.r && insideA.g == insideB.g && insideA.b == insideB.b)
+        // 矩形外保持原条纹，红蓝仍可分辨
+        let outsideA = at(bytes, x: 10, cy: 100, canvasSide: side)
+        let outsideB = at(bytes, x: 18, cy: 100, canvasSide: side)
+        #expect(outsideA.r != outsideB.r || outsideA.b != outsideB.b)
+    }
+
     @Test func mosaicQuantizesBasePixels() {
         let side = 200
         // 底图竖条纹（8px 红蓝交替）：量化后块色是红蓝均值
