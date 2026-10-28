@@ -30,6 +30,36 @@ struct ShapeResizeTests {
         #expect(resized == CGRect(x: 110, y: 20, width: 90, height: 100))
     }
 
+    /// 拖上边中点只改高度，左右边界与下边界不动。
+    @Test func topCenterChangesHeightOnly() {
+        let resized = ShapeResize.resizedBox(box, corner: .topCenter, to: CGPoint(x: 999, y: 90), minimum: 2)
+        #expect(resized == CGRect(x: 10, y: 20, width: 100, height: 70))
+    }
+
+    /// 拖下边中点只改高度，上边界固定，缩到最小边长即停。
+    @Test func bottomCenterChangesHeightOnly() {
+        let resized = ShapeResize.resizedBox(box, corner: .bottomCenter, to: CGPoint(x: 999, y: 30), minimum: 2)
+        #expect(resized == CGRect(x: 10, y: 30, width: 100, height: 40))
+
+        let clamped = ShapeResize.resizedBox(box, corner: .bottomCenter, to: CGPoint(x: 999, y: 69), minimum: 2)
+        #expect(clamped == CGRect(x: 10, y: 68, width: 100, height: 2))
+    }
+
+    /// 拖左边中点只改宽度，上下边界不动。
+    @Test func leftCenterChangesWidthOnly() {
+        let resized = ShapeResize.resizedBox(box, corner: .leftCenter, to: CGPoint(x: 30, y: 999), minimum: 2)
+        #expect(resized == CGRect(x: 30, y: 20, width: 80, height: 50))
+    }
+
+    /// 拖右边中点只改宽度，缩到最小边长即停，不越过左边界。
+    @Test func rightCenterChangesWidthOnly() {
+        let resized = ShapeResize.resizedBox(box, corner: .rightCenter, to: CGPoint(x: 90, y: 999), minimum: 2)
+        #expect(resized == CGRect(x: 10, y: 20, width: 80, height: 50))
+
+        let clamped = ShapeResize.resizedBox(box, corner: .rightCenter, to: CGPoint(x: 5, y: 999), minimum: 2)
+        #expect(clamped == CGRect(x: 10, y: 20, width: 2, height: 50))
+    }
+
     /// 只有面状形状进入缩放分支。线状、笔迹、文字都不显示控制点。
     @Test func onlyFaceShapesSupportResizeHandles() {
         #expect(Shape.rect(.zero).supportsResizeHandles)
