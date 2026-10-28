@@ -354,6 +354,10 @@ final class SnipController {
     }
 
     func cancel() {
+        // 任何路径退出会话（包括另一块屏的覆盖层右键）都要停掉滚动抓帧循环，
+        // 否则覆盖层已关而 timer 仍在抓屏、拼接，直到 App 退出。
+        scrollController?.cancel()
+        scrollController = nil
         if let job = saveJob {
             saveJob = nil
             job.panel.cancel(nil)
@@ -517,7 +521,8 @@ final class SnipController {
             self?.presentScrollResult(image, scale: shot.scale)
         }
         controller.onLimitReached = { [weak view] in
-            view?.showToolbarMessage("已达最大高度")
+            // 滚动阶段工具条隐藏，上限提示画在覆盖层上。
+            view?.setScrollingMessage("已达最大高度 8000px · Enter 完成")
         }
         scrollController = controller
         view.beginScrollingCapture()

@@ -23,7 +23,7 @@ public final class ScrollStitcher {
     /// 反向位移连续出现两次才裁剪，避免滚动惯性抖动误删内容。
     private var hasPendingReverse = false
 
-    public init(maxHeightPx: Int = 20_000, deadZonePx: CGFloat = 3) {
+    public init(maxHeightPx: Int = 8_000, deadZonePx: CGFloat = 3) {
         self.maxHeightPx = maxHeightPx
         self.deadZonePx = deadZonePx
     }
@@ -93,6 +93,9 @@ public final class ScrollStitcher {
         return ScrollStitchState(frameCount: frameCount, changed: true, reachedLimit: false)
     }
 
+    /// 增量上下文（复用同一 CGContext、只绘制新增条带）未实现：每次追加都新建整高
+    /// CGContext 并重绘全部已有内容，宽 6016、高 20000 时单份约 480MB，每次追加瞬态约 3 份。
+    /// 默认上限压到 8000px，把单次追加的峰值控制在约 190MB；需要更长图时由调用方显式传入更大上限。
     private static func appendBottom(base: CGImage, strip: CGImage, stripHeightPx: Int) -> CGImage? {
         let width = base.width
         let height = base.height + stripHeightPx

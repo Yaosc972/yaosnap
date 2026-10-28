@@ -57,6 +57,8 @@ final class OverlayView: NSView {
     private var phase: Phase = .idle
     private(set) var scrollingPreview: CGImage?
     private(set) var scrollingFrameCount = 0
+    /// 滚动阶段覆盖层上的提示。滚动时工具条隐藏，提示（如"已达上限"）只能画在覆盖层上。
+    private var scrollingMessage: String?
     private var toolMode: ToolMode = .draw(.rect)
     /// 光标下的可吸附窗口（全局坐标）。nil 表示光标不在任何窗口上。
     private var hoverWindow: WindowCandidate?
@@ -358,9 +360,10 @@ final class OverlayView: NSView {
 
         drawSelectionBorder()
 
-        let hint = scrollingFrameCount > 0
+        // 覆盖层提示优先显示显式消息（如已达上限），否则显示常规滚动进度。
+        let hint = scrollingMessage ?? (scrollingFrameCount > 0
             ? "已捕获 \(scrollingFrameCount) 帧 · Enter 完成 · Esc 取消"
-            : "向下滚动捕获更多内容 · Enter 完成 · Esc 取消"
+            : "向下滚动捕获更多内容 · Enter 完成 · Esc 取消")
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 12, weight: .medium),
             .foregroundColor: NSColor.white
@@ -1131,6 +1134,7 @@ final class OverlayView: NSView {
         phase = .scrolling
         scrollingPreview = nil
         scrollingFrameCount = 0
+        scrollingMessage = nil
         toolbar.isHidden = true
         window?.ignoresMouseEvents = true
         window?.makeKey()
@@ -1143,10 +1147,17 @@ final class OverlayView: NSView {
         needsDisplay = true
     }
 
+    /// 滚动阶段覆盖层提示（工具条此时隐藏，消息只能画在覆盖层上）。主线程调用。
+    func setScrollingMessage(_ text: String) {
+        scrollingMessage = text
+        needsDisplay = true
+    }
+
     func endScrollingCapture() {
         guard case .scrolling = phase else { return }
         scrollingPreview = nil
         scrollingFrameCount = 0
+        scrollingMessage = nil
         window?.ignoresMouseEvents = false
         phase = .ready
         updateActionBar()
@@ -2226,6 +2237,11 @@ final class OverlayView: NSView {
     }
 
     private func requestCancel() {
+        // 滚动阶段只取消滚动捕获，不直接取消整个会话。
+        if case .scrolling = phase {
+            NotificationCenter.default.post(name: .snipScrollCancelRequested, object: self)
+            return
+        }
         NotificationCenter.default.post(name: .snipEscapePressed, object: nil)
     }
 

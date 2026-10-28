@@ -256,7 +256,8 @@ final class AnnotateToolbar: NSView {
         translateTargetButton.toolTip = "翻译方向"
         place(translateTargetButton)
         scrollingButton = makeHoverButton(
-            symbol: "scroll",
+            // "scroll" 是 macOS 13 起的符号，部署目标 12.0 上会显示空白。
+            symbol: "arrow.up.arrow.down",
             title: "滚动截图",
             action: #selector(scrollingCaptureTapped)
         )
