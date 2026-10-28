@@ -69,6 +69,9 @@ struct ScrollStitcherTests {
         // 底部 40 行来自新帧的底部 40 行（灰度 160...199）
         #expect(pixel(stitcher.image!, x: 0, y: 139) == 199)
         #expect(pixel(stitcher.image!, x: 0, y: 100) == 160)
+        // 既有行 0..99 必须原样保留且方向不变（行 0 仍在顶部）。
+        #expect(pixel(stitcher.image!, x: 0, y: 0) == 0)
+        #expect(pixel(stitcher.image!, x: 0, y: 99) == 99)
     }
 
     @Test func deadZoneIgnored() {
