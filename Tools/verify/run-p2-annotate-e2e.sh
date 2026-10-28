@@ -14,6 +14,9 @@ swiftc -O -target "$(uname -m)-apple-macos12.0" \
     Sources/Yaosnap/Snip/OverlayView.swift \
     Sources/Yaosnap/Snip/SnipOverlayWindow.swift \
     Sources/Yaosnap/Snip/TranslationResultWindow.swift \
+    Sources/Yaosnap/Scroll/ScrollCaptureController.swift \
+    Sources/Yaosnap/Scroll/ScrollFrameCapturer.swift \
+    Sources/Yaosnap/Scroll/ScrollResultWindow.swift \
     Sources/Yaosnap/Annotate/AnnotateToolbar.swift \
     Sources/Yaosnap/Annotate/AnnotationCanvas.swift \
     Sources/Yaosnap/Annotate/ToolStyleStore.swift \

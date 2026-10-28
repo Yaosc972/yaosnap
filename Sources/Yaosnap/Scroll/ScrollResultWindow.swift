@@ -47,10 +47,12 @@ final class ScrollResultWindow: NSWindow {
         scrollView.hasVerticalScroller = true
         scrollView.drawsBackground = true
 
-        let imageView = NSImageView(frame: NSRect(origin: .zero, size: pointSize))
+        let documentContainer = FlippedView(frame: NSRect(origin: .zero, size: pointSize))
+        let imageView = NSImageView(frame: documentContainer.bounds)
         imageView.image = NSImage(cgImage: image, size: pointSize)
         imageView.imageScaling = .scaleNone
-        scrollView.documentView = imageView
+        documentContainer.addSubview(imageView)
+        scrollView.documentView = documentContainer
         container.addSubview(scrollView)
 
         contentView = container
@@ -99,4 +101,9 @@ final class ScrollResultWindow: NSWindow {
     @objc private func closeTapped() {
         close()
     }
+}
+
+/// 翻转坐标的文档容器：NSScrollView 的初始滚动位置落在左上，长图从顶部开始看。
+private final class FlippedView: NSView {
+    override var isFlipped: Bool { true }
 }

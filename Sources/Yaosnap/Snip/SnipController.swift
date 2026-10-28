@@ -478,8 +478,8 @@ final class SnipController {
     }
 
     func handleScrollRequested(_ note: Notification) {
-        guard let view = note.object as? OverlayView,
-              let window = view.window,
+        guard let view = note.object as? OverlayView else { return }
+        guard let window = view.window,
               !view.selectionRect.isEmpty,
               let shot = shots.first(where: { $0.bounds.contains(
                   RectMath.toGlobalPoint(
@@ -488,14 +488,20 @@ final class SnipController {
                       viewHeight: view.bounds.height
                   )
               ) })
-        else { return }
+        else {
+            view.showToolbarMessage("无法开始滚动截图")
+            return
+        }
 
         let globalRect = RectMath.toGlobalRect(
             viewRect: view.selectionRect,
             displayBounds: shot.bounds,
             viewHeight: view.bounds.height
         )
-        guard let firstFrame = captureFrame(for: shot, globalRect: globalRect) else { return }
+        guard let firstFrame = captureFrame(for: shot, globalRect: globalRect) else {
+            view.showToolbarMessage("无法开始滚动截图")
+            return
+        }
 
         let capturer = ScreenScrollFrameCapturer(
             displayID: shot.displayID,
@@ -537,20 +543,24 @@ final class SnipController {
 
     /// 用与滚动期间相同的方式抓首帧，保证拼图与预览同源（不含遮罩）。
     private func captureFrame(for shot: DisplayShot, globalRect: CGRect) -> CGImage? {
-        let cropped = CGRect(
-            x: (globalRect.minX - shot.bounds.minX) * shot.scale,
-            y: (globalRect.minY - shot.bounds.minY) * shot.scale,
-            width: globalRect.width * shot.scale,
-            height: globalRect.height * shot.scale
+        // 全局坐标先换回该屏视图坐标，再交给统一的视图→像素换算。
+        let viewRect = RectMath.toViewRect(
+            globalRect: globalRect,
+            displayBounds: shot.bounds,
+            viewHeight: shot.bounds.height
+        )
+        let cropped = RectMath.imageRect(
+            fromViewRect: viewRect,
+            viewHeight: shot.bounds.height,
+            scale: shot.scale
         )
         return ImageOutput.crop(shot.image, to: cropped)
     }
 
     private func presentScrollResult(_ image: CGImage, scale: CGFloat) {
-        windows.forEach { $0.orderOut(nil) }
-        windows.removeAll()
-        shots.removeAll()
-        pendingRegion = nil
+        // 复用 cancel()：先复位光标再关窗口，避免滚动截图结束后留下十字光标。
+        cancel()
+        scrollResultWindow?.close()
 
         let window = ScrollResultWindow(image: image, scale: scale)
         window.onPin = { [weak self] image, scale in
