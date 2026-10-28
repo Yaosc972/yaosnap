@@ -21,12 +21,13 @@ struct TranslationProviderTests {
     // MARK: - DeepSeek 请求构造
 
     @Test func makeRequestBuildsEndpointHeadersAndTimeout() throws {
+        let endpoint = URL(string: "https://api.example.com/v1/chat/completions")!
         let request = try DeepSeekTranslationProvider.makeRequest(
-            text: "hello", model: "deepseek-chat", apiKey: "sk-test", targetLanguage: "zh"
+            text: "hello", model: "deepseek-chat", apiKey: "sk-test",
+            targetLanguage: "zh", endpoint: endpoint
         )
         #expect(request.httpMethod == "POST")
-        #expect(request.url == DeepSeekTranslationProvider.endpoint)
-        #expect(request.url?.absoluteString == "https://api.deepseek.com/chat/completions")
+        #expect(request.url == endpoint)
         #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer sk-test")
         #expect(request.value(forHTTPHeaderField: "Content-Type") == "application/json")
         #expect(request.timeoutInterval == 20)
@@ -48,7 +49,8 @@ struct TranslationProviderTests {
 
     @Test func requestEncodingProducesJsonBody() throws {
         let request = try DeepSeekTranslationProvider.makeRequest(
-            text: "你好", model: "deepseek-chat", apiKey: "k", targetLanguage: "ja"
+            text: "你好", model: "deepseek-chat", apiKey: "k", targetLanguage: "ja",
+            endpoint: URL(string: DeepSeekTranslationProvider.defaultEndpoint)!
         )
         let json = try #require(
             JSONSerialization.jsonObject(with: request.httpBody ?? Data()) as? [String: Any]
@@ -100,5 +102,24 @@ struct TranslationProviderTests {
         #expect(TranslationError.unavailable("语言包未安装").errorDescription == "语言包未安装")
         #expect(TranslationError.network("断网").errorDescription?.contains("断网") == true)
         #expect(TranslationError.badResponse("x").errorDescription?.contains("x") == true)
+    }
+
+    // MARK: - 翻译方向
+
+    @Test func autoTargetFlipsBySourceLanguage() {
+        #expect(TranslationTargetResolver.resolve(.auto, text: "这是一段中文说明") == "en")
+        #expect(TranslationTargetResolver.resolve(.auto, text: "hello world") == "zh")
+        #expect(TranslationTargetResolver.resolve(.auto, text: "12345") == "zh")
+    }
+
+    @Test func explicitTargetWinsOverDetection() {
+        #expect(TranslationTargetResolver.resolve(.en, text: "这是一段中文说明") == "en")
+        #expect(TranslationTargetResolver.resolve(.ja, text: "hello") == "ja")
+    }
+
+    @Test func targetCyclesThroughAllCases() {
+        #expect(TranslationTarget.auto.next == .zh)
+        #expect(TranslationTarget.zh.next == .en)
+        #expect(TranslationTarget.ko.next == .auto)
     }
 }

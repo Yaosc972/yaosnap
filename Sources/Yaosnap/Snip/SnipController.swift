@@ -33,6 +33,7 @@ final class SnipController {
         let backend: TranslationBackend
         let targetLanguage: String
         let model: String
+        let endpoint: String
     }
 
     private var windows: [SnipOverlayWindow] = []
@@ -283,6 +284,9 @@ final class SnipController {
                 whiteboardMode: activeWhiteboard != nil
             )
             view.autoSelectOnCreation = settings.autoSelectOnCreation
+            view.translationTarget = TranslationTarget(
+                rawValue: settings.translationTargetLanguage
+            ) ?? .auto
             view.elementDetectionEnabled = settings.detectUIElements
             view.selectionAspectRatio = settings.selectionAspectRatio
             if pickColor {
@@ -621,10 +625,12 @@ final class SnipController {
         }
         let config = translationConfig()
         let displayID = pending.displayID
+        let target = (notification.userInfo?[.translationTarget] as? String)
+            .flatMap(TranslationTarget.init(rawValue:)) ?? .auto
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let text = TextRecognizer.recognizeText(in: image)
             Task { @MainActor [weak self] in
-                self?.translateRecognizedText(text, config: config, displayID: displayID)
+                self?.translateRecognizedText(text, config: config, target: target, displayID: displayID)
             }
         }
     }
@@ -635,11 +641,17 @@ final class SnipController {
         return TranslationConfig(
             backend: settings.translationBackend,
             targetLanguage: settings.translationTargetLanguage,
-            model: settings.deepSeekModel
+            model: settings.deepSeekModel,
+            endpoint: settings.translationEndpoint
         )
     }
 
-    private func translateRecognizedText(_ text: String, config: TranslationConfig, displayID: UInt32) {
+    private func translateRecognizedText(
+        _ text: String,
+        config: TranslationConfig,
+        target: TranslationTarget,
+        displayID: UInt32
+    ) {
         guard !text.isEmpty else {
             print("[snip] 翻译没有识别到文字")
             NSSound.beep()
@@ -648,10 +660,11 @@ final class SnipController {
             return
         }
         let provider = translationProvider(for: config)
+        let language = TranslationTargetResolver.resolve(target, text: text)
         Task { @MainActor [weak self] in
             do {
-                let translated = try await provider.translate(text, to: config.targetLanguage)
-                print("[snip] 翻译完成 \(text.count) → \(translated.count) 字")
+                let translated = try await provider.translate(text, to: language)
+                print("[snip] 翻译完成 \(text.count) → \(translated.count) 字 target=\(language)")
                 self?.cancel()
                 TranslationResultWindow.show(source: text, translated: translated)
             } catch {
@@ -663,7 +676,8 @@ final class SnipController {
     private func translationProvider(for config: TranslationConfig) -> TranslationProvider {
         switch config.backend {
         case .system: return SystemTranslationProvider()
-        case .deepSeek: return DeepSeekTranslationProvider(model: config.model)
+        case .deepSeek:
+            return DeepSeekTranslationProvider(model: config.model, endpoint: config.endpoint)
         }
     }
 

@@ -21,7 +21,7 @@ struct SettingsTests {
         #expect(settings.autoSelectOnCreation)
         #expect(settings.hotkeyBindings.map(\.action) == HotkeyAction.allCases)
         #expect(settings.translationBackend == .system)
-        #expect(settings.translationTargetLanguage == "zh")
+        #expect(settings.translationTargetLanguage == "auto")
         #expect(settings.deepSeekModel == "deepseek-chat")
     }
 
@@ -66,7 +66,7 @@ struct SettingsTests {
         #expect(decoded.hotCorners == .standard)
         #expect(decoded.whiteboard == .standard)
         #expect(decoded.translationBackend == .system)
-        #expect(decoded.translationTargetLanguage == "zh")
+        #expect(decoded.translationTargetLanguage == "auto")
         #expect(decoded.deepSeekModel == "deepseek-chat")
     }
 

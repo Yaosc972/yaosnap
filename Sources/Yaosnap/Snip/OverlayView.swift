@@ -150,6 +150,12 @@ final class OverlayView: NSView {
         bar.onCopy = { [weak self] in self?.requestCopy() }
         bar.onExtractText = { [weak self] in self?.requestTextRecognition() }
         bar.onTranslate = { [weak self] in self?.requestTranslate() }
+        bar.onCycleTranslationTarget = { [weak self] in
+            guard let self else { return }
+            self.translationTarget = self.translationTarget.next
+            self.toolbar.updateTranslationTarget(self.translationTarget)
+            self.needsDisplay = true
+        }
         bar.onScanBarcode = { [weak self] in self?.requestBarcodeScan() }
         bar.onSave = { [weak self] in self?.requestSave() }
         bar.onQuickSave = { [weak self] in self?.requestSave(quick: true) }
@@ -333,6 +339,9 @@ final class OverlayView: NSView {
         hoverElementRect = element
         needsDisplay = true
     }
+
+    /// 本会话内翻译方向，工具条按钮循环切换。
+    var translationTarget: TranslationTarget = .auto
 
     /// 本视图内的左键按压会话。覆盖层全屏捕获，与 NSEvent.pressedMouseButtons 等价，
     /// 且可被验收 harness 程序化置位。
@@ -2036,7 +2045,10 @@ final class OverlayView: NSView {
         NotificationCenter.default.post(
             name: .snipTranslateRequested,
             object: nil,
-            userInfo: [SnipNotificationKey.displayID: shot.displayID]
+            userInfo: [
+                SnipNotificationKey.displayID: shot.displayID,
+                SnipNotificationKey.translationTarget: translationTarget.rawValue,
+            ]
         )
     }
 
@@ -2403,6 +2415,8 @@ enum SnipNotificationKey: Hashable {
     case quickSave
     /// 复制请求发出时的修饰键，决定「按住 ⌥ 时」是否落文件。
     case modifierFlags
+    /// 本次翻译请求的目标语言代码，工具条方向按钮决定。
+    case translationTarget
 }
 
 extension Dictionary where Key == AnyHashable, Value == Any {

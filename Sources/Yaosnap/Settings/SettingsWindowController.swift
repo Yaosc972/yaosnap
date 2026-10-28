@@ -138,7 +138,8 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate, N
     let whiteboardColorHexField = NSTextField()
     let whiteboardTransparentCheckbox = NSButton(checkboxWithTitle: "透明", target: nil, action: nil)
     let translationBackendPopup = NSPopUpButton()
-    let translationTargetField = NSTextField()
+    let translationTargetPopup = NSPopUpButton()
+    let translationEndpointField = NSTextField()
     let deepSeekModelField = NSTextField()
     let deepSeekKeyField = NSSecureTextField()
     let saveKeyButton = NSButton(title: "保存", target: nil, action: nil)
@@ -294,17 +295,24 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate, N
         translationBackendPopup.action = #selector(translationBackendChanged)
         rows.append([translationTitle, translationBackendPopup])
 
-        let targetLanguageTitle = NSTextField(labelWithString: "翻译目标语言")
+        let targetLanguageTitle = NSTextField(labelWithString: "默认翻译方向")
         targetLanguageTitle.alignment = .right
-        translationTargetField.placeholderString = "zh"
-        translationTargetField.alignment = .right
-        translationTargetField.target = self
-        translationTargetField.action = #selector(translationTargetCommitted)
-        translationTargetField.delegate = self
-        translationTargetField.widthAnchor.constraint(equalToConstant: 90).isActive = true
-        rows.append([targetLanguageTitle, translationTargetField])
+        translationTargetPopup.addItems(withTitles: TranslationTarget.allCases.map(\.title))
+        translationTargetPopup.target = self
+        translationTargetPopup.action = #selector(translationTargetChanged)
+        rows.append([targetLanguageTitle, translationTargetPopup])
 
-        let deepSeekModelTitle = NSTextField(labelWithString: "DeepSeek 模型")
+        let endpointTitle = NSTextField(labelWithString: "接口地址")
+        endpointTitle.alignment = .right
+        translationEndpointField.placeholderString = DeepSeekTranslationProvider.defaultEndpoint
+        translationEndpointField.alignment = .right
+        translationEndpointField.target = self
+        translationEndpointField.action = #selector(translationEndpointCommitted)
+        translationEndpointField.delegate = self
+        translationEndpointField.widthAnchor.constraint(equalToConstant: 240).isActive = true
+        rows.append([endpointTitle, translationEndpointField])
+
+        let deepSeekModelTitle = NSTextField(labelWithString: "模型 ID")
         deepSeekModelTitle.alignment = .right
         deepSeekModelField.placeholderString = "deepseek-chat"
         deepSeekModelField.alignment = .right
@@ -314,7 +322,7 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate, N
         deepSeekModelField.widthAnchor.constraint(equalToConstant: 160).isActive = true
         rows.append([deepSeekModelTitle, deepSeekModelField])
 
-        let deepSeekKeyTitle = NSTextField(labelWithString: "DeepSeek API Key")
+        let deepSeekKeyTitle = NSTextField(labelWithString: "API Key")
         deepSeekKeyTitle.alignment = .right
         deepSeekKeyField.placeholderString = "sk-…"
         deepSeekKeyField.widthAnchor.constraint(equalToConstant: 210).isActive = true
@@ -474,7 +482,11 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate, N
         if let index = TranslationBackend.allCases.firstIndex(of: settings.translationBackend) {
             translationBackendPopup.selectItem(at: index)
         }
-        translationTargetField.stringValue = settings.translationTargetLanguage
+        translationTargetPopup.selectItem(
+            at: TranslationTarget(rawValue: settings.translationTargetLanguage)
+                .flatMap { TranslationTarget.allCases.firstIndex(of: $0) } ?? 0
+        )
+        translationEndpointField.stringValue = settings.translationEndpoint
         deepSeekModelField.stringValue = settings.deepSeekModel
         // Key 只进不出：刷新时检查存在性，不把明文回填到界面。
         translationKeyStatus.stringValue = TranslationCredentialStore().load() == nil ? "未保存" : "已保存到钥匙串"
@@ -593,15 +605,23 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate, N
     }
 
     /// 空输入保持当前值，不把「没填」当成清空目标语言。
-    @objc private func translationTargetCommitted() {
-        let typed = translationTargetField.stringValue.trimmingCharacters(in: .whitespaces)
-        settings.translationTargetLanguage = typed.isEmpty ? settings.translationTargetLanguage : typed
-        translationTargetField.stringValue = settings.translationTargetLanguage
+    @objc private func translationTargetChanged() {
+        let index = translationTargetPopup.indexOfSelectedItem
+        guard TranslationTarget.allCases.indices.contains(index) else { return }
+        settings.translationTargetLanguage = TranslationTarget.allCases[index].rawValue
         apply()
     }
 
-    @objc private func deepSeekModelCommitted() {
-        let typed = deepSeekModelField.stringValue.trimmingCharacters(in: .whitespaces)
+    @objc private func translationEndpointCommitted() {
+        let typed = translationEndpointField.stringValue.trimmingCharacters(in: .whitespaces)
+        settings.translationEndpoint = typed.isEmpty
+            ? DeepSeekTranslationProvider.defaultEndpoint
+            : typed
+        translationEndpointField.stringValue = settings.translationEndpoint
+        apply()
+    }
+
+    @objc private func deepSeekModelCommitted() {        let typed = deepSeekModelField.stringValue.trimmingCharacters(in: .whitespaces)
         settings.deepSeekModel = typed.isEmpty ? settings.deepSeekModel : typed
         deepSeekModelField.stringValue = settings.deepSeekModel
         apply()
@@ -722,8 +742,8 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate, N
             dwellCommitted()
         } else if field === whiteboardColorHexField {
             whiteboardHexCommitted()
-        } else if field === translationTargetField {
-            translationTargetCommitted()
+        } else if field === translationEndpointField {
+            translationEndpointCommitted()
         } else if field === deepSeekModelField {
             deepSeekModelCommitted()
         }

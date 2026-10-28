@@ -73,6 +73,8 @@ public struct Settings: Equatable, Codable {
     public var translationBackend: TranslationBackend
     public var translationTargetLanguage: String
     public var deepSeekModel: String
+    /// 兼容 OpenAI 的接口地址，默认 DeepSeek，可换成任意同类服务。
+    public var translationEndpoint: String
 
     public init(
         snipHotkey: Hotkey = .ctrlShiftA,
@@ -89,8 +91,9 @@ public struct Settings: Equatable, Codable {
         hotCorners: HotCornerSettings = .standard,
         whiteboard: WhiteboardSettings = .standard,
         translationBackend: TranslationBackend = .system,
-        translationTargetLanguage: String = "zh",
-        deepSeekModel: String = "deepseek-chat"
+        translationTargetLanguage: String = "auto",
+        deepSeekModel: String = "deepseek-chat",
+        translationEndpoint: String = DeepSeekTranslationProvider.defaultEndpoint
     ) {
         self.snipHotkey = snipHotkey
         self.pinHotkey = pinHotkey
@@ -108,6 +111,7 @@ public struct Settings: Equatable, Codable {
         self.translationBackend = translationBackend
         self.translationTargetLanguage = translationTargetLanguage
         self.deepSeekModel = deepSeekModel
+        self.translationEndpoint = translationEndpoint
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -127,6 +131,7 @@ public struct Settings: Equatable, Codable {
         case translationBackend
         case translationTargetLanguage
         case deepSeekModel
+        case translationEndpoint
     }
 
     /// 新字段缺失时用默认值，避免升级后整份旧设置反序列化失败。
@@ -154,8 +159,11 @@ public struct Settings: Equatable, Codable {
         ) ?? .system
         translationTargetLanguage = try container.decodeIfPresent(
             String.self, forKey: .translationTargetLanguage
-        ) ?? "zh"
+        ) ?? "auto"
         deepSeekModel = try container.decodeIfPresent(String.self, forKey: .deepSeekModel) ?? "deepseek-chat"
+        translationEndpoint = try container.decodeIfPresent(
+            String.self, forKey: .translationEndpoint
+        ) ?? DeepSeekTranslationProvider.defaultEndpoint
     }
 
     public static let standard = Settings()

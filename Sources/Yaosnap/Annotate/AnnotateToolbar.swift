@@ -12,6 +12,7 @@ final class AnnotateToolbar: NSView {
     var onCopy: (() -> Void)?
     var onExtractText: (() -> Void)?
     var onTranslate: (() -> Void)?
+    var onCycleTranslationTarget: (() -> Void)?
     var onScanBarcode: (() -> Void)?
     var onSave: (() -> Void)?
     /// ⇧ + 保存按钮：写快捷保存目录。
@@ -57,6 +58,7 @@ final class AnnotateToolbar: NSView {
     private(set) var arrowHeadsButton: HoverButton!
     private(set) var textButton: HoverButton!
     private(set) var translateButton: HoverButton!
+    private(set) var translateTargetButton: HoverButton!
     private(set) var barcodeButton: HoverButton!
     private(set) var saveButton: HoverButton!
     private(set) var pinButton: HoverButton!
@@ -233,6 +235,13 @@ final class AnnotateToolbar: NSView {
             action: #selector(translateTapped)
         )
         place(translateButton)
+        translateTargetButton = makeHoverButton(
+            symbol: nil,
+            title: TranslationTarget.auto.shortTitle,
+            action: #selector(translateTargetTapped)
+        )
+        translateTargetButton.toolTip = "翻译方向"
+        place(translateTargetButton)
         barcodeButton = makeHoverButton(
             symbol: "qrcode.viewfinder",
             title: "识别码",
@@ -588,6 +597,12 @@ final class AnnotateToolbar: NSView {
     @objc private func copyTapped() { onCopy?() }
     @objc private func extractTextTapped() { onExtractText?() }
     @objc private func translateTapped() { onTranslate?() }
+    @objc private func translateTargetTapped() { onCycleTranslationTarget?() }
+
+    /// 同步方向按钮上的短标签。toolTip 保持固定文案，验收断言按它识别按钮。
+    func updateTranslationTarget(_ target: TranslationTarget) {
+        translateTargetButton.title = target.shortTitle
+    }
     @objc private func scanBarcodeTapped() { onScanBarcode?() }
     @objc private func saveTapped() {
         if saveButton.currentModifiers().contains(.shift) {
