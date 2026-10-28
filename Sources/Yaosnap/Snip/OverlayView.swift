@@ -44,6 +44,8 @@ final class OverlayView: NSView {
         case resizingShape(id: UUID, corner: ShapeHandle, original: Shape, recorded: Bool)
         /// 在拖选区边缘或四角：edge 决定改哪条边，original 是按下时的选区。
         case resizingSelection(edge: SelectionEdge, original: CGRect)
+        /// 滚动截屏进行中：工具条隐藏、鼠标放行给底层应用，键盘仍由本视图接收。
+        case scrolling
     }
 
     /// 工具模式。select 时鼠标只做选中与移动，不落新形状；draw 时行为与之前一致。
@@ -53,6 +55,8 @@ final class OverlayView: NSView {
     }
 
     private var phase: Phase = .idle
+    private(set) var scrollingPreview: CGImage?
+    private(set) var scrollingFrameCount = 0
     private var toolMode: ToolMode = .draw(.rect)
     /// 光标下的可吸附窗口（全局坐标）。nil 表示光标不在任何窗口上。
     private var hoverWindow: WindowCandidate?
@@ -299,6 +303,10 @@ final class OverlayView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        if case .scrolling = phase {
+            drawScrollingOverlay()
+            return
+        }
         // 用 NSImage 绘制，避免 CGImage 直接进 CGContext 时的上下翻转。
         // 历史帧只占画面中间一块，周围保留本次实时冻结帧作为参照。
         if activeImageRect != bounds {
@@ -318,6 +326,65 @@ final class OverlayView: NSView {
         drawMarquee()
         drawMagnifier()
         drawHistoryLabel()
+    }
+
+    private func drawScrollingOverlay() {
+        activeImage.draw(in: activeImageRect)
+        if !whiteboardMode {
+            drawMask()
+        }
+
+        if let preview = scrollingPreview {
+            let pointSize = NSSize(
+                width: CGFloat(preview.width) / shot.scale,
+                height: CGFloat(preview.height) / shot.scale
+            )
+            let nsImage = NSImage(cgImage: preview, size: pointSize)
+            let visibleHeight = min(selectionRect.height, pointSize.height)
+            let destination = CGRect(
+                x: selectionRect.minX,
+                y: selectionRect.minY,
+                width: selectionRect.width,
+                height: visibleHeight
+            )
+            nsImage.draw(
+                in: destination,
+                from: CGRect(x: 0, y: 0, width: pointSize.width, height: visibleHeight),
+                operation: .sourceOver,
+                fraction: 1
+            )
+        }
+
+        drawSelectionBorder()
+
+        let hint = scrollingFrameCount > 0
+            ? "已捕获 \(scrollingFrameCount) 帧 · Enter 完成 · Esc 取消"
+            : "向下滚动捕获更多内容 · Enter 完成 · Esc 取消"
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 12, weight: .medium),
+            .foregroundColor: NSColor.white
+        ]
+        let textSize = hint.size(withAttributes: attributes)
+        let padding: CGFloat = 8
+        var origin = NSPoint(
+            x: selectionRect.minX,
+            y: selectionRect.minY - textSize.height - padding * 2
+        )
+        if origin.y < padding {
+            origin.y = selectionRect.minY + padding
+        }
+        let background = CGRect(
+            x: origin.x,
+            y: origin.y,
+            width: textSize.width + padding * 2,
+            height: textSize.height + padding
+        )
+        NSColor(white: 0, alpha: 0.72).setFill()
+        NSBezierPath(roundedRect: background, xRadius: 6, yRadius: 6).fill()
+        hint.draw(
+            at: NSPoint(x: origin.x + padding, y: origin.y + padding / 2),
+            withAttributes: attributes
+        )
     }
 
     // MARK: - 鼠标交互
@@ -451,7 +518,7 @@ final class OverlayView: NSView {
             beginDraft(at: point)
         case .editing:
             commitTextEditing()
-        case .selecting, .drawing, .moving, .marquee,
+        case .selecting, .drawing, .moving, .marquee, .scrolling,
              .resizingText, .rotatingText, .resizingShape, .resizingSelection:
             break // 已有按压，忽略重入
         }
@@ -607,7 +674,7 @@ final class OverlayView: NSView {
             )
             updateActionBar()
             needsDisplay = true
-        case .idle, .ready, .polylineEditing, .editing, .selected:
+        case .idle, .ready, .polylineEditing, .editing, .selected, .scrolling:
             break
         }
     }
@@ -681,7 +748,7 @@ final class OverlayView: NSView {
             // commitSelection 会回到 ready，选中高亮不再有意义，一并清掉。
             canvas?.selectedIDs = []
             commitSelection()
-        case .idle, .ready, .polylineEditing, .editing, .selected:
+        case .idle, .ready, .polylineEditing, .editing, .selected, .scrolling:
             break // ready 下单击保留选区，等待 Enter / 双击 / 保存
         }
     }
@@ -860,6 +927,17 @@ final class OverlayView: NSView {
     }
 
     override func keyDown(with event: NSEvent) {
+        if case .scrolling = phase {
+            switch event.keyCode {
+            case 36, 76: // Return / Enter
+                NotificationCenter.default.post(name: .snipScrollFinishRequested, object: self)
+            case 53: // Esc
+                NotificationCenter.default.post(name: .snipScrollCancelRequested, object: self)
+            default:
+                break
+            }
+            return
+        }
         switch event.keyCode {
         case 53: // Esc
             if case .polylineEditing = phase {
@@ -1022,12 +1100,38 @@ final class OverlayView: NSView {
         }
     }
 
+    func beginScrollingCapture() {
+        guard !selectionRect.isEmpty else { return }
+        phase = .scrolling
+        scrollingPreview = nil
+        scrollingFrameCount = 0
+        toolbar.isHidden = true
+        window?.ignoresMouseEvents = true
+        window?.makeKey()
+        needsDisplay = true
+    }
+
+    func updateScrollingCapture(preview: CGImage, frameCount: Int) {
+        scrollingPreview = preview
+        scrollingFrameCount = frameCount
+        needsDisplay = true
+    }
+
+    func endScrollingCapture() {
+        scrollingPreview = nil
+        scrollingFrameCount = 0
+        window?.ignoresMouseEvents = false
+        toolbar.isHidden = false
+        phase = .ready
+        needsDisplay = true
+    }
+
     /// ready 语义的阶段：选区已确定，复制 / 保存 / 切工具都可用。
     private var isCommittedPhase: Bool {
         switch phase {
         case .ready, .selected, .moving: return true
         case .idle, .selecting, .drawing, .polylineEditing, .editing, .marquee,
-             .resizingText, .rotatingText, .resizingShape, .resizingSelection: return false
+             .resizingText, .rotatingText, .resizingShape, .resizingSelection, .scrolling: return false
         }
     }
 
@@ -1036,7 +1140,7 @@ final class OverlayView: NSView {
         switch phase {
         case .ready, .selected: return true
         case .idle, .selecting, .drawing, .polylineEditing, .editing, .moving, .marquee,
-             .resizingText, .rotatingText, .resizingShape, .resizingSelection: return false
+             .resizingText, .rotatingText, .resizingShape, .resizingSelection, .scrolling: return false
         }
     }
 
@@ -1045,7 +1149,7 @@ final class OverlayView: NSView {
         switch phase {
         case .ready, .selected: return true
         case .idle, .selecting, .drawing, .polylineEditing, .editing, .moving, .marquee,
-             .resizingText, .rotatingText, .resizingShape, .resizingSelection: return false
+             .resizingText, .rotatingText, .resizingShape, .resizingSelection, .scrolling: return false
         }
     }
 
@@ -2408,6 +2512,9 @@ extension Notification.Name {
     static let snipBarcodeScanRequested = Notification.Name("snipBarcodeScanRequested")
     static let snipSaveRequested = Notification.Name("snipSaveRequested")
     static let snipPinRequested = Notification.Name("snipPinRequested")
+    static let snipScrollRequested = Notification.Name("snipScrollRequested")
+    static let snipScrollFinishRequested = Notification.Name("snipScrollFinishRequested")
+    static let snipScrollCancelRequested = Notification.Name("snipScrollCancelRequested")
 }
 
 /// 截图通知 userInfo 的键。收成封闭枚举，避免字符串字面量在两端拼错。
