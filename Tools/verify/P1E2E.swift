@@ -15,6 +15,7 @@ final class ObserverWiring {
     ))
     /// 记录通知是否真的被接线，防止 AppDelegate 与 harness 同时漏注册同一类事件。
     private(set) var textRecognizeRequests = 0
+    private(set) var translateRequests = 0
     private(set) var barcodeScanRequests = 0
 
     init() {
@@ -26,6 +27,8 @@ final class ObserverWiring {
         center.addObserver(
             self, selector: #selector(textRecognizeRequested(_:)), name: .snipTextRecognizeRequested, object: nil)
         center.addObserver(
+            self, selector: #selector(translateRequested(_:)), name: .snipTranslateRequested, object: nil)
+        center.addObserver(
             self, selector: #selector(barcodeScanRequested(_:)), name: .snipBarcodeScanRequested, object: nil)
     }
 
@@ -34,6 +37,7 @@ final class ObserverWiring {
     @objc private func copyRequested(_ notification: Notification) { controller.copyPendingImage(notification) }
     @objc private func saveRequested(_ notification: Notification) { controller.savePendingImage(notification) }
     @objc private func textRecognizeRequested(_ notification: Notification) { textRecognizeRequests += 1 }
+    @objc private func translateRequested(_ notification: Notification) { translateRequests += 1 }
     @objc private func barcodeScanRequested(_ notification: Notification) { barcodeScanRequests += 1 }
 }
 
@@ -622,7 +626,7 @@ final class Harness {
         // 按内容推导：选择 + 形状目录 + 颜色/笔尖/线型 + 输出动作，不写死总数。
         let expectedTitles = ["选择"]
             + ShapeCatalog.p2.map(\.title)
-            + ["颜色", "笔尖", "线型", "背景", "箭头", "撤销", "重做", "复制", "提取文字", "识别码", "保存", "贴到屏幕", "分享", "取消"]
+            + ["颜色", "笔尖", "线型", "背景", "箭头", "撤销", "重做", "复制", "提取文字", "翻译", "识别码", "保存", "贴到屏幕", "分享", "取消"]
         let actualTitles = buttons.compactMap(\.toolTip)
         guard actualTitles.count == expectedTitles.count,
               Set(actualTitles) == Set(expectedTitles) else {
@@ -974,19 +978,20 @@ final class Harness {
 
     // MARK: - 主流程
 
-    /// 工具条的提取文字与识别码走通知派发，接线漏注册时按钮点击毫无反应。
+    /// 工具条的提取文字 / 翻译 / 识别码走通知派发，接线漏注册时按钮点击毫无反应。
     /// 这里只验证通知有接收者，识别本身由 TextRecognizer / BarcodeScanner 单测覆盖。
     func runToolbarNotificationWiring() {
         let wiring = ObserverWiring()
         NotificationCenter.default.post(name: .snipTextRecognizeRequested, object: nil)
+        NotificationCenter.default.post(name: .snipTranslateRequested, object: nil)
         NotificationCenter.default.post(name: .snipBarcodeScanRequested, object: nil)
         pump(0.1)
-        if wiring.textRecognizeRequests == 1, wiring.barcodeScanRequests == 1 {
-            pass("TOOLBAR-WIRING", "提取文字与识别码通知都有接收者")
+        if wiring.textRecognizeRequests == 1, wiring.translateRequests == 1, wiring.barcodeScanRequests == 1 {
+            pass("TOOLBAR-WIRING", "提取文字 / 翻译 / 识别码通知都有接收者")
         } else {
             fail(
                 "TOOLBAR-WIRING",
-                "通知未被接线 text=\(wiring.textRecognizeRequests) barcode=\(wiring.barcodeScanRequests)")
+                "通知未被接线 text=\(wiring.textRecognizeRequests) translate=\(wiring.translateRequests) barcode=\(wiring.barcodeScanRequests)")
         }
     }
 

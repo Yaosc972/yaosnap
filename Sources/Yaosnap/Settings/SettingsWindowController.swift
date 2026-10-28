@@ -137,6 +137,13 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate, N
     let whiteboardColorWell = NSColorWell()
     let whiteboardColorHexField = NSTextField()
     let whiteboardTransparentCheckbox = NSButton(checkboxWithTitle: "透明", target: nil, action: nil)
+    let translationBackendPopup = NSPopUpButton()
+    let translationTargetField = NSTextField()
+    let deepSeekModelField = NSTextField()
+    let deepSeekKeyField = NSSecureTextField()
+    let saveKeyButton = NSButton(title: "保存", target: nil, action: nil)
+    let clearKeyButton = NSButton(title: "清除", target: nil, action: nil)
+    let translationKeyStatus = NSTextField(labelWithString: "")
     /// 透明模式下背景枚举不保留颜色，用这个值让取消勾选时恢复用户上次选的纯色。
     private var lastWhiteboardSolidColor: RGBAColor = .white
     let resetButton = NSButton(title: "恢复默认", target: nil, action: nil)
@@ -280,6 +287,58 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate, N
         copyAsFilePopup.action = #selector(copyAsFileChanged)
         rows.append([copyAsFileTitle, copyAsFilePopup])
 
+        let translationTitle = NSTextField(labelWithString: "翻译后端")
+        translationTitle.alignment = .right
+        translationBackendPopup.addItems(withTitles: TranslationBackend.allCases.map(\.title))
+        translationBackendPopup.target = self
+        translationBackendPopup.action = #selector(translationBackendChanged)
+        rows.append([translationTitle, translationBackendPopup])
+
+        let targetLanguageTitle = NSTextField(labelWithString: "翻译目标语言")
+        targetLanguageTitle.alignment = .right
+        translationTargetField.placeholderString = "zh"
+        translationTargetField.alignment = .right
+        translationTargetField.target = self
+        translationTargetField.action = #selector(translationTargetCommitted)
+        translationTargetField.delegate = self
+        translationTargetField.widthAnchor.constraint(equalToConstant: 90).isActive = true
+        rows.append([targetLanguageTitle, translationTargetField])
+
+        let deepSeekModelTitle = NSTextField(labelWithString: "DeepSeek 模型")
+        deepSeekModelTitle.alignment = .right
+        deepSeekModelField.placeholderString = "deepseek-chat"
+        deepSeekModelField.alignment = .right
+        deepSeekModelField.target = self
+        deepSeekModelField.action = #selector(deepSeekModelCommitted)
+        deepSeekModelField.delegate = self
+        deepSeekModelField.widthAnchor.constraint(equalToConstant: 160).isActive = true
+        rows.append([deepSeekModelTitle, deepSeekModelField])
+
+        let deepSeekKeyTitle = NSTextField(labelWithString: "DeepSeek API Key")
+        deepSeekKeyTitle.alignment = .right
+        deepSeekKeyField.placeholderString = "sk-…"
+        deepSeekKeyField.widthAnchor.constraint(equalToConstant: 210).isActive = true
+        translationKeyStatus.font = .systemFont(ofSize: 11)
+        translationKeyStatus.textColor = .secondaryLabelColor
+        saveKeyButton.target = self
+        saveKeyButton.action = #selector(saveDeepSeekKey)
+        saveKeyButton.bezelStyle = .rounded
+        clearKeyButton.target = self
+        clearKeyButton.action = #selector(clearDeepSeekKey)
+        clearKeyButton.bezelStyle = .rounded
+        let keyStack = NSStackView(views: [deepSeekKeyField, saveKeyButton, clearKeyButton, translationKeyStatus])
+        keyStack.orientation = .horizontal
+        keyStack.alignment = .centerY
+        keyStack.spacing = 8
+        rows.append([deepSeekKeyTitle, keyStack])
+
+        // 直连 TranslationSession 的 init 在 macOS 26 起可用，说明文字如实写版本门槛。
+        let translationHint = NSTextField(labelWithString: "")
+        let hint = NSTextField(labelWithString: "系统翻译需要 macOS 26 及以上，首次使用会下载语言包；DeepSeek 需要网络与 API Key。")
+        hint.font = .systemFont(ofSize: 11)
+        hint.textColor = .secondaryLabelColor
+        rows.append([translationHint, hint])
+
         let cornerTitle = NSTextField(labelWithString: "触发角")
         cornerTitle.alignment = .right
         hotCornerCheckbox.target = self
@@ -412,6 +471,13 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate, N
         )
         whiteboardColorHexField.stringValue = lastWhiteboardSolidColor.hexString
         updateWhiteboardColorControlsEnabled()
+        if let index = TranslationBackend.allCases.firstIndex(of: settings.translationBackend) {
+            translationBackendPopup.selectItem(at: index)
+        }
+        translationTargetField.stringValue = settings.translationTargetLanguage
+        deepSeekModelField.stringValue = settings.deepSeekModel
+        // Key 只进不出：刷新时检查存在性，不把明文回填到界面。
+        translationKeyStatus.stringValue = TranslationCredentialStore().load() == nil ? "未保存" : "已保存到钥匙串"
         showRegistrationFailures([])
     }
 
@@ -519,6 +585,50 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate, N
         apply()
     }
 
+    @objc private func translationBackendChanged() {
+        let index = translationBackendPopup.indexOfSelectedItem
+        guard TranslationBackend.allCases.indices.contains(index) else { return }
+        settings.translationBackend = TranslationBackend.allCases[index]
+        apply()
+    }
+
+    /// 空输入保持当前值，不把「没填」当成清空目标语言。
+    @objc private func translationTargetCommitted() {
+        let typed = translationTargetField.stringValue.trimmingCharacters(in: .whitespaces)
+        settings.translationTargetLanguage = typed.isEmpty ? settings.translationTargetLanguage : typed
+        translationTargetField.stringValue = settings.translationTargetLanguage
+        apply()
+    }
+
+    @objc private func deepSeekModelCommitted() {
+        let typed = deepSeekModelField.stringValue.trimmingCharacters(in: .whitespaces)
+        settings.deepSeekModel = typed.isEmpty ? settings.deepSeekModel : typed
+        deepSeekModelField.stringValue = settings.deepSeekModel
+        apply()
+    }
+
+    @objc private func saveDeepSeekKey() {
+        let typed = deepSeekKeyField.stringValue.trimmingCharacters(in: .whitespaces)
+        guard !typed.isEmpty else {
+            NSSound.beep()
+            translationKeyStatus.stringValue = "请先输入 API Key"
+            return
+        }
+        guard TranslationCredentialStore().save(typed) else {
+            translationKeyStatus.stringValue = "保存失败"
+            return
+        }
+        // 不把明文回显在界面上，保存成功立即清空输入框。
+        deepSeekKeyField.stringValue = ""
+        translationKeyStatus.stringValue = "已保存到钥匙串"
+    }
+
+    @objc private func clearDeepSeekKey() {
+        TranslationCredentialStore().delete()
+        deepSeekKeyField.stringValue = ""
+        translationKeyStatus.stringValue = "未保存"
+    }
+
     @objc private func hotCornersToggled() {
         settings.hotCorners.enabled = hotCornerCheckbox.state == .on
         apply()
@@ -612,6 +722,10 @@ final class SettingsWindowController: NSWindowController, NSTextFieldDelegate, N
             dwellCommitted()
         } else if field === whiteboardColorHexField {
             whiteboardHexCommitted()
+        } else if field === translationTargetField {
+            translationTargetCommitted()
+        } else if field === deepSeekModelField {
+            deepSeekModelCommitted()
         }
     }
 

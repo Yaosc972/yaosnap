@@ -28,6 +28,13 @@ final class SnipController {
         let fullFrame: CGImage?
     }
 
+    /// 翻译任务的设置快照：后端、目标语言与 DeepSeek 模型名。
+    private struct TranslationConfig {
+        let backend: TranslationBackend
+        let targetLanguage: String
+        let model: String
+    }
+
     private var windows: [SnipOverlayWindow] = []
     private var shots: [DisplayShot] = []
     /// 最近成功输出的截图，按时间倒序；启动时从磁盘载入，输出时同步写盘。
@@ -603,6 +610,74 @@ final class SnipController {
         print("[snip] 识别码 \(payload.count) 字符")
         (overlayWindow(for: displayID)?.contentView as? OverlayView)?
             .showToolbarMessage("识别码已复制")
+    }
+
+    /// 翻译选区文字。OCR 在后台跑，翻译按设置选后端，成功后结束会话再弹结果窗口。
+    func translatePendingImage(_ notification: Notification) {
+        guard let pending = validatedPending(for: notification, action: "翻译") else { return }
+        guard let image = renderPendingOutput(pending, applyShadow: false) else {
+            NSSound.beep()
+            return
+        }
+        let config = translationConfig()
+        let displayID = pending.displayID
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let text = TextRecognizer.recognizeText(in: image)
+            Task { @MainActor [weak self] in
+                self?.translateRecognizedText(text, config: config, displayID: displayID)
+            }
+        }
+    }
+
+    /// Settings 未标 Sendable，跨线程只取翻译要用的三个值。
+    private func translationConfig() -> TranslationConfig {
+        let settings = settingsStore.load()
+        return TranslationConfig(
+            backend: settings.translationBackend,
+            targetLanguage: settings.translationTargetLanguage,
+            model: settings.deepSeekModel
+        )
+    }
+
+    private func translateRecognizedText(_ text: String, config: TranslationConfig, displayID: UInt32) {
+        guard !text.isEmpty else {
+            print("[snip] 翻译没有识别到文字")
+            NSSound.beep()
+            (overlayWindow(for: displayID)?.contentView as? OverlayView)?
+                .showToolbarMessage("选区里没有识别到文字")
+            return
+        }
+        let provider = translationProvider(for: config)
+        Task { @MainActor [weak self] in
+            do {
+                let translated = try await provider.translate(text, to: config.targetLanguage)
+                print("[snip] 翻译完成 \(text.count) → \(translated.count) 字")
+                self?.cancel()
+                TranslationResultWindow.show(source: text, translated: translated)
+            } catch {
+                self?.presentTranslationError(error, displayID: displayID)
+            }
+        }
+    }
+
+    private func translationProvider(for config: TranslationConfig) -> TranslationProvider {
+        switch config.backend {
+        case .system: return SystemTranslationProvider()
+        case .deepSeek: return DeepSeekTranslationProvider(model: config.model)
+        }
+    }
+
+    /// 结果窗口盖不过覆盖层（assistiveTechHigh），失败时用 sheet 挂在覆盖层上展示。
+    private func presentTranslationError(_ error: Error, displayID: UInt32) {
+        print("[snip] error: 翻译失败 \(error.localizedDescription)")
+        guard let overlay = overlayWindow(for: displayID) else {
+            NSSound.beep()
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = "翻译失败"
+        alert.informativeText = error.localizedDescription
+        alert.beginSheetModal(for: overlay) { _ in }
     }
 
     private func finishSave(_ response: NSApplication.ModalResponse) {

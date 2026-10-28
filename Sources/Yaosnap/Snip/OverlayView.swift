@@ -149,6 +149,7 @@ final class OverlayView: NSView {
         bar.onStyleChange = { [weak self] style in self?.applyStyle(style) }
         bar.onCopy = { [weak self] in self?.requestCopy() }
         bar.onExtractText = { [weak self] in self?.requestTextRecognition() }
+        bar.onTranslate = { [weak self] in self?.requestTranslate() }
         bar.onScanBarcode = { [weak self] in self?.requestBarcodeScan() }
         bar.onSave = { [weak self] in self?.requestSave() }
         bar.onQuickSave = { [weak self] in self?.requestSave(quick: true) }
@@ -2031,6 +2032,14 @@ final class OverlayView: NSView {
         )
     }
 
+    private func requestTranslate() {
+        NotificationCenter.default.post(
+            name: .snipTranslateRequested,
+            object: nil,
+            userInfo: [SnipNotificationKey.displayID: shot.displayID]
+        )
+    }
+
     private func requestBarcodeScan() {
         NotificationCenter.default.post(
             name: .snipBarcodeScanRequested,
@@ -2375,6 +2384,7 @@ extension Notification.Name {
     static let snipCopyRequested = Notification.Name("snipCopyRequested")
     static let snipShareRequested = Notification.Name("snipShareRequested")
     static let snipTextRecognizeRequested = Notification.Name("snipTextRecognizeRequested")
+    static let snipTranslateRequested = Notification.Name("snipTranslateRequested")
     static let snipBarcodeScanRequested = Notification.Name("snipBarcodeScanRequested")
     static let snipSaveRequested = Notification.Name("snipSaveRequested")
     static let snipPinRequested = Notification.Name("snipPinRequested")

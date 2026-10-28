@@ -20,6 +20,9 @@ struct SettingsTests {
         #expect(settings.restoreCapacity == 1)
         #expect(settings.autoSelectOnCreation)
         #expect(settings.hotkeyBindings.map(\.action) == HotkeyAction.allCases)
+        #expect(settings.translationBackend == .system)
+        #expect(settings.translationTargetLanguage == "zh")
+        #expect(settings.deepSeekModel == "deepseek-chat")
     }
 
     @Test func emptyStoreLoadsDefaults() {
@@ -62,6 +65,25 @@ struct SettingsTests {
         #expect(!decoded.exportShadow)
         #expect(decoded.hotCorners == .standard)
         #expect(decoded.whiteboard == .standard)
+        #expect(decoded.translationBackend == .system)
+        #expect(decoded.translationTargetLanguage == "zh")
+        #expect(decoded.deepSeekModel == "deepseek-chat")
+    }
+
+    @Test func translationFieldsRoundTripThroughStore() {
+        var settings = Settings.standard
+        settings.translationBackend = .deepSeek
+        settings.translationTargetLanguage = "en"
+        settings.deepSeekModel = "deepseek-reasoner"
+
+        let defaults = makeDefaults()
+        SettingsStore(defaults: defaults).save(settings)
+        let loaded = SettingsStore(defaults: defaults).load()
+
+        #expect(loaded == settings)
+        #expect(loaded.translationBackend == .deepSeek)
+        #expect(loaded.translationTargetLanguage == "en")
+        #expect(loaded.deepSeekModel == "deepseek-reasoner")
     }
 
     @Test func hotkeyStructureSurvivesJSON() throws {        let hotkey = Hotkey(keyCode: 17, modifiers: 0x1200)

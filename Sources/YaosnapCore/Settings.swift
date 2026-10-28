@@ -70,6 +70,9 @@ public struct Settings: Equatable, Codable {
     public var copyAsFileTrigger: CopyAsFileTrigger
     public var hotCorners: HotCornerSettings
     public var whiteboard: WhiteboardSettings
+    public var translationBackend: TranslationBackend
+    public var translationTargetLanguage: String
+    public var deepSeekModel: String
 
     public init(
         snipHotkey: Hotkey = .ctrlShiftA,
@@ -84,7 +87,10 @@ public struct Settings: Equatable, Codable {
         exportShadow: Bool = false,
         copyAsFileTrigger: CopyAsFileTrigger = .shortcut,
         hotCorners: HotCornerSettings = .standard,
-        whiteboard: WhiteboardSettings = .standard
+        whiteboard: WhiteboardSettings = .standard,
+        translationBackend: TranslationBackend = .system,
+        translationTargetLanguage: String = "zh",
+        deepSeekModel: String = "deepseek-chat"
     ) {
         self.snipHotkey = snipHotkey
         self.pinHotkey = pinHotkey
@@ -99,6 +105,9 @@ public struct Settings: Equatable, Codable {
         self.copyAsFileTrigger = copyAsFileTrigger
         self.hotCorners = hotCorners
         self.whiteboard = whiteboard
+        self.translationBackend = translationBackend
+        self.translationTargetLanguage = translationTargetLanguage
+        self.deepSeekModel = deepSeekModel
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -115,6 +124,9 @@ public struct Settings: Equatable, Codable {
         case copyAsFileTrigger
         case hotCorners
         case whiteboard
+        case translationBackend
+        case translationTargetLanguage
+        case deepSeekModel
     }
 
     /// 新字段缺失时用默认值，避免升级后整份旧设置反序列化失败。
@@ -137,6 +149,13 @@ public struct Settings: Equatable, Codable {
         ) ?? .shortcut
         hotCorners = try container.decodeIfPresent(HotCornerSettings.self, forKey: .hotCorners) ?? .standard
         whiteboard = try container.decodeIfPresent(WhiteboardSettings.self, forKey: .whiteboard) ?? .standard
+        translationBackend = try container.decodeIfPresent(
+            TranslationBackend.self, forKey: .translationBackend
+        ) ?? .system
+        translationTargetLanguage = try container.decodeIfPresent(
+            String.self, forKey: .translationTargetLanguage
+        ) ?? "zh"
+        deepSeekModel = try container.decodeIfPresent(String.self, forKey: .deepSeekModel) ?? "deepseek-chat"
     }
 
     public static let standard = Settings()

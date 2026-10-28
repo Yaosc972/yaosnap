@@ -81,6 +81,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.addObserver(
             self, selector: #selector(handleSnipTextRecognize(_:)), name: .snipTextRecognizeRequested, object: nil)
         NotificationCenter.default.addObserver(
+            self, selector: #selector(handleSnipTranslate(_:)), name: .snipTranslateRequested, object: nil)
+        NotificationCenter.default.addObserver(
             self, selector: #selector(handleSnipBarcodeScan(_:)), name: .snipBarcodeScanRequested, object: nil)
         NotificationCenter.default.addObserver(
             self, selector: #selector(handleSnipPin(_:)), name: .snipPinRequested, object: nil)
@@ -218,6 +220,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func handleSnipTextRecognize(_ notification: Notification) {
         snipController.recognizeTextPending(notification)
+    }
+
+    @objc private func handleSnipTranslate(_ notification: Notification) {
+        snipController.translatePendingImage(notification)
     }
 
     @objc private func handleSnipBarcodeScan(_ notification: Notification) {

@@ -2,8 +2,8 @@ import AppKit
 import UniformTypeIdentifiers
 import YaosnapCore
 
-/// 选区标注工具条：选择、形状选择、颜色/笔尖弹层、复制/提取文字/识别码/保存/取消。
-/// 单行布局：[选择][分隔][形状按钮][分隔][颜色][笔尖][分隔][复制][提取文字][识别码][保存][取消]。
+/// 选区标注工具条：选择、形状选择、颜色/笔尖弹层、复制/提取文字/翻译/识别码/保存/取消。
+/// 单行布局：[选择][分隔][形状按钮][分隔][颜色][笔尖][分隔][复制][提取文字][翻译][识别码][保存][取消]。
 @MainActor
 final class AnnotateToolbar: NSView {
     var onSelectTool: ((ShapeKind) -> Void)?
@@ -11,6 +11,7 @@ final class AnnotateToolbar: NSView {
     var onStyleChange: ((Style) -> Void)?
     var onCopy: (() -> Void)?
     var onExtractText: (() -> Void)?
+    var onTranslate: (() -> Void)?
     var onScanBarcode: (() -> Void)?
     var onSave: (() -> Void)?
     /// ⇧ + 保存按钮：写快捷保存目录。
@@ -55,6 +56,7 @@ final class AnnotateToolbar: NSView {
     private(set) var backgroundButton: HoverButton!
     private(set) var arrowHeadsButton: HoverButton!
     private(set) var textButton: HoverButton!
+    private(set) var translateButton: HoverButton!
     private(set) var barcodeButton: HoverButton!
     private(set) var saveButton: HoverButton!
     private(set) var pinButton: HoverButton!
@@ -225,6 +227,12 @@ final class AnnotateToolbar: NSView {
             action: #selector(extractTextTapped)
         )
         place(textButton)
+        translateButton = makeHoverButton(
+            symbol: "character.bubble",
+            title: "翻译",
+            action: #selector(translateTapped)
+        )
+        place(translateButton)
         barcodeButton = makeHoverButton(
             symbol: "qrcode.viewfinder",
             title: "识别码",
@@ -579,6 +587,7 @@ final class AnnotateToolbar: NSView {
 
     @objc private func copyTapped() { onCopy?() }
     @objc private func extractTextTapped() { onExtractText?() }
+    @objc private func translateTapped() { onTranslate?() }
     @objc private func scanBarcodeTapped() { onScanBarcode?() }
     @objc private func saveTapped() {
         if saveButton.currentModifiers().contains(.shift) {
