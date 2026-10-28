@@ -77,7 +77,7 @@ func run() {
         return
     }
 
-    view.autoSelectOnCreation = false
+    view.autoSelectOnCreation = ProcessInfo.processInfo.environment["PROBE_AUTOSELECT"] == "1"
     drag(view, window, from: CGPoint(x: 100, y: 100), to: CGPoint(x: 500, y: 500))
     pump(0.2)
 
