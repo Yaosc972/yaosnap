@@ -86,6 +86,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self, selector: #selector(handleSnipBarcodeScan(_:)), name: .snipBarcodeScanRequested, object: nil)
         NotificationCenter.default.addObserver(
             self, selector: #selector(handleSnipPin(_:)), name: .snipPinRequested, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(handleSnipScrollRequested(_:)), name: .snipScrollRequested, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(handleSnipScrollFinish(_:)), name: .snipScrollFinishRequested, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(handleSnipScrollCancel(_:)), name: .snipScrollCancelRequested, object: nil)
         snipController.onPinImage = { [pinController] image, topLeft in
             pinController.pin(image: image, at: topLeft)
         }
@@ -232,6 +238,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func handleSnipPin(_ notification: Notification) {
         snipController.pinPendingImage(notification)
+    }
+
+    @objc private func handleSnipScrollRequested(_ note: Notification) {
+        snipController.handleScrollRequested(note)
+    }
+
+    @objc private func handleSnipScrollFinish(_ note: Notification) {
+        snipController.handleScrollFinishRequested(note)
+    }
+
+    @objc private func handleSnipScrollCancel(_ note: Notification) {
+        snipController.handleScrollCancelRequested(note)
     }
 
     private static func menuState(from controller: PinController) -> PinGroupMenuState {

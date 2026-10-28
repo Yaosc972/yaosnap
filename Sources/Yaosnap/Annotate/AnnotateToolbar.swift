@@ -23,6 +23,7 @@ final class AnnotateToolbar: NSView {
     var onPin: (() -> Void)?
     var onUndo: (() -> Void)?
     var onRedo: (() -> Void)?
+    var onScrollingCapture: (() -> Void)?
 
     private enum Metrics {
         static let buttonSide: CGFloat = 30
@@ -65,6 +66,7 @@ final class AnnotateToolbar: NSView {
     private(set) var shareButton: HoverButton!
     private(set) var undoButton: HoverButton!
     private(set) var redoButton: HoverButton!
+    private(set) var scrollingButton: HoverButton!
     private(set) var ratioLabel: NSTextField!
     private(set) var colorPopover: NSPopover?
     private(set) var penPopover: NSPopover?
@@ -253,6 +255,12 @@ final class AnnotateToolbar: NSView {
         )
         translateTargetButton.toolTip = "翻译方向"
         place(translateTargetButton)
+        scrollingButton = makeHoverButton(
+            symbol: "scroll",
+            title: "滚动截图",
+            action: #selector(scrollingCaptureTapped)
+        )
+        place(scrollingButton)
         barcodeButton = makeHoverButton(
             symbol: "qrcode.viewfinder",
             title: "识别码",
@@ -669,6 +677,7 @@ final class AnnotateToolbar: NSView {
     @objc private func cancelTapped() { onCancel?() }
     @objc private func shareTapped() { onShare?() }
     @objc private func pinTapped() { onPin?() }
+    @objc private func scrollingCaptureTapped() { onScrollingCapture?() }
     @objc private func undoTapped() { onUndo?() }
     @objc private func redoTapped() { onRedo?() }
 }

@@ -50,6 +50,8 @@ final class SnipController {
     /// 当前待输出选区，绑定提交它的屏幕。输出请求必须带同一 displayID。
     private var pendingRegion: PendingRegion?
     private var saveJob: SaveJob?
+    private var scrollController: ScrollCaptureController?
+    private var scrollResultWindow: ScrollResultWindow?
     /// 系统分享面板。展示期间必须持有，否则回调前就被释放。
     private var sharePicker: NSSharingServicePicker?
     /// 快捷保存根目录。验收 harness 注入临时目录，生产用 ~/Pictures/Yaosnap。
@@ -473,6 +475,96 @@ final class SnipController {
         }
         remember(image, displaySize: pending.viewRect.size, region: pending.region, fullFrame: pending.fullFrame)
         cancel()
+    }
+
+    func handleScrollRequested(_ note: Notification) {
+        guard let view = note.object as? OverlayView,
+              let window = view.window,
+              !view.selectionRect.isEmpty,
+              let shot = shots.first(where: { $0.bounds.contains(
+                  RectMath.toGlobalPoint(
+                      viewPoint: CGPoint(x: view.selectionRect.midX, y: view.selectionRect.midY),
+                      displayBounds: $0.bounds,
+                      viewHeight: view.bounds.height
+                  )
+              ) })
+        else { return }
+
+        let globalRect = RectMath.toGlobalRect(
+            viewRect: view.selectionRect,
+            displayBounds: shot.bounds,
+            viewHeight: view.bounds.height
+        )
+        guard let firstFrame = captureFrame(for: shot, globalRect: globalRect) else { return }
+
+        let capturer = ScreenScrollFrameCapturer(
+            displayID: shot.displayID,
+            scale: shot.scale,
+            excludedWindowNumber: window.windowNumber
+        )
+        let controller = ScrollCaptureController(capturer: capturer, globalRect: globalRect)
+        controller.onUpdate = { [weak view] image, count in
+            view?.updateScrollingCapture(preview: image, frameCount: count)
+        }
+        controller.onFinish = { [weak self, weak view] image in
+            view?.endScrollingCapture()
+            self?.presentScrollResult(image, scale: shot.scale)
+        }
+        controller.onLimitReached = { [weak view] in
+            view?.showToolbarMessage("已达最大高度")
+        }
+        scrollController = controller
+        view.beginScrollingCapture()
+        controller.start(firstFrame: firstFrame)
+    }
+
+    func handleScrollFinishRequested(_ note: Notification) {
+        guard let view = note.object as? OverlayView else { return }
+        if let controller = scrollController {
+            controller.finish()
+        } else {
+            view.endScrollingCapture()
+        }
+        scrollController = nil
+    }
+
+    func handleScrollCancelRequested(_ note: Notification) {
+        guard let view = note.object as? OverlayView else { return }
+        scrollController?.cancel()
+        scrollController = nil
+        view.endScrollingCapture()
+    }
+
+    /// 用与滚动期间相同的方式抓首帧，保证拼图与预览同源（不含遮罩）。
+    private func captureFrame(for shot: DisplayShot, globalRect: CGRect) -> CGImage? {
+        let cropped = CGRect(
+            x: (globalRect.minX - shot.bounds.minX) * shot.scale,
+            y: (globalRect.minY - shot.bounds.minY) * shot.scale,
+            width: globalRect.width * shot.scale,
+            height: globalRect.height * shot.scale
+        )
+        return ImageOutput.crop(shot.image, to: cropped)
+    }
+
+    private func presentScrollResult(_ image: CGImage, scale: CGFloat) {
+        windows.forEach { $0.orderOut(nil) }
+        windows.removeAll()
+        shots.removeAll()
+        pendingRegion = nil
+
+        let window = ScrollResultWindow(image: image, scale: scale)
+        window.onPin = { [weak self] image, scale in
+            let paste = PasteImage(
+                image: image,
+                pointSize: CGSize(
+                    width: CGFloat(image.width) / scale,
+                    height: CGFloat(image.height) / scale
+                )
+            )
+            _ = self?.onPinImage?(paste, nil)
+        }
+        scrollResultWindow = window
+        window.makeKeyAndOrderFront(nil)
     }
 
     func savePendingImage(_ notification: Notification) {

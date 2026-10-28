@@ -168,6 +168,7 @@ final class OverlayView: NSView {
         bar.onRedo = { [weak self] in self?.redoLastAnnotation() }
         bar.onShare = { [weak self] in self?.requestShare() }
         bar.onCancel = { [weak self] in self?.requestCancel() }
+        bar.onScrollingCapture = { [weak self] in self?.requestScrollingCapture() }
         bar.isHidden = true
         return bar
     }()
@@ -1118,11 +1119,12 @@ final class OverlayView: NSView {
     }
 
     func endScrollingCapture() {
+        guard case .scrolling = phase else { return }
         scrollingPreview = nil
         scrollingFrameCount = 0
         window?.ignoresMouseEvents = false
-        toolbar.isHidden = false
         phase = .ready
+        updateActionBar()
         needsDisplay = true
     }
 
@@ -2162,6 +2164,11 @@ final class OverlayView: NSView {
             object: nil,
             userInfo: [SnipNotificationKey.displayID: shot.displayID]
         )
+    }
+
+    private func requestScrollingCapture() {
+        guard case .ready = phase, !selectionRect.isEmpty else { return }
+        NotificationCenter.default.post(name: .snipScrollRequested, object: self)
     }
 
     /// 识别结果回显。控制器在后台识别完成后回主线程调用。
