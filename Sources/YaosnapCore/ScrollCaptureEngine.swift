@@ -35,7 +35,10 @@ public final class ScrollCaptureEngine {
               estimate.confidence >= minimumConfidence else {
             return nil
         }
-        previousFrame = frame
-        return stitcher.ingest(frame: frame, offsetPx: estimate.offsetPx)
+        let state = stitcher.ingest(frame: frame, offsetPx: estimate.offsetPx)
+        if state?.changed == true {
+            previousFrame = frame
+        }
+        return state
     }
 }

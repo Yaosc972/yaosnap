@@ -17,6 +17,22 @@ private struct NeverEstimator: ScrollOffsetEstimating {
     func estimate(current: CGImage, previous: CGImage) -> ScrollOffsetEstimate? { nil }
 }
 
+private final class RecordingEstimator: ScrollOffsetEstimating {
+    let offset: CGFloat
+    let confidence: Float
+    private(set) var previousFrames: [CGImage] = []
+
+    init(offset: CGFloat, confidence: Float) {
+        self.offset = offset
+        self.confidence = confidence
+    }
+
+    func estimate(current: CGImage, previous: CGImage) -> ScrollOffsetEstimate? {
+        previousFrames.append(previous)
+        return ScrollOffsetEstimate(offsetPx: offset, confidence: confidence)
+    }
+}
+
 struct ScrollCaptureEngineTests {
     private func makeImage(width: Int, height: Int) -> CGImage {
         let bytesPerRow = width * 4
@@ -53,5 +69,27 @@ struct ScrollCaptureEngineTests {
         engine.start(first: makeImage(width: 20, height: 100))
         #expect(engine.consume(frame: makeImage(width: 20, height: 100)) == nil)
         #expect(engine.image?.height == 100)
+    }
+
+    @Test func rejectedFrameKeepsReference() {
+        // 偏移 2 落在默认死区（3）内，拼接器会拒绝该帧。
+        let estimator = RecordingEstimator(offset: 2, confidence: 0.9)
+        let engine = ScrollCaptureEngine(estimator: estimator)
+        let first = makeImage(width: 20, height: 100)
+        engine.start(first: first)
+
+        let second = makeImage(width: 20, height: 100)
+        let state = engine.consume(frame: second)
+        #expect(state?.changed == false)
+        #expect(engine.image?.height == 100)
+        #expect(engine.frameCount == 1)
+
+        // 被拒帧不能成为下一次估计的参考帧，参考仍应是首帧。
+        let third = makeImage(width: 20, height: 100)
+        engine.consume(frame: third)
+        #expect(estimator.previousFrames.count == 2)
+        #expect(estimator.previousFrames[0] === first)
+        #expect(estimator.previousFrames[1] === first)
+        #expect(engine.frameCount == 1)
     }
 }
