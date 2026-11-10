@@ -332,12 +332,17 @@ final class OverlayView: NSView {
     }
 
     private func drawScrollingOverlay() {
-        activeImage.draw(in: activeImageRect)
+        // 穿透模式下不再绘制整屏冻结帧，否则等于把桌面又盖回去，下层应用会重新被判为被遮挡。
+        if !scrollingThrough {
+            activeImage.draw(in: activeImageRect)
+        }
         if !whiteboardMode {
             drawMask()
         }
 
-        if let preview = scrollingPreview {
+        // 穿透模式下也不把拼接预览盖在选区里：实时页面本身就能看见，
+        // 盖上去既挡住用户看滚动，也有被再次抓进帧里的风险（自我参照）。
+        if !scrollingThrough, let preview = scrollingPreview {
             let pointSize = NSSize(
                 width: CGFloat(preview.width) / shot.scale,
                 height: CGFloat(preview.height) / shot.scale
@@ -363,7 +368,7 @@ final class OverlayView: NSView {
         // 覆盖层提示优先显示显式消息（如已达上限），否则显示常规滚动进度。
         let hint = scrollingMessage ?? (scrollingFrameCount > 0
             ? "已捕获 \(scrollingFrameCount) 帧 · Enter 完成 · Esc 取消"
-            : "向下滚动捕获更多内容 · Enter 完成 · Esc 取消")
+            : "滚动页面捕获更多内容 · Enter 完成 · Esc 取消")
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 12, weight: .medium),
             .foregroundColor: NSColor.white
@@ -1129,15 +1134,39 @@ final class OverlayView: NSView {
         }
     }
 
+    /// 滚动期间窗口失去键盘焦点时自动取消：此时 Esc 已投递不到本窗口，
+    /// 用户点到别的应用后没有任何退出手段，只能杀进程。
+    private var scrollKeyObserver: NSObjectProtocol?
+    /// 滚动期间覆盖层是否已切成穿透模式（冻结帧不能再画，否则又变成整屏遮挡）。
+    private var scrollingThrough = false
+
     func beginScrollingCapture() {
         guard !selectionRect.isEmpty else { return }
         phase = .scrolling
+        // 关键：整屏不透明覆盖层会遮死下层应用，抓帧只能拿到静态缓存。
+        // 白板透明模式本来就是穿透的，不重复切换。
+        if !whiteboardMode, let overlayWindow = window as? SnipOverlayWindow {
+            overlayWindow.setScrollThrough(true)
+            scrollingThrough = true
+        }
         scrollingPreview = nil
         scrollingFrameCount = 0
         scrollingMessage = nil
         toolbar.isHidden = true
         window?.ignoresMouseEvents = true
         window?.makeKey()
+        if let window {
+            scrollKeyObserver = NotificationCenter.default.addObserver(
+                forName: NSWindow.didResignKeyNotification,
+                object: window,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self, case .scrolling = self.phase else { return }
+                    NotificationCenter.default.post(name: .snipScrollCancelRequested, object: self)
+                }
+            }
+        }
         needsDisplay = true
     }
 
@@ -1155,6 +1184,14 @@ final class OverlayView: NSView {
 
     func endScrollingCapture() {
         guard case .scrolling = phase else { return }
+        if scrollingThrough, let overlayWindow = window as? SnipOverlayWindow {
+            overlayWindow.setScrollThrough(false)
+        }
+        scrollingThrough = false
+        if let observer = scrollKeyObserver {
+            NotificationCenter.default.removeObserver(observer)
+            scrollKeyObserver = nil
+        }
         scrollingPreview = nil
         scrollingFrameCount = 0
         scrollingMessage = nil

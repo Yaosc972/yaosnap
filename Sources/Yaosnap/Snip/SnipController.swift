@@ -524,6 +524,9 @@ final class SnipController {
             // 滚动阶段工具条隐藏，上限提示画在覆盖层上。
             view?.setScrollingMessage("已达最大高度 8000px · Enter 完成")
         }
+        controller.onStalled = { [weak view] in
+            view?.setScrollingMessage("抓帧过慢，已停止 · Enter 完成")
+        }
         scrollController = controller
         view.beginScrollingCapture()
         controller.start(firstFrame: firstFrame)

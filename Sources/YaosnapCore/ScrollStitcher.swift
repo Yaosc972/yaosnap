@@ -13,15 +13,17 @@ public struct ScrollStitchState: Equatable {
 }
 
 /// 把连续帧按垂直偏移拼成长图。像素坐标系，图像行 0 为顶部。
+///
+/// 两个方向都要支持：向下滚动时新内容从底部出现，拼到长图底部；
+/// 向上滚动时新内容从顶部出现，拼到长图**顶部**。
+/// 早期实现只做了向下追加、把向上滚动当成「反向」去裁剪，
+/// 结果在聊天记录、代码这类「往上翻看更早内容」的场景里长图永远长不高。
 public final class ScrollStitcher {
     public let maxHeightPx: Int
     public let deadZonePx: CGFloat
 
     public private(set) var image: CGImage?
     public private(set) var frameCount = 0
-
-    /// 反向位移连续出现两次才裁剪，避免滚动惯性抖动误删内容。
-    private var hasPendingReverse = false
 
     public init(maxHeightPx: Int = 8_000, deadZonePx: CGFloat = 3) {
         self.maxHeightPx = maxHeightPx
@@ -32,41 +34,47 @@ public final class ScrollStitcher {
     public func start(first: CGImage) -> ScrollStitchState {
         image = first
         frameCount = 1
-        hasPendingReverse = false
-        return ScrollStitchState(frameCount: frameCount, changed: true, reachedLimit: first.height >= maxHeightPx)
+        return ScrollStitchState(
+            frameCount: frameCount,
+            changed: true,
+            reachedLimit: first.height >= maxHeightPx
+        )
     }
 
+    /// - Parameters:
+    ///   - offsetPx: 正数表示内容向下滚动（新内容从底部出现），负数表示内容向上滚动（新内容从顶部出现）。
+    ///   - stickyBottomPx: 画面底部固定不动的条带高度（输入框、播放条），追加时剔除。
+    ///   - stickyTopPx: 画面顶部固定不动的条带高度（标题栏、工具栏），前插时剔除。
     @discardableResult
-    public func ingest(frame: CGImage, offsetPx: CGFloat) -> ScrollStitchState? {
+    public func ingest(
+        frame: CGImage,
+        offsetPx: CGFloat,
+        stickyBottomPx: Int = 0,
+        stickyTopPx: Int = 0
+    ) -> ScrollStitchState? {
         guard let current = image else {
             return start(first: frame)
         }
-        guard frame.width == current.width else {
-            return ScrollStitchState(frameCount: frameCount, changed: false, reachedLimit: false)
-        }
+        guard frame.width == current.width else { return unchanged() }
+        guard abs(offsetPx) > deadZonePx else { return unchanged() }
 
-        if abs(offsetPx) <= deadZonePx {
-            hasPendingReverse = false
-            return ScrollStitchState(frameCount: frameCount, changed: false, reachedLimit: false)
+        let allowed = maxHeightPx - current.height
+        guard allowed > 0 else {
+            return ScrollStitchState(frameCount: frameCount, changed: false, reachedLimit: true)
         }
 
         if offsetPx > 0 {
-            let append = min(Int(offsetPx.rounded()), frame.height)
-            let allowed = maxHeightPx - current.height
-            guard append > 0, allowed > 0 else {
-                return ScrollStitchState(
-                    frameCount: frameCount,
-                    changed: false,
-                    reachedLimit: allowed <= 0
-                )
-            }
+            // 向下滚动：新露出的内容在画面底部（固定条带上方），拼到长图底部。
+            let sticky = min(max(0, stickyBottomPx), frame.height / 3)
+            let sourceBottom = max(1, frame.height - sticky)
+            let append = min(Int(offsetPx.rounded()), sourceBottom)
             let take = min(append, allowed)
-            guard let composed = Self.appendBottom(base: current, strip: frame, stripHeightPx: take) else {
-                return ScrollStitchState(frameCount: frameCount, changed: false, reachedLimit: false)
-            }
+            guard take > 0,
+                  let composed = Self.appendBottom(
+                      base: current, strip: frame, stripHeightPx: take, sourceBottomPx: sourceBottom
+                  ) else { return unchanged() }
             image = composed
             frameCount += 1
-            hasPendingReverse = false
             return ScrollStitchState(
                 frameCount: frameCount,
                 changed: true,
@@ -74,45 +82,58 @@ public final class ScrollStitcher {
             )
         }
 
-        guard hasPendingReverse else {
-            hasPendingReverse = true
-            return ScrollStitchState(frameCount: frameCount, changed: false, reachedLimit: false)
-        }
-        hasPendingReverse = false
-
-        let crop = min(Int((-offsetPx).rounded()), current.height - 1)
-        guard crop > 0 else {
-            return ScrollStitchState(frameCount: frameCount, changed: false, reachedLimit: false)
-        }
-        guard let cropped = current.cropping(
-            to: CGRect(x: 0, y: 0, width: current.width, height: current.height - crop)
-        ) else {
-            return ScrollStitchState(frameCount: frameCount, changed: false, reachedLimit: false)
-        }
-        image = cropped
-        return ScrollStitchState(frameCount: frameCount, changed: true, reachedLimit: false)
+        // 向上滚动：新露出的内容在画面顶部（固定条带下方），拼到长图顶部。
+        let sticky = min(max(0, stickyTopPx), frame.height / 3)
+        let sourceTop = sticky
+        let prepend = min(Int((-offsetPx).rounded()), max(0, frame.height - sourceTop))
+        let take = min(prepend, allowed)
+        guard take > 0,
+              let composed = Self.prependTop(
+                  base: current, strip: frame, stripHeightPx: take, sourceTopPx: sourceTop
+              ) else { return unchanged() }
+        image = composed
+        frameCount += 1
+        return ScrollStitchState(
+            frameCount: frameCount,
+            changed: true,
+            reachedLimit: composed.height >= maxHeightPx
+        )
     }
 
-    /// 增量上下文（复用同一 CGContext、只绘制新增条带）未实现：每次追加都新建整高
-    /// CGContext 并重绘全部已有内容，宽 6016、高 20000 时单份约 480MB，每次追加瞬态约 3 份。
-    /// 默认上限压到 8000px，把单次追加的峰值控制在约 190MB；需要更长图时由调用方显式传入更大上限。
-    private static func appendBottom(base: CGImage, strip: CGImage, stripHeightPx: Int) -> CGImage? {
-        let width = base.width
-        let height = base.height + stripHeightPx
-        guard let ctx = CGContext(
+    /// 片段布局约定：图像行 0 为顶部。
+    /// CGContext 的 y=0 在底部，所以「顶部内容」要画在较大的 y 上。
+    private static func makeContext(width: Int, height: Int, colorSpace: CGColorSpace?) -> CGContext? {
+        CGContext(
             data: nil,
             width: width,
             height: height,
             bitsPerComponent: 8,
             bytesPerRow: 0,
-            space: base.colorSpace ?? CGColorSpaceCreateDeviceRGB(),
+            space: colorSpace ?? CGColorSpaceCreateDeviceRGB(),
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else { return nil }
+        )
+    }
 
-        // 新帧底部 stripHeightPx 行是新露出的内容，放在长图底部。
-        guard let newStrip = strip.cropping(
-            to: CGRect(x: 0, y: strip.height - stripHeightPx, width: strip.width, height: stripHeightPx)
-        ) else { return nil }
+    /// 增量上下文（复用同一 CGContext、只绘制新增条带）未实现：每次追加都新建整高 CGContext
+    /// 并重绘全部已有内容。默认上限压到 8000px，把单次追加的峰值控制在约 190MB。
+    private static func appendBottom(
+        base: CGImage,
+        strip: CGImage,
+        stripHeightPx: Int,
+        sourceBottomPx: Int
+    ) -> CGImage? {
+        let width = base.width
+        let height = base.height + stripHeightPx
+        guard let ctx = makeContext(width: width, height: height, colorSpace: base.colorSpace) else {
+            return nil
+        }
+        // 新露出的内容取自「固定条带上方」的 stripHeightPx 行。
+        let sourceTop = max(0, sourceBottomPx - stripHeightPx)
+        let sourceHeight = min(stripHeightPx, sourceBottomPx - sourceTop)
+        guard sourceHeight > 0,
+              let newStrip = strip.cropping(
+                  to: CGRect(x: 0, y: sourceTop, width: strip.width, height: sourceHeight)
+              ) else { return nil }
 
         AnnotationRenderer.drawUpright(
             base,
@@ -121,9 +142,45 @@ public final class ScrollStitcher {
         )
         AnnotationRenderer.drawUpright(
             newStrip,
-            in: CGRect(x: 0, y: 0, width: width, height: stripHeightPx),
+            in: CGRect(x: 0, y: stripHeightPx - sourceHeight, width: width, height: sourceHeight),
             ctx: ctx
         )
         return ctx.makeImage()
+    }
+
+    /// 向上滚动时把新露出的顶部内容前插到长图顶部。
+    private static func prependTop(
+        base: CGImage,
+        strip: CGImage,
+        stripHeightPx: Int,
+        sourceTopPx: Int
+    ) -> CGImage? {
+        let width = base.width
+        let height = base.height + stripHeightPx
+        guard let ctx = makeContext(width: width, height: height, colorSpace: base.colorSpace) else {
+            return nil
+        }
+        let sourceHeight = min(stripHeightPx, max(0, strip.height - sourceTopPx))
+        guard sourceHeight > 0,
+              let newStrip = strip.cropping(
+                  to: CGRect(x: 0, y: sourceTopPx, width: strip.width, height: sourceHeight)
+              ) else { return nil }
+
+        // 既有长图放底部，新条带放它上方（更靠近顶部）。
+        AnnotationRenderer.drawUpright(
+            base,
+            in: CGRect(x: 0, y: 0, width: width, height: base.height),
+            ctx: ctx
+        )
+        AnnotationRenderer.drawUpright(
+            newStrip,
+            in: CGRect(x: 0, y: base.height, width: width, height: sourceHeight),
+            ctx: ctx
+        )
+        return ctx.makeImage()
+    }
+
+    private func unchanged() -> ScrollStitchState {
+        ScrollStitchState(frameCount: frameCount, changed: false, reachedLimit: false)
     }
 }

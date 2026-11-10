@@ -82,20 +82,49 @@ struct ScrollStitcherTests {
         #expect(stitcher.image?.height == 100)
     }
 
-    @Test func reverseOffsetNeedsTwoConfirmations() {
+    /// 向上滚动（内容向下移动）：新内容从顶部出现，必须前插到长图顶部，不能裁剪。
+    @Test func upwardScrollPrependsTopStrip() {
+        let stitcher = ScrollStitcher()
+        // 首帧灰度 100...199
+        stitcher.start(first: makeImage(width: 20, height: 100) { UInt8($0 + 100) })
+        // 向上滚 40：新帧顶部 40 行是更早的内容（灰度 60...99），其余与首帧顶部对齐
+        let frame = makeImage(width: 20, height: 100) { row in
+            row < 40 ? UInt8(row + 60) : UInt8(row - 40 + 100)
+        }
+        let state = stitcher.ingest(frame: frame, offsetPx: -40)
+        #expect(state?.changed == true)
+        #expect(stitcher.image?.height == 140)
+        // 顶部 40 行来自新帧顶部
+        #expect(pixel(stitcher.image!, x: 0, y: 0) == 60)
+        #expect(pixel(stitcher.image!, x: 0, y: 39) == 99)
+        // 原有画面整体下移 40 行
+        #expect(pixel(stitcher.image!, x: 0, y: 40) == 100)
+        #expect(pixel(stitcher.image!, x: 0, y: 139) == 199)
+    }
+
+    /// 上下都滚：两个方向都要能累积。
+    @Test func bothDirectionsAccumulate() {
         let stitcher = ScrollStitcher()
         stitcher.start(first: makeImage(width: 20, height: 100) { UInt8($0) })
-        stitcher.ingest(frame: makeImage(width: 20, height: 100) { UInt8($0) }, offsetPx: 50)
+        stitcher.ingest(frame: makeImage(width: 20, height: 100) { UInt8($0 + 100) }, offsetPx: 50)
         #expect(stitcher.image?.height == 150)
+        stitcher.ingest(frame: makeImage(width: 20, height: 100) { UInt8($0) }, offsetPx: -30)
+        #expect(stitcher.image?.height == 180)
+    }
 
-        let frame = makeImage(width: 20, height: 100) { UInt8($0) }
-        let firstReverse = stitcher.ingest(frame: frame, offsetPx: -30)
-        #expect(firstReverse?.changed == false)
-        #expect(stitcher.image?.height == 150)
-
-        let secondReverse = stitcher.ingest(frame: frame, offsetPx: -30)
-        #expect(secondReverse?.changed == true)
-        #expect(stitcher.image?.height == 120)
+    /// 顶部固定条带（标题栏）不得被重复前插。
+    @Test func stickyTopExcludedWhenPrepending() {
+        let stitcher = ScrollStitcher()
+        stitcher.start(first: makeImage(width: 20, height: 100) { UInt8($0) })
+        // 新帧顶部 20 行固定不动，其下 30 行才是新内容
+        let frame = makeImage(width: 20, height: 100) { row in
+            row < 20 ? UInt8(row) : (row < 50 ? UInt8(row + 200) : UInt8(row - 30))
+        }
+        let state = stitcher.ingest(frame: frame, offsetPx: -30, stickyTopPx: 20)
+        #expect(state?.changed == true)
+        #expect(stitcher.image?.height == 130)
+        // 前插的是固定条带下方那 30 行（frame 第 20 行 = 20 + 200 = 220）
+        #expect(pixel(stitcher.image!, x: 0, y: 0) == 220)
     }
 
     @Test func stopsAtMaxHeight() {

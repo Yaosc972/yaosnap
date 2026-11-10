@@ -23,6 +23,27 @@ final class SnipOverlayWindow: NSWindow {
         isReleasedWhenClosed = false
     }
 
+    /// 滚动抓帧期间切成「穿透」模式：不透明的整屏窗口会让下层应用被系统判为完全遮挡，
+    /// 从而停止或降低重绘，于是抓帧只能拿到同一张静态合成图（滚动截屏卡点的根因之一）。
+    /// 切成非不透明 + 透明底色后，桌面实时透出、下层继续合成，同时不影响鼠标事件穿透。
+    private var scrollThroughBackup: (isOpaque: Bool, background: NSColor?)?
+
+    func setScrollThrough(_ through: Bool) {
+        if through {
+            guard scrollThroughBackup == nil else { return }
+            scrollThroughBackup = (isOpaque, backgroundColor)
+            isOpaque = false
+            backgroundColor = .clear
+        } else {
+            guard let backup = scrollThroughBackup else { return }
+            scrollThroughBackup = nil
+            isOpaque = backup.isOpaque
+            backgroundColor = backup.background
+        }
+        hasShadow = false
+        invalidateShadow()
+    }
+
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
 }

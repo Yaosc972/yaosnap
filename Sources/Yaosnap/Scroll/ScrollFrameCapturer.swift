@@ -1,21 +1,25 @@
 import AppKit
 import ScreenCaptureKit
 
-@MainActor
-protocol ScrollFrameCapturing: AnyObject {
+protocol ScrollFrameCapturing: Sendable {
     func capture(globalRect: CGRect) async -> CGImage?
 }
 
-/// 抓取指定屏幕上的矩形区域。优先 ScreenCaptureKit 并排除本进程窗口，
-/// 保证覆盖层的遮罩与边框不会进入拼接结果；失败时退回"抓本窗口之下"。
-@MainActor
-final class ScreenScrollFrameCapturer: ScrollFrameCapturing {
+/// 抓取指定屏幕上的矩形区域。
+///
+/// 整个类型是 actor：ScreenCaptureKit 的捕获请求与 Vision 一样必须离开主线程，
+/// 放在主 actor 上 await 会让主线程参与 XPC 往返，滚动时整机失去响应。
+/// 优先 ScreenCaptureKit 并排除本进程窗口；连续失败后永久退回确定性抓取，
+/// 避免每帧都去撞同一个错误。
+actor ScreenScrollFrameCapturer: ScrollFrameCapturing {
     private let displayID: CGDirectDisplayID
     private let scale: CGFloat
     private let excludedWindowNumber: Int
-    // ScreenCaptureKit 需要 macOS 12.3+（截图 API 14.0+），而包的最低部署目标是
-    // macOS 12.0，因此缓存按 AnyObject 存放，仅在可用性分支内做强转。
+    // SCShareableContent 是 macOS 12.3+ 类型，而包的最低部署目标是 12.0；
+    // 存储属性无法用 #available 保护，因此缓存按 AnyObject 存放，仅在可用性分支内强转。
     private var cachedContent: AnyObject?
+    private var screenCaptureKitFailures = 0
+    private static let maximumScreenCaptureKitFailures = 2
 
     init(displayID: CGDirectDisplayID, scale: CGFloat, excludedWindowNumber: Int) {
         self.displayID = displayID
@@ -25,8 +29,12 @@ final class ScreenScrollFrameCapturer: ScrollFrameCapturing {
 
     func capture(globalRect: CGRect) async -> CGImage? {
         if #available(macOS 14.0, *),
-           let image = await captureWithScreenCaptureKit(globalRect) {
-            return image
+           screenCaptureKitFailures < Self.maximumScreenCaptureKitFailures {
+            if let image = await captureWithScreenCaptureKit(globalRect) {
+                screenCaptureKitFailures = 0
+                return image
+            }
+            screenCaptureKitFailures += 1
         }
         return captureBelowOwnWindow(globalRect)
     }
@@ -35,34 +43,26 @@ final class ScreenScrollFrameCapturer: ScrollFrameCapturing {
     private func captureWithScreenCaptureKit(_ rect: CGRect) async -> CGImage? {
         do {
             let content: SCShareableContent
-            if let cached = cachedContent as? SCShareableContent {
-                content = cached
+            if let cachedContent = cachedContent as? SCShareableContent {
+                content = cachedContent
             } else {
                 content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
                 cachedContent = content
             }
 
             guard let display = content.displays.first(where: { $0.displayID == displayID }) else {
-                // 缓存内容可能已过期（显示器拔插/会话变化），清掉以免永久卡在回退路径。
                 cachedContent = nil
                 return nil
             }
             let ownApplications = content.applications.filter {
                 $0.processID == ProcessInfo.processInfo.processIdentifier
             }
-            // 枚举结果里没有本进程时，应用级排除什么也排不掉，会把自己的遮罩/边框拼进图里；
-            // 此时宁可放弃 SCK，交给确定性的“抓本窗口之下”回退。
-            guard !ownApplications.isEmpty else {
-                return nil
-            }
-            // 同时按 windowID 精确定位覆盖层窗口做窗口级排除，不依赖 applications 列表。
-            let ownWindows = content.windows.filter {
-                $0.windowID == CGWindowID(excludedWindowNumber)
-            }
+            guard !ownApplications.isEmpty else { return nil }
+
             let filter = SCContentFilter(
                 display: display,
                 excludingApplications: ownApplications,
-                exceptingWindows: ownWindows
+                exceptingWindows: []
             )
             let config = SCStreamConfiguration()
             config.sourceRect = CGRect(
