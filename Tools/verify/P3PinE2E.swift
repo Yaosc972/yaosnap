@@ -525,6 +525,215 @@ final class PinHarness {
         pump()
     }
 
+    /// 单击一次（按下 + 抬起），给序号/折线/文字这类点按工具用。
+    private func clickAt(_ view: PinContentView, window: PinWindow, at point: CGPoint) {
+        guard let down = mouseDragEvent(.leftMouseDown, at: point, window: window),
+              let up = mouseDragEvent(.leftMouseUp, at: point, window: window) else {
+            fail("PIN-TOOLS", "构造点击失败")
+            return
+        }
+        view.mouseDown(with: down)
+        view.mouseUp(with: up)
+    }
+
+    /// 贴图标注要跟截图主界面一样能画全套工具，这里逐个工具驱动一遍。
+    private func runAnnotateTools() {
+        controller.closeAll()
+        pump()
+        guard let window = pinFreshWindow(),
+              let view = window.contentView as? PinContentView else {
+            fail("PIN-TOOLS", "没有新建贴图窗口")
+            return
+        }
+        view.setAnnotateMode(true)
+        view.layoutSubtreeIfNeeded()
+        pump(0.1)
+
+        // 底栏先是得真的可见，再谈工具全不全。底栏挂在贴图窗口的浮动子窗口里。
+        let bar = window.childWindows?
+            .compactMap { $0.contentView as? PinAnnotateBar }
+            .first
+        if let bar {
+            let missing = Set(ShapeKind.allCases).subtracting(bar.exposedTools)
+            if bar.frame.width > 0, bar.frame.height > 0, missing.isEmpty {
+                pass(
+                    "PIN-TOOLS-BAR",
+                    "底栏 \(Int(bar.frame.width))x\(Int(bar.frame.height))，覆盖全部 \(ShapeKind.allCases.count) 个工具"
+                )
+            } else {
+                fail(
+                    "PIN-TOOLS-BAR",
+                    "底栏 \(Int(bar.frame.width))x\(Int(bar.frame.height))，缺工具 \(missing.map { String(describing: $0) })"
+                )
+            }
+        } else {
+            fail("PIN-TOOLS-BAR", "标注模式下找不到浮动标注底栏")
+        }
+
+        let dragTools: [ShapeKind] = [
+            .rect, .roundedRect, .ellipse, .line, .arrow,
+            .brush, .marker, .mosaic, .blur, .mosaicRect, .magnify,
+        ]
+        for kind in dragTools {
+            view.annotationTool = kind
+            let before = view.annotations.count
+            dragAnnotation(view, window: window, from: CGPoint(x: 8, y: 8), to: CGPoint(x: 30, y: 22))
+            pump(0.02)
+            if view.annotations.count == before + 1, view.annotations.last?.shape.kind == kind {
+                pass("PIN-TOOLS-\(String(describing: kind))", "拖拽落笔 \(String(describing: kind))")
+            } else {
+                fail(
+                    "PIN-TOOLS-\(String(describing: kind))",
+                    "标注数 \(view.annotations.count) 期望 \(before + 1)，末笔 \(String(describing: view.annotations.last?.shape.kind))"
+                )
+            }
+        }
+
+        view.annotationTool = .serial
+        let serialBefore = view.annotations.count
+        clickAt(view, window: window, at: CGPoint(x: 20, y: 15))
+        clickAt(view, window: window, at: CGPoint(x: 26, y: 15))
+        pump(0.02)
+        let serialValues = view.annotations.suffix(2).compactMap { annotation -> Int? in
+            guard case .serial(let value, _, _) = annotation.shape else { return nil }
+            return value
+        }
+        if view.annotations.count == serialBefore + 2, serialValues == [1, 2] {
+            pass("PIN-TOOLS-SERIAL", "两次点击落序号 1、2")
+        } else {
+            fail(
+                "PIN-TOOLS-SERIAL",
+                "标注数 \(view.annotations.count) 期望 \(serialBefore + 2)，序号 \(serialValues)"
+            )
+        }
+
+        view.annotationTool = .polyline
+        let polyBefore = view.annotations.count
+        clickAt(view, window: window, at: CGPoint(x: 5, y: 5))
+        clickAt(view, window: window, at: CGPoint(x: 15, y: 12))
+        clickAt(view, window: window, at: CGPoint(x: 25, y: 6))
+        if let enter = keyEvent(keyCode: 36, characters: "\r", window: window) {
+            view.keyDown(with: enter)
+        }
+        pump(0.02)
+        if view.annotations.count == polyBefore + 1,
+           case .polyline(let points)? = view.annotations.last?.shape,
+           points.count == 3 {
+            pass("PIN-TOOLS-POLYLINE", "三次点击 + Enter 落一笔 3 点折线")
+        } else {
+            fail(
+                "PIN-TOOLS-POLYLINE",
+                "标注数 \(view.annotations.count) 期望 \(polyBefore + 1)，末笔 \(String(describing: view.annotations.last?.shape))"
+            )
+        }
+
+        view.annotationTool = .text
+        let textBefore = view.annotations.count
+        clickAt(view, window: window, at: CGPoint(x: 6, y: 6))
+        pump(0.05)
+        if let editor = view.subviews.compactMap({ $0 as? NSTextView }).first {
+            editor.string = "文字"
+            if let commit = keyEvent(keyCode: 36, characters: "\r", modifiers: [.command], window: window) {
+                editor.keyDown(with: commit)
+            }
+            pump(0.05)
+        }
+        var textCommitted = false
+        if view.annotations.count == textBefore + 1,
+           case .text(let text, _, _, _)? = view.annotations.last?.shape,
+           text == "文字" {
+            textCommitted = true
+        }
+        if textCommitted {
+            pass("PIN-TOOLS-TEXT", "点击出输入框，⌘Enter 提交文字标注")
+        } else {
+            fail(
+                "PIN-TOOLS-TEXT",
+                "标注数 \(view.annotations.count) 期望 \(textBefore + 1)，末笔 \(String(describing: view.annotations.last?.shape))"
+            )
+        }
+
+        view.annotationTool = .eraser
+        let eraseBefore = view.annotations.count
+        dragAnnotation(view, window: window, from: CGPoint(x: 2, y: 2), to: CGPoint(x: 38, y: 28))
+        pump(0.02)
+        if eraseBefore > 0, view.annotations.count < eraseBefore {
+            pass("PIN-TOOLS-ERASER", "橡皮擦一次拖动删掉 \(eraseBefore - view.annotations.count) 笔")
+        } else {
+            fail(
+                "PIN-TOOLS-ERASER",
+                "擦除前 \(eraseBefore) 笔，擦除后 \(view.annotations.count) 笔，期望减少"
+            )
+        }
+        // 存一张示意截图，人工确认底栏位置与工具齐全。
+        if let panel = window.childWindows?.first(where: { $0.contentView is PinAnnotateBar }) {
+            dumpAnnotateLayout(window: window, panel: panel)
+        }
+
+        // 收起贴图时底栏必须跟着消失，否则屏幕上会留一条没人管的工具栏。
+        view.setAnnotateMode(false)
+        pump(0.05)
+        let detached = window.childWindows?.contains { $0.contentView is PinAnnotateBar } != true
+        if detached {
+            pass("PIN-TOOLS-DETACH", "退出标注模式后底栏浮窗已移除")
+        } else {
+            fail("PIN-TOOLS-DETACH", "退出标注模式后底栏浮窗还在")
+        }
+
+        view.setAnnotateMode(true)
+        pump(0.05)
+        controller.hideAll()
+        pump(0.05)
+        let hiddenWithParent = window.childWindows?.contains { $0.isVisible } != true
+        if hiddenWithParent {
+            pass("PIN-TOOLS-HIDE", "收起贴图后底栏一起隐藏")
+        } else {
+            fail("PIN-TOOLS-HIDE", "收起贴图后底栏仍然可见")
+        }
+        controller.showAll()
+        pump(0.05)
+        window.close()
+        pump()
+    }
+
+    /// 把贴图窗口与浮动底栏一起渲染成一张 PNG，给人工验收用。
+    private func dumpAnnotateLayout(window: PinWindow, panel: NSWindow) {
+        guard let view = window.contentView, let bar = panel.contentView else { return }
+        let union = window.frame.union(panel.frame)
+        let padding: CGFloat = 12
+        let scale: CGFloat = 2
+        let pointSize = NSSize(width: union.width + padding * 2, height: union.height + padding * 2)
+        let image = NSImage(size: NSSize(width: pointSize.width * scale, height: pointSize.height * scale))
+        image.lockFocus()
+        NSColor(white: 0.86, alpha: 1).setFill()
+        NSRect(origin: .zero, size: NSSize(
+            width: pointSize.width * scale,
+            height: pointSize.height * scale
+        )).fill()
+        if let context = NSGraphicsContext.current?.cgContext {
+            context.scaleBy(x: scale, y: scale)
+            func draw(_ target: NSView, from frame: NSRect) {
+                guard let rep = target.bitmapImageRepForCachingDisplay(in: target.bounds) else { return }
+                target.cacheDisplay(in: target.bounds, to: rep)
+                rep.draw(in: NSRect(
+                    x: frame.minX - union.minX + padding,
+                    y: frame.minY - union.minY + padding,
+                    width: target.bounds.width,
+                    height: target.bounds.height
+                ))
+            }
+            draw(view, from: window.frame)
+            draw(bar, from: panel.frame)
+        }
+        image.unlockFocus()
+        guard let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]) else { return }
+        let url = URL(fileURLWithPath: "/tmp/yaosnap-verify/evidence/pin-annotate-layout.png")
+        try? png.write(to: url)
+        print("EVIDENCE \(url.path)")
+    }
+
     private func runZoom() {
         guard let window = pinFreshWindow() else {
             fail("PIN-ZOOM", "没有新建贴图窗口")
@@ -1131,6 +1340,7 @@ final class PinHarness {
         runMultiEscape()
         runBackground()
         runAnnotate()
+        runAnnotateTools()
         controller.closeAll()
         print("SUMMARY passes=\(passes) failures=\(failures)")
         exit(failures == 0 ? 0 : 1)

@@ -23,6 +23,9 @@ final class PinWindow: NSWindow {
     /// 每次裁剪前的保留区域，⌘Z 逐级退回。原始的 pasteImage 始终未改动。
     private var cropHistory: [CGRect?] = []
     private var imageCache: (key: ImageKey, image: CGImage, pointSize: CGSize)?
+    /// 标注底栏放在贴图窗口外的浮动面板里：贴图可以很小（40x30），
+    /// 底栏塞进内容视图会把整张图盖住，也接不了 15 个工具。
+    private var annotatePanel: NSPanel?
 
     private struct ImageKey: Equatable {
         let crop: CGRect?
@@ -140,6 +143,78 @@ final class PinWindow: NSWindow {
     func destroy() {
         canRestore = false
         close()
+    }
+
+    // MARK: - 标注底栏（独立浮窗）
+
+    /// 承载标注底栏的浮窗。点按钮时不让贴图窗口失焦，因此用非激活面板。
+    private func makeAnnotatePanel() -> NSPanel {
+        let panel = NSPanel(
+            contentRect: .zero,
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.level = level
+        panel.isFloatingPanel = true
+        // 只有底栏里的输入控件需要按键，面板本身不抢 key。
+        panel.becomesKeyOnlyIfNeeded = true
+        panel.hidesOnDeactivate = false
+        panel.isReleasedWhenClosed = false
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        return panel
+    }
+
+    func attachAnnotateBar(_ bar: PinAnnotateBar) {
+        let panel = annotatePanel ?? makeAnnotatePanel()
+        annotatePanel = panel
+        let size = bar.intrinsicContentSize
+        bar.translatesAutoresizingMaskIntoConstraints = true
+        panel.contentView = bar
+        bar.frame = NSRect(origin: .zero, size: size)
+        panel.setContentSize(size)
+        if panel.parent == nil {
+            addChildWindow(panel, ordered: .above)
+        }
+        positionAnnotatePanel()
+        panel.orderFront(nil)
+    }
+
+    func detachAnnotateBar() {
+        guard let panel = annotatePanel else { return }
+        annotatePanel = nil
+        panel.orderOut(nil)
+        if panel.parent != nil { removeChildWindow(panel) }
+        panel.contentView = NSView(frame: .zero)
+    }
+
+    /// 贴在贴图窗口正下方；下方放不下就翻到上方，横向钳进屏幕。
+    private func positionAnnotatePanel() {
+        guard let panel = annotatePanel else { return }
+        let size = panel.frame.size
+        guard size.width > 0, size.height > 0 else { return }
+        let gap: CGFloat = 8
+        let bounds = (screen ?? NSScreen.main)?.visibleFrame ?? frame
+        var origin = CGPoint(x: frame.midX - size.width / 2, y: frame.minY - gap - size.height)
+        if origin.y < bounds.minY {
+            let above = frame.maxY + gap
+            origin.y = above + size.height <= bounds.maxY ? above : bounds.minY
+        }
+        origin.x = min(max(origin.x, bounds.minX), max(bounds.minX, bounds.maxX - size.width))
+        panel.setFrameOrigin(origin)
+    }
+
+    override func setFrame(_ frameRect: NSRect, display flag: Bool) {
+        super.setFrame(frameRect, display: flag)
+        positionAnnotatePanel()
+    }
+
+    override func close() {
+        detachAnnotateBar()
+        super.close()
     }
 
     /// 当前视觉状态（裁剪、滤镜、旋转、翻转）加标注的位图，供复制与另存为使用。
@@ -394,6 +469,15 @@ final class PinContentView: NSView {
     private var annotationsBeforeMode: [Annotation] = []
     private var annotationHistoryBeforeMode = SnapshotHistory<[Annotation]>()
     private var annotationStart: CGPoint?
+    /// 序号标注的下一个编号，撤销不回退（与截图主界面一致）。
+    private var nextSerial = 1
+    /// 折线待确认顶点；非 nil 表示正在多次点击折线。
+    private var polylinePoints: [CGPoint]?
+    /// 橡皮擦一次拖动只压一次撤销栈。
+    private var eraserPushedUndo = false
+    private var textEditor: PinAnnotatingTextView?
+    private var textOrigin: CGPoint?
+    private var textStyle: Style?
 
     private var dragStart: NSPoint?
     private var windowStart: NSPoint?
@@ -414,10 +498,6 @@ final class PinContentView: NSView {
             addSubview(toolbar)
             toolbar.isHidden = true
         }
-        if annotateBar.superview == nil {
-            addSubview(annotateBar)
-            annotateBar.isHidden = true
-        }
         needsLayout = true
     }
 
@@ -429,15 +509,6 @@ final class PinContentView: NSView {
             y: bounds.height - size.height - 2,
             width: size.width,
             height: size.height
-        )
-        let barSize = annotateBar.intrinsicContentSize
-        // 窗口窄于底栏时钳到左缘，宁可截断也不叠出边界。
-        let x = min(max(0, floor((bounds.width - barSize.width) / 2)), max(0, bounds.width - barSize.width))
-        annotateBar.frame = CGRect(
-            x: x,
-            y: 2,
-            width: barSize.width,
-            height: barSize.height
         )
     }
 
@@ -492,10 +563,18 @@ final class PinContentView: NSView {
         let bar = PinAnnotateBar()
         bar.onSelectTool = { [weak self] kind in
             guard let self else { return }
+            guard self.annotationTool != kind else { return }
+            // 换工具即收掉上一笔未完成的折线与草稿，避免新旧工具混画。
+            self.cancelPolyline()
+            self.endTextEditing()
+            self.annotationDraft = nil
+            self.annotationStart = nil
             self.annotationTool = kind
             self.refreshAnnotateBar()
+            self.needsDisplay = true
         }
         bar.onCycleColor = { [weak self] in self?.cycleAnnotationColor() }
+        bar.onCyclePen = { [weak self] in self?.cycleAnnotationPen() }
         bar.onUndo = { [weak self] in self?.undoLastAnnotation() }
         bar.onFinish = { [weak self] in self?.setAnnotateMode(false) }
         bar.onCancel = { [weak self] in self?.setAnnotateMode(false, discardingAnnotations: true) }
@@ -619,17 +698,20 @@ final class PinContentView: NSView {
             annotationsBeforeMode = annotations
             annotationHistoryBeforeMode = annotationHistory
             annotationTool = .rect
-            annotateBar.isHidden = false
+            pinWindow?.attachAnnotateBar(annotateBar)
         } else {
             guard annotationTool != nil else { return }
             if discardingAnnotations {
                 annotations = annotationsBeforeMode
                 annotationHistory = annotationHistoryBeforeMode
             }
+            endTextEditing()
+            cancelPolyline()
             annotationTool = nil
             annotationDraft = nil
             annotationStart = nil
-            annotateBar.isHidden = true
+            nextSerial = max(1, nextSerial)
+            pinWindow?.detachAnnotateBar()
         }
         refreshAnnotateBar()
         needsDisplay = true
@@ -642,6 +724,8 @@ final class PinContentView: NSView {
         annotationHistory.removeAll()
         annotationDraft = nil
         annotationStart = nil
+        polylinePoints = nil
+        nextSerial = 1
         refreshAnnotateBar()
         needsDisplay = true
     }
@@ -650,6 +734,7 @@ final class PinContentView: NSView {
         annotateBar.updateState(
             tool: annotationTool ?? .rect,
             color: annotationStyle.color,
+            pen: annotationStyle.pen,
             canUndo: annotationHistory.canUndo
         )
     }
@@ -665,78 +750,340 @@ final class PinContentView: NSView {
         refreshAnnotateBar()
     }
 
+    private func cycleAnnotationPen() {
+        let all = PenSize.allCases
+        let index = all.firstIndex(of: annotationStyle.pen) ?? 0
+        annotationStyle.pen = all[(index + 1) % all.count]
+        refreshAnnotateBar()
+    }
+
+    /// 矩形系两边不足、线系位移不足则丢弃，点序列单击也落成圆点。
+    private static let minimumStrokeSide: CGFloat = 3
+    private static let minimumTextWidth: CGFloat = 160
+
+    /// 落笔分发：一次点击就完成的工具（文字/序号）走这里，拖拽工具建草稿。
     private func beginAnnotationStroke(_ tool: ShapeKind, at viewPoint: CGPoint) {
         let point = canvasPoint(fromView: viewPoint)
-        guard tool != .text else {
-            // 第一版文字无输入框，点击处直接落一个占位标注。
-            commit(Annotation(
-                shape: .text("文字", origin: point, fontSize: annotationStyle.pen.textFontSize, rotation: 0),
-                style: annotationStyle
-            ))
-            annotationStart = nil
-            return
-        }
-        annotationStart = point
         switch tool {
-        case .rect:
-            annotationDraft = Annotation(shape: .rect(CGRect(origin: point, size: .zero)), style: annotationStyle)
-        case .ellipse:
-            annotationDraft = Annotation(shape: .ellipse(CGRect(origin: point, size: .zero)), style: annotationStyle)
-        case .arrow:
-            annotationDraft = Annotation(shape: .arrow(from: point, to: point), style: annotationStyle)
-        case .brush:
-            annotationDraft = Annotation(shape: .brush([point]), style: annotationStyle)
+        case .text:
+            beginTextEditing(at: viewPoint)
+            return
+        case .serial:
+            commitSerial(at: point)
+            return
+        case .polyline:
+            appendPolylinePoint(point)
+            return
+        case .eraser:
+            eraserPushedUndo = false
+            annotationStart = point
+            eraseAnnotations(from: point, to: point)
+            return
         default:
             break
         }
+        annotationStart = point
+        annotationDraft = makeDraft(tool: tool, origin: point, current: point)
         needsDisplay = true
     }
 
     private func updateAnnotationDraft(at viewPoint: CGPoint) {
-        guard let start = annotationStart, let tool = annotationTool else { return }
+        guard let tool = annotationTool else { return }
         let point = canvasPoint(fromView: viewPoint)
         switch tool {
-        case .rect, .ellipse:
-            let rect = RectMath.normalizedRect(from: start, to: point)
-            annotationDraft?.shape = tool == .rect ? .rect(rect) : .ellipse(rect)
-        case .arrow:
-            annotationDraft?.shape = .arrow(from: start, to: point)
-        case .brush:
-            if case .brush(var points)? = annotationDraft?.shape {
-                points.append(point)
-                annotationDraft?.shape = .brush(points)
+        case .eraser:
+            guard let last = annotationStart else { return }
+            eraseAnnotations(from: last, to: point)
+            annotationStart = point
+            return
+        case .polyline:
+            guard let points = polylinePoints else { return }
+            var preview = points
+            if let last = preview.last, hypot(point.x - last.x, point.y - last.y) >= 1 {
+                preview.append(point)
             }
+            annotationDraft = Annotation(shape: .polyline(preview), style: annotationStyle)
+        case .text, .serial:
+            return
         default:
-            break
+            guard let start = annotationStart, var draft = annotationDraft else { return }
+            if let grown = appendPoint(point, to: draft.shape) {
+                draft.shape = grown
+            } else if !isPointSequence(draft.shape) {
+                draft.shape = shapeForDrag(tool: tool, from: start, to: point)
+            }
+            annotationDraft = draft
         }
         needsDisplay = true
     }
 
     private func finishAnnotationStroke(at viewPoint: CGPoint) {
-        guard let tool = annotationTool, let start = annotationStart else {
+        guard let tool = annotationTool else { return }
+        if tool == .eraser {
             annotationStart = nil
+            eraserPushedUndo = false
             return
         }
+        // 折线要等后续点击，鼠标抬起不算完成。
+        if tool == .polyline { return }
+        guard let start = annotationStart else { return }
         annotationStart = nil
         let point = canvasPoint(fromView: viewPoint)
-        // 微动不算一笔，误触不会在图上留下小点。
-        guard hypot(point.x - start.x, point.y - start.y) > 2,
-              var draft = annotationDraft else {
-            annotationDraft = nil
+        guard var draft = annotationDraft else {
             needsDisplay = true
             return
         }
-        switch tool {
-        case .rect, .ellipse:
-            let rect = RectMath.normalizedRect(from: start, to: point)
-            draft.shape = tool == .rect ? .rect(rect) : .ellipse(rect)
-        case .arrow:
-            draft.shape = .arrow(from: start, to: point)
-        default:
-            break
+        if isPointSequence(draft.shape) {
+            // 点序列每移动一次已经增量加点；这里只补最后一个落点。
+            if let grown = appendPoint(point, to: draft.shape) {
+                draft.shape = grown
+            }
+        } else {
+            draft.shape = shapeForDrag(tool: tool, from: start, to: point)
         }
-        annotationDraft = draft
+        annotationDraft = nil
+        guard isDraftValid(draft) else {
+            needsDisplay = true
+            return
+        }
         commit(draft)
+    }
+
+    /// 按当前工具构建拖拽草稿。origin == current 表示笔画起点。
+    private func makeDraft(tool: ShapeKind, origin: CGPoint, current: CGPoint) -> Annotation? {
+        switch tool {
+        case .brush:
+            return Annotation(shape: .brush([current]), style: annotationStyle)
+        case .marker:
+            return Annotation(shape: .marker([current]), style: annotationStyle)
+        case .mosaic:
+            return Annotation(shape: .mosaic([current]), style: annotationStyle)
+        case .blur:
+            return Annotation(shape: .blur([current]), style: annotationStyle)
+        case .polyline:
+            return Annotation(shape: .polyline([origin, current]), style: annotationStyle)
+        case .text, .serial, .eraser:
+            return nil
+        default:
+            return Annotation(shape: shapeForDrag(tool: tool, from: origin, to: current), style: annotationStyle)
+        }
+    }
+
+    /// 拖拽两点之间的形状。圆角半径取短边 1/4、放大镜固定 2 倍，与截图主界面一致。
+    private func shapeForDrag(tool: ShapeKind, from start: CGPoint, to point: CGPoint) -> Shape {
+        let rect = RectMath.normalizedRect(from: start, to: point)
+        switch tool {
+        case .rect:
+            return .rect(rect)
+        case .roundedRect:
+            return .roundedRect(rect, radius: min(rect.width, rect.height) * 0.25)
+        case .ellipse:
+            return .ellipse(rect)
+        case .magnify:
+            return .magnify(rect, zoom: 2)
+        case .mosaicRect:
+            return .mosaicRect(rect)
+        case .line:
+            return .line(from: start, to: point)
+        case .arrow:
+            return .arrow(from: start, to: point)
+        case .polyline:
+            return .polyline([start, point])
+        case .brush:
+            return .brush([point])
+        case .marker:
+            return .marker([point])
+        case .mosaic:
+            return .mosaic([point])
+        case .blur:
+            return .blur([point])
+        case .text, .serial, .eraser:
+            return .rect(rect)
+        }
+    }
+
+    private func isPointSequence(_ shape: Shape) -> Bool {
+        switch shape {
+        case .brush, .marker, .mosaic, .blur: return true
+        default: return false
+        }
+    }
+
+    /// 点序列增量加点，1pt 内的点忽略，避免原地震动堆积重复点。
+    private func appendPoint(_ point: CGPoint, to shape: Shape) -> Shape? {
+        func grown(_ points: [CGPoint]) -> [CGPoint]? {
+            guard let last = points.last,
+                  hypot(point.x - last.x, point.y - last.y) >= 1
+            else { return nil }
+            return points + [point]
+        }
+        switch shape {
+        case .brush(let points): return grown(points).map { .brush($0) }
+        case .marker(let points): return grown(points).map { .marker($0) }
+        case .mosaic(let points): return grown(points).map { .mosaic($0) }
+        case .blur(let points): return grown(points).map { .blur($0) }
+        default: return nil
+        }
+    }
+
+    private func isDraftValid(_ draft: Annotation) -> Bool {
+        switch draft.shape {
+        case .rect(let rect), .roundedRect(let rect, _), .ellipse(let rect), .magnify(let rect, _),
+             .mosaicRect(let rect):
+            return rect.width >= Self.minimumStrokeSide && rect.height >= Self.minimumStrokeSide
+        case .line(let from, let to), .arrow(let from, let to):
+            return hypot(to.x - from.x, to.y - from.y) >= Self.minimumStrokeSide
+        case .brush, .marker, .mosaic, .blur:
+            return true
+        case .polyline(let points):
+            guard points.count >= 2 else { return false }
+            return zip(points, points.dropFirst()).contains {
+                hypot($0.1.x - $0.0.x, $0.1.y - $0.0.y) >= Self.minimumStrokeSide
+            }
+        case .text, .serial:
+            return false
+        }
+    }
+
+    // MARK: - 序号 / 折线 / 橡皮擦 / 文字
+
+    private func commitSerial(at point: CGPoint) {
+        commit(Annotation(
+            shape: .serial(value: nextSerial, center: point, radius: annotationStyle.pen.serialRadius),
+            style: annotationStyle
+        ))
+        nextSerial += 1
+    }
+
+    /// 点按追加一个已确认顶点；双击或 Enter 收笔。
+    private func appendPolylinePoint(_ point: CGPoint) {
+        var points = polylinePoints ?? []
+        if let last = points.last, hypot(point.x - last.x, point.y - last.y) < 1 { return }
+        points.append(point)
+        polylinePoints = points
+        annotationDraft = Annotation(shape: .polyline(points), style: annotationStyle)
+        needsDisplay = true
+    }
+
+    private func commitPolyline() {
+        guard let points = polylinePoints else { return }
+        polylinePoints = nil
+        annotationDraft = nil
+        let annotation = Annotation(shape: .polyline(points), style: annotationStyle)
+        guard isDraftValid(annotation) else {
+            needsDisplay = true
+            return
+        }
+        commit(annotation)
+    }
+
+    private func cancelPolyline() {
+        polylinePoints = nil
+        annotationDraft = nil
+        needsDisplay = true
+    }
+
+    /// 橡皮擦沿路径删除相交标注。一次拖动只压一次栈，撤销整组恢复。
+    private func eraseAnnotations(from start: CGPoint, to end: CGPoint) {
+        let tolerance = annotationStyle.pen.lineWidth
+        let hits = annotations.filter {
+            $0.shape.intersects(path: [start, end], tolerance: tolerance)
+        }
+        guard !hits.isEmpty else { return }
+        if !eraserPushedUndo {
+            annotationHistory.record(annotations)
+            eraserPushedUndo = true
+        }
+        let hitIDs = Set(hits.map(\.id))
+        annotations.removeAll { hitIDs.contains($0.id) }
+        refreshAnnotateBar()
+        needsDisplay = true
+    }
+
+    /// 单击进入编辑态。编辑器按渲染同一份度量定位：NSTextView 是 flipped 视图，
+    /// 文本从 frame 顶部向下排，顶部留出 ascent 让第一行基线落在点击点。
+    private func beginTextEditing(at viewPoint: CGPoint) {
+        endTextEditing()
+        let style = annotationStyle
+        let fontSize = style.pen.textFontSize
+        let line = TextMetrics.lineHeight(fontSize: fontSize)
+        let width = max(Self.minimumTextWidth, bounds.maxX - viewPoint.x - 4)
+        let top = viewPoint.y + line.ascent
+        let height = max(3 * (line.ascent + line.descent), top - max(4, viewPoint.y - line.descent * 3))
+        let editor = PinAnnotatingTextView(frame: NSRect(
+            x: viewPoint.x,
+            y: top - height,
+            width: width,
+            height: height
+        ))
+        editor.drawsBackground = false
+        editor.isRichText = false
+        editor.textContainerInset = .zero
+        editor.textContainer?.lineFragmentPadding = 0
+        // 渲染只按 \n 硬换行，编辑器不能软折行，否则编辑时行数与提交后不一致。
+        editor.textContainer?.widthTracksTextView = false
+        editor.textContainer?.containerSize = NSSize(
+            width: CGFloat.greatestFiniteMagnitude,
+            height: CGFloat.greatestFiniteMagnitude
+        )
+        editor.isHorizontallyResizable = false
+        editor.isVerticallyResizable = false
+        editor.isAutomaticQuoteSubstitutionEnabled = false
+        editor.isAutomaticDashSubstitutionEnabled = false
+        editor.isAutomaticTextReplacementEnabled = false
+        editor.isAutomaticSpellingCorrectionEnabled = false
+        editor.isContinuousSpellCheckingEnabled = false
+        editor.isGrammarCheckingEnabled = false
+        editor.font = .systemFont(ofSize: fontSize)
+        let ink = NSColor(
+            srgbRed: style.color.r,
+            green: style.color.g,
+            blue: style.color.b,
+            alpha: 1
+        )
+        editor.textColor = ink
+        editor.insertionPointColor = ink
+        editor.delegate = self
+        editor.onCommit = { [weak self] in self?.commitTextEditing() }
+        editor.onCancel = { [weak self] in self?.cancelTextEditing() }
+        addSubview(editor, positioned: .above, relativeTo: nil)
+        textEditor = editor
+        textOrigin = canvasPoint(fromView: viewPoint)
+        textStyle = style
+        window?.makeFirstResponder(editor)
+    }
+
+    private func commitTextEditing() {
+        guard let editor = textEditor else { return }
+        let text = editor.string
+        let origin = textOrigin
+        let style = textStyle
+        endTextEditing()
+        window?.makeFirstResponder(self)
+        // 空内容丢弃；非空原样入列，换行符保留给多行渲染。
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let origin, let style else { return }
+        commit(Annotation(
+            shape: .text(text, origin: origin, fontSize: style.pen.textFontSize, rotation: 0),
+            style: style
+        ))
+    }
+
+    private func cancelTextEditing() {
+        endTextEditing()
+        window?.makeFirstResponder(self)
+    }
+
+    private func endTextEditing() {
+        guard let editor = textEditor else { return }
+        // 先摘引用再移除视图：移除会触发失焦回调，引用已空时提交逻辑自然跳过。
+        textEditor = nil
+        textOrigin = nil
+        textStyle = nil
+        editor.delegate = nil
+        editor.onCommit = nil
+        editor.onCancel = nil
+        editor.removeFromSuperview()
     }
 
     private func commit(_ annotation: Annotation) {
@@ -849,6 +1196,11 @@ final class PinContentView: NSView {
         }
         // 标注模式吞掉所有点击，双击关闭与 Shift 多选都不生效。
         if let tool = annotationTool {
+            // 折线用双击收笔；第二次点击本身不再落点。
+            if tool == .polyline, event.clickCount >= 2, polylinePoints != nil {
+                commitPolyline()
+                return
+            }
             beginAnnotationStroke(tool, at: point)
             return
         }
@@ -1195,9 +1547,13 @@ final class PinContentView: NSView {
             return
         }
         if event.keyCode == 53 {
-            // 标注模式下 Esc 只退出标注，标注保留，窗口不关。
+            // 标注模式下 Esc 只退出标注，标注保留，窗口不关；未收笔的折线先撤掉。
             if annotationTool != nil {
-                setAnnotateMode(false)
+                if polylinePoints != nil {
+                    cancelPolyline()
+                } else {
+                    setAnnotateMode(false)
+                }
                 return
             }
             if isCropping {
@@ -1208,6 +1564,14 @@ final class PinContentView: NSView {
                 return
             } else {
                 pinWindow.close()
+            }
+            return
+        }
+        if annotationTool != nil, event.keyCode == 36 || event.keyCode == 76 {
+            // Enter 收笔：折线落库，其他工具下等同于「完成标注」。
+            if polylinePoints != nil {
+                commitPolyline()
+                return
             }
             return
         }
@@ -1273,7 +1637,11 @@ final class PinContentView: NSView {
 
     override func cancelOperation(_ sender: Any?) {
         if annotationTool != nil {
-            setAnnotateMode(false)
+            if polylinePoints != nil {
+                cancelPolyline()
+            } else {
+                setAnnotateMode(false)
+            }
             return
         }
         if isCropping {
@@ -1384,3 +1752,36 @@ final class PinContentView: NSView {
         pinWindow.clampToVisibleFrame()
     }
 }
+
+/// NSTextView 默认把 Enter 当换行；⌘Enter 提交、Esc 取消由编辑器自己收，
+/// 编辑期间它是 first responder，按键到不了 PinContentView。
+private final class PinAnnotatingTextView: NSTextView {
+    var onCommit: (() -> Void)?
+    var onCancel: (() -> Void)?
+
+    override func keyDown(with event: NSEvent) {
+        // 输入法组字时 Esc 属于候选窗，不能当成取消整段编辑。
+        if event.keyCode == 53 {
+            if hasMarkedText() {
+                super.keyDown(with: event)
+                return
+            }
+            onCancel?()
+            return
+        }
+        if event.modifierFlags.contains(.command),
+           event.keyCode == 36 || event.keyCode == 76 {
+            onCommit?()
+            return
+        }
+        super.keyDown(with: event)
+    }
+}
+
+extension PinContentView: NSTextViewDelegate {
+    /// 失焦即提交：窗口失活等场景让编辑器让出 first responder 时走这里。
+    func textDidEndEditing(_ notification: Notification) {
+        commitTextEditing()
+    }
+}
+
