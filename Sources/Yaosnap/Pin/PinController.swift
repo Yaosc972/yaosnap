@@ -349,7 +349,8 @@ final class PinController: NSObject, NSWindowDelegate {
                 transform: window.transform,
                 frame: window.frame,
                 basePointSize: window.basePointSize,
-                groupID: groupID
+                groupID: groupID,
+                annotations: window.annotations
             ),
             kind: .closed
         )

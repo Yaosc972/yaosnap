@@ -104,6 +104,8 @@ final class PinWindow: NSWindow {
         alphaValue = entry.transform.opacity
         refreshImage()
         pinView.transform = entry.transform
+        // 标注跟着图像一起恢复，关闭再贴回不用重画。
+        pinView.restoreAnnotations(entry.annotations)
         pinView.needsDisplay = true
     }
 
@@ -118,6 +120,9 @@ final class PinWindow: NSWindow {
         makeFirstResponder(pinView)
     }
 
+    /// 当前图上的标注，关闭时随恢复项一起存下来。
+    var annotations: [Annotation] { pinView.annotations }
+
     /// 历史翻页：把窗口内容、变换、位置一次性换成历史里的另一张。
     func applyHistory(_ entry: PinRestoreEntry) {
         pasteImage = entry.image
@@ -125,8 +130,8 @@ final class PinWindow: NSWindow {
         transform = entry.transform
         alphaValue = entry.transform.opacity
         imageCache = nil
-        // 标注属于被换下的那张图，翻页后不留到新图上。
-        pinView.clearAnnotations()
+        // 标注属于被换下的那张图：翻页换图时换成该历史项自己的标注。
+        pinView.restoreAnnotations(entry.annotations)
         refreshImage()
         pinView.transform = entry.transform
         pinView.needsDisplay = true
@@ -475,6 +480,10 @@ final class PinContentView: NSView {
     private var polylinePoints: [CGPoint]?
     /// 橡皮擦一次拖动只压一次撤销栈。
     private var eraserPushedUndo = false
+    /// 已选中的标注。非空时按在选中的标注上可以整组拖动、按 Delete 删除、换颜色改样式。
+    private(set) var selectedAnnotationIDs: Set<UUID> = []
+    /// 拖动选中标注的临时状态；originals 存按下时的形状，平移始终以它为基准。
+    private var moveState: MoveState?
     private var textEditor: PinAnnotatingTextView?
     private var textOrigin: CGPoint?
     private var textStyle: Style?
@@ -567,6 +576,8 @@ final class PinContentView: NSView {
             // 换工具即收掉上一笔未完成的折线与草稿，避免新旧工具混画。
             self.cancelPolyline()
             self.endTextEditing()
+            self.selectedAnnotationIDs = []
+            self.moveState = nil
             self.annotationDraft = nil
             self.annotationStart = nil
             self.annotationTool = kind
@@ -585,6 +596,12 @@ final class PinContentView: NSView {
 
     /// 棋盘格瓦片按模式缓存，颜色只有四种组合，重复构造 CGImage 是纯浪费。
     private static var checkerTiles: [PinBackground: CGImage] = [:]
+
+    private struct MoveState {
+        let grab: CGPoint
+        let originals: [UUID: Shape]
+        var recorded: Bool
+    }
 
     private struct ResizeState {
         let edge: PinEdge
@@ -672,6 +689,7 @@ final class PinContentView: NSView {
         context.translateBy(x: -displaySize.width / 2, y: -displaySize.height / 2)
         context.scaleBy(x: zoom, y: zoom)
         AnnotationRenderer.draw(annotations, draft: annotationDraft, input: input, into: context)
+        drawSelection(in: context, zoom: zoom)
         context.restoreGState()
     }
 
@@ -707,6 +725,8 @@ final class PinContentView: NSView {
             }
             endTextEditing()
             cancelPolyline()
+            selectedAnnotationIDs = []
+            moveState = nil
             annotationTool = nil
             annotationDraft = nil
             annotationStart = nil
@@ -718,16 +738,29 @@ final class PinContentView: NSView {
         needsLayout = true
     }
 
-    /// 历史翻页换了图像，旧画布上的标注一并作废。
-    func clearAnnotations() {
-        annotations = []
+    /// 整批换标注：恢复关闭时的贴图、或历史翻页换图都走这里。
+    /// 撤销栈与未完成的草稿一并作废，序号接着已有的最大编号往下发。
+    func restoreAnnotations(_ restored: [Annotation]) {
+        annotations = restored
+        selectedAnnotationIDs = []
+        moveState = nil
         annotationHistory.removeAll()
+        annotationsBeforeMode = restored
+        annotationHistoryBeforeMode = SnapshotHistory<[Annotation]>()
         annotationDraft = nil
         annotationStart = nil
         polylinePoints = nil
-        nextSerial = 1
+        nextSerial = (restored.compactMap { annotation -> Int? in
+            guard case .serial(let value, _, _) = annotation.shape else { return nil }
+            return value
+        }.max() ?? 0) + 1
         refreshAnnotateBar()
         needsDisplay = true
+    }
+
+    /// 画布作废（换图后不要旧标注）等同于换成空集合。
+    func clearAnnotations() {
+        restoreAnnotations([])
     }
 
     private func refreshAnnotateBar() {
@@ -739,14 +772,15 @@ final class PinContentView: NSView {
         )
     }
 
-    /// 颜色按钮循环调色板前 6 色；当前色不在其中时回到首色。
-    private func cycleAnnotationColor() {
+    /// 颜色按钮循环调色板前 6 色；当前色不在其中时回到首色。有选中时作用到选中标注。
+    func cycleAnnotationColor() {
         let palette = Array(RGBAColor.palette.prefix(6))
         if let index = palette.firstIndex(of: annotationStyle.color) {
             annotationStyle.color = palette[(index + 1) % palette.count]
         } else {
             annotationStyle.color = palette[0]
         }
+        applyStyleToSelection()
         refreshAnnotateBar()
     }
 
@@ -754,6 +788,7 @@ final class PinContentView: NSView {
         let all = PenSize.allCases
         let index = all.firstIndex(of: annotationStyle.pen) ?? 0
         annotationStyle.pen = all[(index + 1) % all.count]
+        applyStyleToSelection()
         refreshAnnotateBar()
     }
 
@@ -847,6 +882,9 @@ final class PinContentView: NSView {
             return
         }
         commit(draft)
+        // 与截图主界面一致：刚画完的新标注直接选中，可以接着拖走或改样式。
+        selectedAnnotationIDs = [draft.id]
+        needsDisplay = true
     }
 
     /// 按当前工具构建拖拽草稿。origin == current 表示笔画起点。
@@ -975,6 +1013,8 @@ final class PinContentView: NSView {
             return
         }
         commit(annotation)
+        selectedAnnotationIDs = [annotation.id]
+        needsDisplay = true
     }
 
     private func cancelPolyline() {
@@ -998,6 +1038,89 @@ final class PinContentView: NSView {
         annotations.removeAll { hitIDs.contains($0.id) }
         refreshAnnotateBar()
         needsDisplay = true
+    }
+
+    // MARK: - 选中与拖动
+
+    /// 自上而下取最上层命中。容差只按线宽走，**不额外放宽**：
+    /// 放太宽会把形状外侧的大片空白也划进命中圈，想点空白取消选中会点不掉。
+    private func hitAnnotation(at canvasPoint: CGPoint) -> Annotation? {
+        annotations.reversed().first {
+            $0.shape.contains(canvasPoint, tolerance: $0.style.pen.lineWidth / 2 + 1)
+        }
+    }
+
+    private func select(_ annotation: Annotation, additive: Bool) {
+        guard additive else {
+            selectedAnnotationIDs = [annotation.id]
+            return
+        }
+        if selectedAnnotationIDs.contains(annotation.id) {
+            selectedAnnotationIDs.remove(annotation.id)
+        } else {
+            selectedAnnotationIDs.insert(annotation.id)
+        }
+    }
+
+    /// 整组一次拖动只压一次栈：真的位移之后才记撤销步。
+    private func moveSelected(_ state: MoveState, at viewPoint: CGPoint) {
+        let point = canvasPoint(fromView: viewPoint)
+        let delta = CGPoint(x: point.x - state.grab.x, y: point.y - state.grab.y)
+        guard delta != .zero else { return }
+        if !state.recorded {
+            annotationHistory.record(annotations)
+            moveState = MoveState(grab: state.grab, originals: state.originals, recorded: true)
+        }
+        annotations = annotations.map { annotation in
+            guard let original = state.originals[annotation.id] else { return annotation }
+            var moved = annotation
+            moved.shape = original.translated(by: delta)
+            return moved
+        }
+        needsDisplay = true
+    }
+
+    /// 取消选中；按在空白处、换工具、Esc 都会走到这里。
+    func deselectAllAnnotations() {
+        guard !selectedAnnotationIDs.isEmpty else { return }
+        selectedAnnotationIDs = []
+        moveState = nil
+        needsDisplay = true
+    }
+
+    private func deleteSelectedAnnotations() {
+        guard !selectedAnnotationIDs.isEmpty else { return }
+        annotationHistory.record(annotations)
+        annotations.removeAll { selectedAnnotationIDs.contains($0.id) }
+        selectedAnnotationIDs = []
+        refreshAnnotateBar()
+        needsDisplay = true
+    }
+
+    /// 有选中时改颜色/笔宽直接作用到选中的标注，顺手把新样式留给下一笔。
+    private func applyStyleToSelection() {
+        guard !selectedAnnotationIDs.isEmpty else { return }
+        annotationHistory.record(annotations)
+        for index in annotations.indices where selectedAnnotationIDs.contains(annotations[index].id) {
+            annotations[index].style = annotationStyle
+        }
+        needsDisplay = true
+    }
+
+    /// 选中框用虚线画在标注包围盒外一点，颜色取系统强调色。
+    private func drawSelection(in context: CGContext, zoom: CGFloat) {
+        guard !selectedAnnotationIDs.isEmpty,
+              let box = AnnotationSelection.bounds(of: annotations, ids: selectedAnnotationIDs) else {
+            return
+        }
+        // 画布坐标下的线宽与虚线间隔都要按显示倍率折算，缩放后观感才不变。
+        let unit = max(zoom, 0.01)
+        context.saveGState()
+        context.setStrokeColor(NSColor.controlAccentColor.cgColor)
+        context.setLineWidth(1 / unit)
+        context.setLineDash(phase: 0, lengths: [4 / unit, 3 / unit])
+        context.stroke(box.insetBy(dx: -2 / unit, dy: -2 / unit))
+        context.restoreGState()
     }
 
     /// 单击进入编辑态。编辑器按渲染同一份度量定位：NSTextView 是 flipped 视图，
@@ -1201,6 +1324,23 @@ final class PinContentView: NSView {
                 commitPolyline()
                 return
             }
+            // 按在已画好的标注上先是选中：拖动就整组平移，不拖动就是点选。
+            // 橡皮擦例外，它在哪按都是擦；折线画到一半也在等下一个顶点。
+            let canvasPoint = canvasPoint(fromView: point)
+            let selectable = tool != .eraser && tool != .serial && tool != .text
+            if selectable, polylinePoints == nil, let hit = hitAnnotation(at: canvasPoint) {
+                select(hit, additive: event.modifierFlags.contains(.shift))
+                moveState = MoveState(
+                    grab: canvasPoint,
+                    originals: Dictionary(uniqueKeysWithValues: annotations
+                        .filter { selectedAnnotationIDs.contains($0.id) }
+                        .map { ($0.id, $0.shape) }),
+                    recorded: false
+                )
+                needsDisplay = true
+                return
+            }
+            if polylinePoints == nil { selectedAnnotationIDs = [] }
             beginAnnotationStroke(tool, at: point)
             return
         }
@@ -1242,7 +1382,12 @@ final class PinContentView: NSView {
             return
         }
         if annotationTool != nil {
-            updateAnnotationDraft(at: convert(event.locationInWindow, from: nil))
+            let point = convert(event.locationInWindow, from: nil)
+            if let state = moveState {
+                moveSelected(state, at: point)
+            } else {
+                updateAnnotationDraft(at: point)
+            }
             return
         }
         if let resizeState {
@@ -1261,6 +1406,12 @@ final class PinContentView: NSView {
 
     override func mouseUp(with event: NSEvent) {
         if annotationTool != nil {
+            if moveState != nil {
+                // 没拖动过就是一次点选，不产生撤销步。
+                moveState = nil
+                refreshAnnotateBar()
+                return
+            }
             finishAnnotationStroke(at: convert(event.locationInWindow, from: nil))
             return
         }
@@ -1551,6 +1702,8 @@ final class PinContentView: NSView {
             if annotationTool != nil {
                 if polylinePoints != nil {
                     cancelPolyline()
+                } else if !selectedAnnotationIDs.isEmpty {
+                    deselectAllAnnotations()
                 } else {
                     setAnnotateMode(false)
                 }
@@ -1565,6 +1718,11 @@ final class PinContentView: NSView {
             } else {
                 pinWindow.close()
             }
+            return
+        }
+        if annotationTool != nil, event.keyCode == 51 || event.keyCode == 117 {
+            // Delete / Backspace 删掉选中的标注。
+            deleteSelectedAnnotations()
             return
         }
         if annotationTool != nil, event.keyCode == 36 || event.keyCode == 76 {
@@ -1639,6 +1797,8 @@ final class PinContentView: NSView {
         if annotationTool != nil {
             if polylinePoints != nil {
                 cancelPolyline()
+            } else if !selectedAnnotationIDs.isEmpty {
+                deselectAllAnnotations()
             } else {
                 setAnnotateMode(false)
             }

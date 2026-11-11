@@ -38,6 +38,39 @@ struct PinRestoreListTests {
         #expect(list.takeMostRecent() == nil)
     }
 
+    /// 贴图关闭时图上的标注要跟着进恢复项，否则恢复出来是白图。
+    @Test func restoreEntryCarriesAnnotations() {
+        let image = PasteImage(image: makeImage(red: 1, green: 0, blue: 0), pointSize: CGSize(width: 8, height: 8))
+        let annotation = Annotation(
+            shape: .rect(CGRect(x: 1, y: 1, width: 4, height: 3)),
+            style: Style(color: RGBAColor.palette[0], pen: .p3)
+        )
+        let entry = PinRestoreEntry(
+            image: image,
+            transform: .identity,
+            frame: CGRect(x: 0, y: 0, width: 8, height: 8),
+            basePointSize: CGSize(width: 8, height: 8),
+            groupID: 1,
+            annotations: [annotation]
+        )
+        var list = PinRestoreList<PinRestoreEntry>(capacity: 1)
+        list.record(entry, kind: .closed)
+        #expect(list.takeMostRecent()?.annotations.map(\.id) == [annotation.id])
+    }
+
+    /// 不传标注的老调用点仍然可用，默认是空集合。
+    @Test func restoreEntryDefaultsToNoAnnotations() {
+        let image = PasteImage(image: makeImage(red: 0, green: 1, blue: 0), pointSize: CGSize(width: 8, height: 8))
+        let entry = PinRestoreEntry(
+            image: image,
+            transform: .identity,
+            frame: CGRect(x: 0, y: 0, width: 8, height: 8),
+            basePointSize: CGSize(width: 8, height: 8),
+            groupID: 1
+        )
+        #expect(entry.annotations.isEmpty)
+    }
+
     @Test func hitTestPicksTopmostVisibleWindow() {
         let frames = [
             CGRect(x: 0, y: 0, width: 10, height: 10),

@@ -481,7 +481,8 @@ final class PinHarness {
             )
         }
 
-        dragAnnotation(view, window: window, from: CGPoint(x: 5, y: 5), to: CGPoint(x: 25, y: 15))
+        // 起点离第一笔够远，否则按下去算「选中/拖动」而不是新落笔。
+        dragAnnotation(view, window: window, from: CGPoint(x: 2, y: 2), to: CGPoint(x: 25, y: 15))
         pump(0.05)
         guard view.annotations.count == 2 else {
             fail("PIN-ANNOTATE-UNDO", "第二笔后标注数 \(view.annotations.count)，期望 2")
@@ -511,14 +512,19 @@ final class PinHarness {
             window.close()
             return
         }
+        // Esc 有两级：先把选中取消掉，再按一次才退出标注模式。
+        let hadSelection = !view.selectedAnnotationIDs.isEmpty
         view.keyDown(with: esc)
         pump(0.05)
-        if window.isVisible, view.annotationTool == nil {
-            pass("PIN-ANNOTATE-ESC", "Esc 退出标注模式且窗口保留")
+        let deselected = view.selectedAnnotationIDs.isEmpty && view.annotationTool != nil
+        view.keyDown(with: esc)
+        pump(0.05)
+        if window.isVisible, view.annotationTool == nil, !hadSelection || deselected {
+            pass("PIN-ANNOTATE-ESC", "Esc 先取消选中再退出标注模式，窗口保留")
         } else {
             fail(
                 "PIN-ANNOTATE-ESC",
-                "annotationTool=\(String(describing: view.annotationTool)) visible=\(window.isVisible)"
+                "有选中=\(hadSelection) 第一下取消选中=\(deselected) annotationTool=\(String(describing: view.annotationTool)) visible=\(window.isVisible)"
             )
         }
         window.close()
@@ -575,6 +581,8 @@ final class PinHarness {
             .brush, .marker, .mosaic, .blur, .mosaicRect, .magnify,
         ]
         for kind in dragTools {
+            // 每个工具在干净画布上画：叠在上一笔上按下去是「选中/拖动」，不是新落笔。
+            view.restoreAnnotations([])
             view.annotationTool = kind
             let before = view.annotations.count
             dragAnnotation(view, window: window, from: CGPoint(x: 8, y: 8), to: CGPoint(x: 30, y: 22))
@@ -589,6 +597,7 @@ final class PinHarness {
             }
         }
 
+        view.restoreAnnotations([])
         view.annotationTool = .serial
         let serialBefore = view.annotations.count
         clickAt(view, window: window, at: CGPoint(x: 20, y: 15))
@@ -607,6 +616,7 @@ final class PinHarness {
             )
         }
 
+        view.restoreAnnotations([])
         view.annotationTool = .polyline
         let polyBefore = view.annotations.count
         clickAt(view, window: window, at: CGPoint(x: 5, y: 5))
@@ -627,6 +637,7 @@ final class PinHarness {
             )
         }
 
+        view.restoreAnnotations([])
         view.annotationTool = .text
         let textBefore = view.annotations.count
         clickAt(view, window: window, at: CGPoint(x: 6, y: 6))
@@ -653,6 +664,10 @@ final class PinHarness {
             )
         }
 
+        view.restoreAnnotations([])
+        view.annotationTool = .rect
+        dragAnnotation(view, window: window, from: CGPoint(x: 8, y: 8), to: CGPoint(x: 30, y: 20))
+        pump(0.02)
         view.annotationTool = .eraser
         let eraseBefore = view.annotations.count
         dragAnnotation(view, window: window, from: CGPoint(x: 2, y: 2), to: CGPoint(x: 38, y: 28))
@@ -732,6 +747,169 @@ final class PinHarness {
         let url = URL(fileURLWithPath: "/tmp/yaosnap-verify/evidence/pin-annotate-layout.png")
         try? png.write(to: url)
         print("EVIDENCE \(url.path)")
+    }
+
+    /// 关闭再按贴图键恢复，图上的标注必须跟着回来（用户抱怨过同类问题：
+    /// 截图历史丢标注；贴图这条链路原先也没接）。
+    private func runAnnotateRestore() {
+        controller.closeAll()
+        pump()
+        guard let window = pinFreshWindow(),
+              let view = window.contentView as? PinContentView else {
+            fail("PIN-ANNOTATE-RESTORE", "没有新建贴图窗口")
+            return
+        }
+        view.setAnnotateMode(true)
+        dragAnnotation(view, window: window, from: CGPoint(x: 8, y: 8), to: CGPoint(x: 30, y: 20))
+        view.setAnnotateMode(false)
+        pump(0.05)
+        guard view.annotations.count == 1, let annotated = window.flattenedImage() else {
+            fail("PIN-ANNOTATE-RESTORE", "标注数 \(view.annotations.count)，期望 1")
+            window.close()
+            return
+        }
+        // 普通关闭才会进恢复列表。
+        window.close()
+        pump(0.1)
+        let before = Set(allPinWindows().map(\.windowNumber))
+        guard controller.pinFromPasteboard() else {
+            fail("PIN-ANNOTATE-RESTORE", "从恢复列表贴回失败")
+            return
+        }
+        pump(0.1)
+        guard let restored = allPinWindows().first(where: { !before.contains($0.windowNumber) }),
+              let restoredView = restored.contentView as? PinContentView else {
+            fail("PIN-ANNOTATE-RESTORE", "没有恢复出新贴图窗口")
+            return
+        }
+        guard restoredView.annotations.count == 1 else {
+            fail("PIN-ANNOTATE-RESTORE", "恢复后标注数 \(restoredView.annotations.count)，期望 1")
+            restored.close()
+            return
+        }
+        guard let after = restored.flattenedImage(),
+              let left = bitmapData(annotated),
+              let right = bitmapData(after),
+              left == right else {
+            fail("PIN-ANNOTATE-RESTORE", "恢复后的导出图与关闭前不一致，标注没带回来")
+            restored.close()
+            return
+        }
+        pass("PIN-ANNOTATE-RESTORE", "关闭再恢复，标注与导出图完全一致")
+
+        // 历史翻页换图时，标注要换成该历史项自己的那份，不能串台。
+        let otherAnnotation = Annotation(
+            shape: .ellipse(CGRect(x: 3, y: 3, width: 10, height: 8)),
+            style: Style(color: RGBAColor.palette[1], pen: .p3)
+        )
+        restored.applyHistory(PinRestoreEntry(
+            image: restored.pasteImage,
+            transform: restored.transform,
+            frame: restored.frame,
+            basePointSize: restored.basePointSize,
+            groupID: 1,
+            annotations: [otherAnnotation]
+        ))
+        pump(0.05)
+        let switched = restoredView.annotations.map(\.id) == [otherAnnotation.id]
+        if switched {
+            pass("PIN-ANNOTATE-HISTORY", "历史翻页换图后标注跟着换成该历史项自己的那笔")
+        } else {
+            fail(
+                "PIN-ANNOTATE-HISTORY",
+                "翻页后标注 \(restoredView.annotations.map { String(describing: $0.shape.kind) })，期望只留该历史项的 1 笔"
+            )
+        }
+        restored.close()
+        pump()
+    }
+
+    /// 画好的标注要能点选、拖动、删除、改样式；贴图这条链路原先画完就是死图。
+    private func runAnnotateSelect() {
+        controller.closeAll()
+        pump()
+        guard let window = pinFreshWindow(),
+              let view = window.contentView as? PinContentView else {
+            fail("PIN-SELECT", "没有新建贴图窗口")
+            return
+        }
+        view.setAnnotateMode(true)
+        dragAnnotation(view, window: window, from: CGPoint(x: 10, y: 10), to: CGPoint(x: 30, y: 20))
+        pump(0.05)
+        guard view.annotations.count == 1, let original = view.annotations.first else {
+            fail("PIN-SELECT", "标注数 \(view.annotations.count)，期望 1")
+            window.close()
+            return
+        }
+        // 画完自动选中（与截图主界面一致）。
+        let autoSelected = view.selectedAnnotationIDs == [original.id]
+        // 点空白处取消选中，且不会留下新标注（零尺寸草稿被丢弃）。
+        clickAt(view, window: window, at: CGPoint(x: 36, y: 4))
+        pump(0.05)
+        let deselected = view.selectedAnnotationIDs.isEmpty && view.annotations.count == 1
+        // 再点回矩形的左边描边：命中即选中，也不产生新一笔。
+        clickAt(view, window: window, at: CGPoint(x: 10, y: 15))
+        pump(0.05)
+        if autoSelected, deselected, view.selectedAnnotationIDs == [original.id],
+           view.annotations.count == 1 {
+            pass("PIN-SELECT", "画完自动选中；点空白取消选中；点描边重新选中（标注数始终 1）")
+        } else {
+            fail(
+                "PIN-SELECT",
+                "自动选中=\(autoSelected) 点空白取消=\(deselected) 选中数=\(view.selectedAnnotationIDs.count) 标注数=\(view.annotations.count)"
+            )
+        }
+
+        // 从描边上拖 6pt：整笔平移，数量不变。
+        dragAnnotation(view, window: window, from: CGPoint(x: 10, y: 15), to: CGPoint(x: 16, y: 21))
+        pump(0.05)
+        let movedShape = view.annotations.first?.shape
+        var movedBy: CGPoint?
+        if case .rect(let rect) = original.shape, case .rect(let moved)? = movedShape {
+            movedBy = CGPoint(x: moved.minX - rect.minX, y: moved.minY - rect.minY)
+        }
+        if let movedBy, abs(movedBy.x - 6) < 1.5, abs(movedBy.y - 6) < 1.5,
+           view.annotations.count == 1 {
+            pass("PIN-MOVE", "拖动选中标注平移 (\(movedBy.x), \(movedBy.y))，数量仍为 1")
+        } else {
+            fail(
+                "PIN-MOVE",
+                "位移 \(String(describing: movedBy))，标注数 \(view.annotations.count)，期望约 (6,6) 且 1 笔"
+            )
+        }
+
+        // 改颜色作用到选中标注，而不是只影响下一笔。
+        let colorBefore = view.annotations.first?.style.color
+        view.cycleAnnotationColor()
+        pump(0.02)
+        if let color = view.annotations.first?.style.color, color != colorBefore {
+            pass("PIN-RESTYLE", "改颜色后选中标注的样式跟着变")
+        } else {
+            fail("PIN-RESTYLE", "选中标注的颜色没变，仍是 \(String(describing: view.annotations.first?.style.color))")
+        }
+
+        // Delete 删掉选中的那一笔，⌘Z 能撤回来。
+        if let del = keyEvent(keyCode: 51, characters: "\u{7f}", window: window) {
+            view.keyDown(with: del)
+            pump(0.05)
+        }
+        let deleted = view.annotations.isEmpty && view.selectedAnnotationIDs.isEmpty
+        if deleted {
+            pass("PIN-DELETE", "Delete 删掉选中标注")
+        } else {
+            fail("PIN-DELETE", "删除后标注数 \(view.annotations.count)，选中 \(view.selectedAnnotationIDs.count)")
+        }
+        if let undo = keyEvent(keyCode: 6, characters: "z", modifiers: [.command], window: window) {
+            view.keyDown(with: undo)
+            pump(0.05)
+        }
+        if view.annotations.count == 1 {
+            pass("PIN-DELETE-UNDO", "⌘Z 撤回删除，标注数回到 1")
+        } else {
+            fail("PIN-DELETE-UNDO", "撤回后标注数 \(view.annotations.count)，期望 1")
+        }
+        window.close()
+        pump()
     }
 
     private func runZoom() {
@@ -1341,6 +1519,8 @@ final class PinHarness {
         runBackground()
         runAnnotate()
         runAnnotateTools()
+        runAnnotateRestore()
+        runAnnotateSelect()
         controller.closeAll()
         print("SUMMARY passes=\(passes) failures=\(failures)")
         exit(failures == 0 ? 0 : 1)
