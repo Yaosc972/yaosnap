@@ -17,22 +17,6 @@ private struct NeverEstimator: ScrollOffsetEstimating {
     func estimate(current: CGImage, previous: CGImage) -> ScrollOffsetEstimate? { nil }
 }
 
-private final class RecordingEstimator: ScrollOffsetEstimating {
-    let offset: CGFloat
-    let confidence: Float
-    private(set) var previousFrames: [CGImage] = []
-
-    init(offset: CGFloat, confidence: Float) {
-        self.offset = offset
-        self.confidence = confidence
-    }
-
-    func estimate(current: CGImage, previous: CGImage) -> ScrollOffsetEstimate? {
-        previousFrames.append(previous)
-        return ScrollOffsetEstimate(offsetPx: offset, confidence: confidence)
-    }
-}
-
 
 /// 与上一帧配准失败一次、但宽窗口重建能成功的估计器。
 private final class FailsOnceThenEstimator: ScrollOffsetEstimating {
@@ -92,26 +76,21 @@ struct ScrollCaptureEngineTests {
         #expect(engine.image?.height == 100)
     }
 
-    @Test func rejectedFrameStillAdvancesReference() {
-        // 偏移 2 落在默认死区（3）内，拼接器会拒绝该帧；但参考帧必须前进到最新帧，
-        // 否则一旦某帧配准失败，后续帧会永远和一张旧参考比较，整条链路停摆。
-        let estimator = RecordingEstimator(offset: 2, confidence: 0.9)
+    /// 单帧位移落在死区内不拼，但它记进锚点链，下一帧累计起来就能拼——
+    /// 慢速滚动不会被死区吃掉。
+    @Test func smallOffsetsAccumulateAcrossAnchors() {
+        let estimator = FixedEstimator(offset: 2, confidence: 0.9)
         let engine = ScrollCaptureEngine(estimator: estimator)
-        let first = makeImage(width: 20, height: 100)
-        engine.start(first: first)
+        engine.start(first: makeImage(width: 20, height: 100))
 
-        let second = makeImage(width: 20, height: 100)
-        let state = engine.consume(frame: second)
-        #expect(state?.changed == false)
+        let first = engine.consume(frame: makeImage(width: 20, height: 100))
+        #expect(first?.changed == false)
         #expect(engine.image?.height == 100)
-        #expect(engine.frameCount == 1)
 
-        let third = makeImage(width: 20, height: 100)
-        engine.consume(frame: third)
-        #expect(estimator.previousFrames.count == 2)
-        #expect(estimator.previousFrames[0] === first)
-        #expect(estimator.previousFrames[1] === second)
-        #expect(engine.frameCount == 1)
+        let second = engine.consume(frame: makeImage(width: 20, height: 100))
+        #expect(second?.changed == true)
+        #expect(engine.frameCount == 2)
+        #expect(engine.image?.height == 104)
     }
 
     /// 断链重建：与上一帧配准失败时，同一帧必须靠宽窗口与最后一个已拼接帧接回长图。

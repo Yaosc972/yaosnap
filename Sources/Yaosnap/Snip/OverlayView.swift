@@ -2128,6 +2128,10 @@ final class OverlayView: NSView {
             scale: activeScaleX,
             initialStyle: toolStore.currentStyle
         )
+        // 回放历史时把当时的标注一并还原：坐标是选区画布点，与新建选区时一致，可以直接套用。
+        if historyIndex > 0, history.indices.contains(historyIndex - 1) {
+            newCanvas.annotations = history[historyIndex - 1].annotations
+        }
         // 画布压在工具条下面；hitTest 返回 nil，鼠标事件不受它遮挡。
         addSubview(newCanvas, positioned: .below, relativeTo: toolbar)
         newCanvas.frame = selectionRect

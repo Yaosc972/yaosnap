@@ -11,19 +11,24 @@ public struct CaptureHistoryEntry {
     public let region: CaptureRegion?
     /// 当时的整屏冻结帧，回放时铺满屏幕；来源不是整屏时为 nil。
     public let fullFrame: CGImage?
+    /// 这张截图上画过的标注。回放时按原坐标还原，可以继续编辑；
+    /// 不存的话回放只能看到未标注的整屏帧，与 Snipaste 的行为不一致。
+    public let annotations: [Annotation]
 
     public init(
         image: CGImage,
         displaySize: CGSize,
         createdAt: Date = Date(),
         region: CaptureRegion? = nil,
-        fullFrame: CGImage? = nil
+        fullFrame: CGImage? = nil,
+        annotations: [Annotation] = []
     ) {
         self.image = image
         self.displaySize = displaySize
         self.createdAt = createdAt
         self.region = region
         self.fullFrame = fullFrame
+        self.annotations = annotations
     }
 
     public var scaleX: CGFloat {

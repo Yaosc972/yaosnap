@@ -127,6 +127,19 @@ struct ScrollStitcherTests {
         #expect(pixel(stitcher.image!, x: 0, y: 0) == 220)
     }
 
+    /// 首帧里的固定条带（会话标题栏 / 输入框）要能裁掉，否则之后会被挤到长图中间。
+    @Test func trimsFixedBands() {
+        let stitcher = ScrollStitcher()
+        stitcher.start(first: makeImage(width: 20, height: 100) { UInt8($0) })
+        #expect(stitcher.trimTop(10) == true)
+        #expect(stitcher.image?.height == 90)
+        #expect(pixel(stitcher.image!, x: 0, y: 0) == 10)
+        #expect(stitcher.trimBottom(20) == true)
+        #expect(stitcher.image?.height == 70)
+        // 裁到只剩很小的高度时不再继续，避免把图裁没
+        #expect(stitcher.trimTop(60) == false)
+    }
+
     @Test func stopsAtMaxHeight() {
         let stitcher = ScrollStitcher(maxHeightPx: 120)
         stitcher.start(first: makeImage(width: 20, height: 100) { UInt8($0) })

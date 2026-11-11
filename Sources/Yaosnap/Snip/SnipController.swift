@@ -26,6 +26,7 @@ final class SnipController {
         let displaySize: CGSize
         let region: CaptureRegion?
         let fullFrame: CGImage?
+        let annotations: [Annotation]
     }
 
     /// 翻译任务的设置快照：后端、目标语言与 DeepSeek 模型名。
@@ -458,7 +459,13 @@ final class SnipController {
             return
         }
         print("[snip] copied")
-        remember(image, displaySize: pending.viewRect.size, region: pending.region, fullFrame: pending.fullFrame)
+        remember(
+            image,
+            displaySize: pending.viewRect.size,
+            region: pending.region,
+            fullFrame: pending.fullFrame,
+            annotations: annotations(for: pending)
+        )
         cancel()
     }
 
@@ -477,7 +484,13 @@ final class SnipController {
             NSSound.beep()
             return
         }
-        remember(image, displaySize: pending.viewRect.size, region: pending.region, fullFrame: pending.fullFrame)
+        remember(
+            image,
+            displaySize: pending.viewRect.size,
+            region: pending.region,
+            fullFrame: pending.fullFrame,
+            annotations: annotations(for: pending)
+        )
         cancel()
     }
 
@@ -526,6 +539,9 @@ final class SnipController {
         }
         controller.onStalled = { [weak view] in
             view?.setScrollingMessage("抓帧过慢，已停止 · Enter 完成")
+        }
+        controller.onFramesMissed = { [weak view] in
+            view?.setScrollingMessage("滚动太快，有几帧没跟上 · 放慢一点 · Enter 完成")
         }
         scrollController = controller
         view.beginScrollingCapture()
@@ -600,7 +616,8 @@ final class SnipController {
                 image,
                 displaySize: pending.viewRect.size,
                 region: pending.region,
-                fullFrame: pending.fullFrame
+                fullFrame: pending.fullFrame,
+                annotations: annotations(for: pending)
             )
             return
         }
@@ -620,7 +637,8 @@ final class SnipController {
             image: image,
             displaySize: pending.viewRect.size,
             region: pending.region,
-            fullFrame: pending.fullFrame
+            fullFrame: pending.fullFrame,
+            annotations: annotations(for: pending)
         )
         // 保存面板里需要可见鼠标
         setCrosshair(false)
@@ -854,7 +872,13 @@ final class SnipController {
         do {
             try data.write(to: url)
             print("[snip] saved to \(url.path)")
-            remember(job.image, displaySize: job.displaySize, region: job.region, fullFrame: job.fullFrame)
+            remember(
+                job.image,
+                displaySize: job.displaySize,
+                region: job.region,
+                fullFrame: job.fullFrame,
+                annotations: job.annotations
+            )
             cancel()
         } catch {
             print("[snip] error: 写入 \(url.path) 失败: \(error.localizedDescription)")
@@ -873,7 +897,8 @@ final class SnipController {
         _ image: CGImage,
         displaySize: CGSize,
         region: CaptureRegion?,
-        fullFrame: CGImage?
+        fullFrame: CGImage?,
+        annotations: [Annotation] = []
     ) {
         guard let data = ImageOutput.pngData(from: image) else {
             print("[snip] error: PNG 编码失败")
@@ -885,7 +910,13 @@ final class SnipController {
         do {
             let url = try store.write(data)
             print("[snip] quick saved to \(url.path)")
-            remember(image, displaySize: displaySize, region: region, fullFrame: fullFrame)
+            remember(
+                image,
+                displaySize: displaySize,
+                region: region,
+                fullFrame: fullFrame,
+                annotations: annotations
+            )
             NSSound(named: "Glass")?.play()
             cancel()
         } catch {
@@ -1002,9 +1033,13 @@ final class SnipController {
 
     /// 复制 / 保存 / 分享共用的最终图合成：输出源裁剪 + 该屏画布上的标注。
     /// 阴影边距按输出像素缩放，24pt / 12pt 在 Retina 上仍是观感一致的尺寸。
+    /// 某个选区当前的标注。历史条目要连同标注一起存，回放才能还原。
+    private func annotations(for pending: PendingRegion) -> [Annotation] {
+        (overlayWindow(for: pending.displayID)?.contentView as? OverlayView)?.annotations ?? []
+    }
+
     private func renderPendingOutput(_ pending: PendingRegion, applyShadow: Bool) -> CGImage? {
-        let annotations = (overlayWindow(for: pending.displayID)?.contentView as? OverlayView)?
-            .annotations ?? []
+        let annotations = annotations(for: pending)
         guard let rendered = AnnotationExport.flatten(
             base: pending.sourceImage,
             cropRectPx: pending.cropRectPx,
@@ -1024,13 +1059,15 @@ final class SnipController {
         _ image: CGImage,
         displaySize: CGSize,
         region: CaptureRegion?,
-        fullFrame: CGImage? = nil
+        fullFrame: CGImage? = nil,
+        annotations: [Annotation] = []
     ) {
         let entry = CaptureHistoryEntry(
             image: image,
             displaySize: displaySize,
             region: region,
-            fullFrame: fullFrame
+            fullFrame: fullFrame,
+            annotations: annotations
         )
         history.insert(entry, at: 0)
         if history.count > Self.historyLimit {

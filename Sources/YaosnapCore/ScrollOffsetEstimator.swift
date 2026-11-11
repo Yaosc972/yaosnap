@@ -54,11 +54,16 @@ public struct ScrollOffsetEstimator: ScrollOffsetEstimating {
     /// 实测会挑出 -1286 / +1293 这种极端值，所以常规路径限制在 60% 位移内；
     /// 断链后重建同步时才放宽到 85%，宁可用一次大窗口把长图接回去。
     private let minimumOverlapFraction: CGFloat
-    /// 行剖面平均灰度差上限（0-255）。
-    /// 实测真实正确匹配的代价在 0.04~0.24，错误匹配在 2.4 以上；
-    /// 阈值放宽到 24 会把错误位移当成成功，这正是长图里出现重复段（同一段内容被拼两次）的原因。
-    private let maximumMeanCost: CGFloat = 2.0
-    /// 位移 0 的代价低于此值即判为静止画面，不再尝试其他位移。
+    /// 绝对代价上限（0-255），只用来兜底排除完全无关的画面。
+    ///
+    /// 不能用一个固定的严格阈值：同样是「正确匹配」，深色正文页面实测代价 0.04~0.24，
+    /// 而浅色 + 水印的聊天页面实测是 3.0~6.6。固定 2.0 会把后者全部判成失败
+    /// （实机日志：24 帧里有正确位移的帧全被丢弃），固定 24 又会把错误位移放进来。
+    /// 真正的判据是**相对基线**：正确位移的代价必须显著低于全部候选位移的中位数。
+    private let maximumMeanCost: CGFloat = 24
+    /// 低于中位数的这个比例才认。实测正确位移约为中位数的 0.1~0.3。
+    private let relativeCostRatio: CGFloat = 0.35
+    /// 代价低到这个绝对值以下时直接判静止，不参与相对比较。
     private let staticCostThreshold: CGFloat = 0.5
     /// 代价最小的前若干个候选逐个做分块校验，通过即采用。
     private let maximumCandidateAttempts = 12
@@ -67,12 +72,16 @@ public struct ScrollOffsetEstimator: ScrollOffsetEstimating {
     /// 取 2 时 ±1 个降采样像素已能覆盖取整误差。
     private let validationDownsampleScale = 2
     private let validationTileSize = 8
-    private let tileMatchDifferenceThreshold: CGFloat = 8
+    private let tileMatchDifferenceThreshold: CGFloat = 12
     private let minimumTileActivityRange = 8
-    private let minimumActiveTileCount = 4
-    private let matchingTileFractionThreshold: CGFloat = 0.5
+    private let minimumActiveTileCount = 3
+    private let matchingTileFractionThreshold: CGFloat = 0.30
     /// 判定「固定条带」时允许的同位置灰度差。
     private let stickyRowTolerance: CGFloat = 2.5
+    /// 固定条带里允许出现的不连续行数。
+    /// 顶部边框、悬停高亮、未读红点常常让紧贴边缘的那几行对不上；
+    /// 一旦从第 0 行起就严格连续判断，整条固定条带都会被判成 0，于是它被反复拼进长图。
+    private let maximumStickyGap = 4
 
     public init(minimumOverlapFraction: CGFloat = 0.40) {
         self.minimumOverlapFraction = minimumOverlapFraction
@@ -110,7 +119,7 @@ public struct ScrollOffsetEstimator: ScrollOffsetEstimating {
             columns: profileColumns, height: height
         )
         // 参与比较的行数下限：重叠区太小时任何位移都能凑出低代价，必须排除。
-        let minimumComparedRows = max(8, height / 6)
+        let minimumComparedRows = max(8, height / 10)
         var candidates = shiftCandidates(
             current: currentProfile, previous: previousProfile,
             columns: profileColumns, height: height, maximumShift: maximumShift,
@@ -146,10 +155,13 @@ public struct ScrollOffsetEstimator: ScrollOffsetEstimating {
             return abs(left.shift) < abs(right.shift)
         }
 
-        // 逐个验证前几个候选：分块一致性校验才是真正的判别器。
-        // 只看「最优代价是否明显优于次优」在文字密集页面上会大面积误杀（实测 cost 9.45 vs 9.47）。
+        // 相对基线：正确位移的代价必须显著低于全部候选的中位数。
+        let costs = candidates.map { $0.cost }.sorted()
+        let medianCost = costs[costs.count / 2]
+        let acceptThreshold = min(maximumMeanCost, max(staticCostThreshold, medianCost * relativeCostRatio))
+
         for candidate in candidates.prefix(maximumCandidateAttempts) {
-            guard candidate.cost <= maximumMeanCost else { break }
+            guard candidate.cost <= acceptThreshold else { break }
             guard matches(comparison, offsetPx: CGFloat(candidate.shift), sourceHeight: height) else {
                 continue
             }
@@ -263,15 +275,20 @@ public struct ScrollOffsetEstimator: ScrollOffsetEstimating {
             guard end - start > 4 else { continue }
             var total: CGFloat = 0
             var compared = 0
-            for y in start..<end where movingRows[y] {
-                let currentRow = y * columns
-                let previousRow = (y + shift) * columns
-                var rowTotal: Float = 0
-                for column in 0..<columns {
-                    rowTotal += abs(current[currentRow + column] - previous[previousRow + column])
+            // 隔行取样：位移精度不受影响，计算量减半。
+            var y = start
+            while y < end {
+                if movingRows[y] {
+                    let currentRow = y * columns
+                    let previousRow = (y + shift) * columns
+                    var rowTotal: Float = 0
+                    for column in 0..<columns {
+                        rowTotal += abs(current[currentRow + column] - previous[previousRow + column])
+                    }
+                    total += CGFloat(rowTotal) / CGFloat(columns)
+                    compared += 1
                 }
-                total += CGFloat(rowTotal) / CGFloat(columns)
-                compared += 1
+                y += 2
             }
             guard compared >= minimumComparedRows else { continue }
             results.append((shift, total / CGFloat(compared)))
@@ -291,21 +308,34 @@ public struct ScrollOffsetEstimator: ScrollOffsetEstimating {
     ) -> Int {
         guard height > 32 else { return 0 }
         let limit = height / 3
-        var sticky = 0
+        var lastMatch = 0
+        var gap = 0
         var y = height - 1
-        while sticky < limit {
-            let rowBase = y * columns
-            var rowDifference: Float = 0
-            for column in 0..<columns {
-                rowDifference += abs(current[rowBase + column] - previous[rowBase + column])
+        while y >= height - limit, y >= 0 {
+            if rowDifference(current, previous, row: y, columns: columns) <= stickyRowTolerance {
+                gap = 0
+                lastMatch = height - y
+            } else {
+                gap += 1
+                if gap > maximumStickyGap { break }
             }
-            let mean = CGFloat(rowDifference) / CGFloat(columns)
-            guard mean <= stickyRowTolerance else { break }
-            sticky += 1
             y -= 1
-            if y < 0 { break }
         }
-        return sticky
+        return lastMatch
+    }
+
+    private func rowDifference(
+        _ current: [Float],
+        _ previous: [Float],
+        row: Int,
+        columns: Int
+    ) -> CGFloat {
+        let rowBase = row * columns
+        var total: Float = 0
+        for column in 0..<columns {
+            total += abs(current[rowBase + column] - previous[rowBase + column])
+        }
+        return CGFloat(total) / CGFloat(columns)
     }
 
     /// 从画面顶部往下数，统计「与上一帧同位置几乎一致」的连续行数（固定标题栏/工具条）。
@@ -317,21 +347,20 @@ public struct ScrollOffsetEstimator: ScrollOffsetEstimating {
     ) -> Int {
         guard height > 32 else { return 0 }
         let limit = height / 3
-        var sticky = 0
+        var lastMatch = 0
+        var gap = 0
         var y = 0
-        while sticky < limit {
-            let rowBase = y * columns
-            var rowDifference: Float = 0
-            for column in 0..<columns {
-                rowDifference += abs(current[rowBase + column] - previous[rowBase + column])
+        while y < limit, y < height {
+            if rowDifference(current, previous, row: y, columns: columns) <= stickyRowTolerance {
+                gap = 0
+                lastMatch = y + 1
+            } else {
+                gap += 1
+                if gap > maximumStickyGap { break }
             }
-            let mean = CGFloat(rowDifference) / CGFloat(columns)
-            guard mean <= stickyRowTolerance else { break }
-            sticky += 1
             y += 1
-            if y >= height { break }
         }
-        return sticky
+        return lastMatch
     }
 
     // MARK: - 分块一致性校验

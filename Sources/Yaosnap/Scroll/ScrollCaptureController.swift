@@ -13,6 +13,8 @@ final class ScrollCaptureController {
     var onLimitReached: (() -> Void)?
     /// 抓帧持续超时（连续三次超过 1 秒）时回调，调用方负责提示并收尾。
     var onStalled: (() -> Void)?
+    /// 连续漏帧过多时回调（滚动太快，配准跟不上）。不中断会话，只是提示。
+    var onFramesMissed: (() -> Void)?
 
     private let capturer: any ScrollFrameCapturing
     private let globalRect: CGRect
@@ -30,6 +32,9 @@ final class ScrollCaptureController {
     /// 预览刷新按高度增长节流，避免每 0.15s 重建一次大图。
     private var lastReportedHeight = 0
 
+    /// 连续漏这么多帧就提示一次「滚动太快」。
+    private static let missedFrameHintThreshold = 8
+
     /// 预览图高度至少增长这么多像素才回调一次 onUpdate。
     private static let previewUpdateThresholdPx = 24
 
@@ -44,6 +49,7 @@ final class ScrollCaptureController {
     func start(firstFrame: CGImage) {
         // 防御重复 start：先清掉可能遗留的旧 timer。
         stopTimer()
+        ScrollDebug.log("start \(firstFrame.width)x\(firstFrame.height) interval=\(interval)")
         isRunning = true
         lastReportedHeight = 0
         let engine = self.engine
@@ -63,6 +69,8 @@ final class ScrollCaptureController {
         isRunning = false
         // engine 只在 workQueue 上访问；sync 等待在途帧拼完再取整图。
         let image = workQueue.sync { engine.image }
+        ScrollDebug.log("finish height=\(image?.height ?? 0) frames=\(workQueue.sync { engine.frameCount })")
+        ScrollDebug.save(image, name: "result.png")
         guard let image else { return }
         // 收尾始终给出完整长图，不受预览节流影响。
         onFinish?(image)
@@ -115,11 +123,30 @@ final class ScrollCaptureController {
             let engine = self.engine
             workQueue.async { [weak self] in
                 let state = engine.consume(frame: frame)
+                let estimate = engine.lastEstimate
+                let misses = engine.consecutiveMisses
+                ScrollDebug.log(
+                    String(
+                        format: "frame %dx%d offset=%@ cost=%.2f stickyT=%d stickyB=%d changed=%@ frames=%d height=%d",
+                        frame.width, frame.height,
+                        estimate.map { String(format: "%.0f", $0.offsetPx) } ?? "nil",
+                        estimate?.confidence ?? 0,
+                        engine.stickyTopPx,
+                        engine.stickyBottomPx,
+                        state?.changed == true ? "Y" : "n",
+                        state?.frameCount ?? -1,
+                        engine.image?.height ?? 0
+                    )
+                )
+                if ScrollDebug.isEnabled { Self.dumpDebugFrame(frame) }
                 let image = state?.changed == true ? engine.image : nil
                 Task { @MainActor in
                     guard let self else { return }
                     self.inFlight = false
                     guard self.isRunning else { return }
+                    if misses >= Self.missedFrameHintThreshold, misses % Self.missedFrameHintThreshold == 0 {
+                        self.onFramesMissed?()
+                    }
                     if let state { self.handle(state, image: image) }
                 }
             }
@@ -141,6 +168,15 @@ final class ScrollCaptureController {
             group.cancelAll()
             return result
         }
+    }
+
+    /// 取证：把前若干帧落盘，便于用同一批真实帧离线回放验证引擎。
+    private static var dumpedFrameCount = 0
+
+    private static func dumpDebugFrame(_ frame: CGImage) {
+        guard dumpedFrameCount < 24 else { return }
+        dumpedFrameCount += 1
+        ScrollDebug.save(frame, name: String(format: "frame-%02d.png", dumpedFrameCount))
     }
 
     /// 主线程消费拼接结果：刷新预览 / 处理到达上限。

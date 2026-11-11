@@ -16,6 +16,8 @@ public final class CaptureHistoryStore {
         var region: StoredRegion?
         /// 整屏冻结帧的文件名，旧索引没有。
         var fullFrameFileName: String?
+        /// 当时的标注，旧索引没有；缺失时回放就是一张未标注的图。
+        var annotations: [Annotation]?
     }
 
     /// 选区在源屏上的位置，回放时按它还原原始大小与位置。
@@ -107,7 +109,8 @@ public final class CaptureHistoryStore {
                     let url = directory.appendingPathComponent(name)
                     guard fileManager.fileExists(atPath: url.path) else { return nil }
                     return Self.loadImage(at: url)
-                }
+                },
+                annotations: record.annotations ?? []
             ))
         }
         return entries
@@ -147,7 +150,8 @@ public final class CaptureHistoryStore {
             displayWidth: Double(entry.displaySize.width),
             displayHeight: Double(entry.displaySize.height),
             region: entry.region.map(StoredRegion.init),
-            fullFrameFileName: fullFrameFileName
+            fullFrameFileName: fullFrameFileName,
+            annotations: entry.annotations.isEmpty ? nil : entry.annotations
         ), at: 0)
 
         let capacity = max(0, limit)

@@ -41,6 +41,29 @@ public final class ScrollStitcher {
         )
     }
 
+    /// 裁掉长图顶部的固定条带（会话标题栏之类）。
+    /// 首帧里必然带着它，若不裁掉，之后往前插的内容会把它挤到长图中间。
+    @discardableResult
+    public func trimTop(_ pixels: Int) -> Bool {
+        guard let current = image, pixels > 0, current.height - pixels > 16 else { return false }
+        guard let cropped = current.cropping(
+            to: CGRect(x: 0, y: pixels, width: current.width, height: current.height - pixels)
+        ) else { return false }
+        image = cropped
+        return true
+    }
+
+    /// 裁掉长图底部的固定条带（输入框之类）。
+    @discardableResult
+    public func trimBottom(_ pixels: Int) -> Bool {
+        guard let current = image, pixels > 0, current.height - pixels > 16 else { return false }
+        guard let cropped = current.cropping(
+            to: CGRect(x: 0, y: 0, width: current.width, height: current.height - pixels)
+        ) else { return false }
+        image = cropped
+        return true
+    }
+
     /// - Parameters:
     ///   - offsetPx: 正数表示内容向下滚动（新内容从底部出现），负数表示内容向上滚动（新内容从顶部出现）。
     ///   - stickyBottomPx: 画面底部固定不动的条带高度（输入框、播放条），追加时剔除。
