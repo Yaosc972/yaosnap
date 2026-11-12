@@ -20,6 +20,7 @@ swiftc -O -target "$(uname -m)-apple-macos12.0" \
     Sources/Yaosnap/Annotate/ToolStyleStore.swift \
     Sources/Yaosnap/Scroll/ScrollCaptureController.swift \
     Sources/Yaosnap/Scroll/ScrollFrameCapturer.swift \
+    Sources/Yaosnap/Scroll/ScrollDebug.swift \
     Sources/Yaosnap/Scroll/ScrollResultWindow.swift \
     Sources/Yaosnap/StatusItemController.swift \
     Tools/verify/P1E2E.swift \
