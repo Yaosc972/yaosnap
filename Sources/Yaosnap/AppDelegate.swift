@@ -100,6 +100,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         applyRuntimeSettings()
         registerHotkeys()
         registerFixedHotkeys()
+        // 工具条图标在启动后预热：第一次呼出截图不必等这 30 多个图标栅格化。
+        DispatchQueue.main.async { ToolbarGlyph.preload() }
     }
 
     private func showSettings() {

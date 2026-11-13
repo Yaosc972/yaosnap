@@ -1,6 +1,14 @@
 import AppKit
 import YaosnapCore
 
+/// 贴图底栏只用到一次颜色转换，单独收一个入口，
+/// 免得为了它把整个 AnnotateToolbar 拖进贴图 harness 的编译清单。
+enum AnnotateToolbarColor {
+    static func ns(_ color: RGBAColor) -> NSColor {
+        NSColor(srgbRed: color.r, green: color.g, blue: color.b, alpha: color.a)
+    }
+}
+
 /// 标注模式底栏：与截图主界面同一套工具（矩形/圆角/椭圆/直线/箭头/折线/画笔/记号笔/
 /// 马赛克/矩形马赛克/模糊/放大镜/文字/序号/橡皮擦），外加颜色、笔宽、撤销与完成取消。
 /// 仅在标注模式显示。
@@ -23,9 +31,13 @@ final class PinAnnotateBar: NSView {
 
     /// 底栏必须覆盖截图主界面的全部工具，验收 harness 用它做完整性断言。
     var exposedTools: [ShapeKind] { Array(toolButtons.keys) }
-    private lazy var colorButton = PinToolbar.button("paintpalette", "标注颜色", #selector(colorTapped), target: self)
-    private lazy var penButton = PinToolbar.button("pencil.tip", "笔宽", #selector(penTapped), target: self)
-    private lazy var undoButton = PinToolbar.button("arrow.uturn.backward", "撤销标注", #selector(undoTapped), target: self)
+    private lazy var colorButton = PinToolbar.glyphButton(
+        .close, "标注颜色", #selector(colorTapped), target: self
+    )
+    private lazy var penButton = PinToolbar.glyphButton(
+        .close, "笔宽", #selector(penTapped), target: self
+    )
+    private lazy var undoButton = PinToolbar.glyphButton(.undo, "撤销标注", #selector(undoTapped), target: self)
 
     init() {
         super.init(frame: .zero)
@@ -38,7 +50,12 @@ final class PinAnnotateBar: NSView {
             var views: [NSView] = []
             for kind in kinds {
                 guard let entry = ShapeCatalog.entry(for: kind) else { continue }
-                let button = PinToolbar.button(entry.symbol, entry.title, #selector(toolTapped(_:)), target: self)
+                let button = PinToolbar.glyphButton(
+                    ToolbarGlyph.shape(kind),
+                    entry.title,
+                    #selector(toolTapped(_:)),
+                    target: self
+                )
                 button.tag = Self.tag(for: kind)
                 toolButtons[kind] = button
                 views.append(button)
@@ -55,8 +72,8 @@ final class PinAnnotateBar: NSView {
             penButton,
             PinToolbar.separator(),
             undoButton,
-            PinToolbar.button("checkmark", "完成标注", #selector(finishTapped), target: self),
-            PinToolbar.button("xmark", "取消标注", #selector(cancelTapped), target: self),
+            PinToolbar.glyphButton(.check, "完成标注", #selector(finishTapped), target: self),
+            PinToolbar.glyphButton(.close, "取消标注", #selector(cancelTapped), target: self),
         ])
         controls.orientation = .horizontal
         controls.alignment = .centerY
@@ -100,11 +117,13 @@ final class PinAnnotateBar: NSView {
         for (kind, button) in toolButtons {
             button.contentTintColor = kind == tool
                 ? .white
-                : NSColor(white: 1, alpha: 0.55)
+                : NSColor(white: 1, alpha: 0.5)
         }
         colorButton.image = Self.swatchImage(color)
+        penButton.image = ToolbarGlyph.penWidth(pen)
         penButton.toolTip = "笔宽 \(pen.rawValue)"
         undoButton.isEnabled = canUndo
+        undoButton.alphaValue = canUndo ? 1 : 0.35
     }
 
     private static func tag(for kind: ShapeKind) -> Int {
@@ -115,14 +134,9 @@ final class PinAnnotateBar: NSView {
         ShapeKind.allCases.indices.contains(tag) ? ShapeKind.allCases[tag] : nil
     }
 
+    /// 颜色按钮：与截图工具条同一套画法，带白圈才看得出是色块而不是普通圆点。
     private static func swatchImage(_ color: RGBAColor) -> NSImage {
-        let side = CGFloat(12)
-        let image = NSImage(size: NSSize(width: side, height: side))
-        image.lockFocus()
-        NSColor(cgColor: color.cgColor)?.setFill()
-        NSBezierPath(ovalIn: NSRect(x: 0, y: 0, width: side, height: side)).fill()
-        image.unlockFocus()
-        return image
+        ToolbarGlyph.colorDot(AnnotateToolbarColor.ns(color))
     }
 
     @objc private func toolTapped(_ sender: NSButton) {

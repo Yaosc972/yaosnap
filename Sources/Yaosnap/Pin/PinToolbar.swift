@@ -85,6 +85,30 @@ final class PinToolbar: NSView {
     }
 
     /// 顶栏与标注底栏共用的图标按钮工厂。
+    /// 自绘图标版本：标注底栏与截图工具条共用同一套图标。
+    static func glyphButton(
+        _ glyph: ToolbarGlyph,
+        _ title: String,
+        _ action: Selector,
+        target: AnyObject
+    ) -> NSButton {
+        let button = NSButton()
+        button.isBordered = false
+        button.image = ToolbarGlyph.image(glyph)
+        button.imageScaling = .scaleNone
+        button.imagePosition = .imageOnly
+        button.contentTintColor = NSColor(white: 1, alpha: 0.9)
+        button.toolTip = title
+        button.target = target
+        button.action = action
+        button.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            button.widthAnchor.constraint(equalToConstant: Self.buttonSide),
+            button.heightAnchor.constraint(equalToConstant: Self.buttonSide),
+        ])
+        return button
+    }
+
     static func button(_ symbol: String, _ title: String, _ action: Selector, target: AnyObject) -> NSButton {
         let button = NSButton()
         button.isBordered = false

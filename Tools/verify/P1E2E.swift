@@ -301,11 +301,15 @@ final class Harness {
                 fail("PERF", "第 \(run) 次 cancel 后仍有可见覆盖窗口")
             }
         }
-        let mean = samples.reduce(0, +) / Double(samples.count)
-        let minValue = samples.min() ?? 0
-        let maxValue = samples.max() ?? 0
+        // 第一个样本夹着进程冷启动（dyld、首次 SCK / CoreGraphics 初始化），
+        // 与「按热键后多久看到覆盖层」不是一回事：生产里那份开销在启动时就付掉了。
+        // 断言取后四个样本的均值，原始 5 个样本照样打印。
+        let warm = Array(samples.dropFirst())
+        let mean = warm.reduce(0, +) / Double(max(1, warm.count))
+        let minValue = warm.min() ?? 0
+        let maxValue = warm.max() ?? 0
         let detail = String(
-            format: "runs=[%@] mean=%.1fms min=%.1fms max=%.1fms 目标<100ms",
+            format: "runs=[%@] warm-mean=%.1fms min=%.1fms max=%.1fms 目标<100ms（首样本为冷启动，不计入）",
             samples.map { String(format: "%.1f", $0) }.joined(separator: ", "),
             mean, minValue, maxValue
         )
@@ -1032,6 +1036,8 @@ struct P1E2EMain {
             let evidence = base.appendingPathComponent("evidence", isDirectory: true)
             try? FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
 
+            // 与 AppDelegate 一致：启动后预热工具条图标。
+            ToolbarGlyph.preload()
             let harness = Harness(evidenceDir: evidence)
             harness.runAll()
         }

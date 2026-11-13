@@ -27,10 +27,10 @@ final class AnnotateToolbar: NSView {
 
     private enum Metrics {
         static let buttonSide: CGFloat = 30
-        static let spacing: CGFloat = 2
+        static let spacing: CGFloat = 1
         static let padding: CGFloat = 7
         static let separatorWidth: CGFloat = 1
-        static let separatorGap: CGFloat = 6
+        static let separatorGap: CGFloat = 5
         static let ratioLabelWidth: CGFloat = 36
         static let height: CGFloat = buttonSide + padding * 2
         // 复杂表达式拆开，编译器在单表达式里推不动
@@ -168,28 +168,35 @@ final class AnnotateToolbar: NSView {
             addSubview(button)
             x += side + Metrics.spacing
         }
-        func separator() {
-            x += Metrics.separatorGap - Metrics.spacing
+        /// 族分隔比动作分隔窄一档：只是给眼睛一个落点，不该抢宽度。
+        func separator(compact: Bool = false) {
+            let gap = compact ? Metrics.separatorGap - 2 : Metrics.separatorGap
+            x += gap - Metrics.spacing
             let bar = NSView(frame: NSRect(
-                x: x, y: Metrics.padding + 5,
-                width: Metrics.separatorWidth, height: side - 10
+                x: x, y: Metrics.padding + 6,
+                width: Metrics.separatorWidth, height: side - 12
             ))
             bar.wantsLayer = true
-            bar.layer?.backgroundColor = NSColor(white: 1, alpha: 0.25).cgColor
+            bar.layer?.backgroundColor = NSColor(white: 1, alpha: 0.22).cgColor
             addSubview(bar)
-            x += Metrics.separatorWidth + Metrics.separatorGap
+            x += Metrics.separatorWidth + gap
         }
 
         selectButton = makeHoverButton(
-            symbol: "cursorarrow",
+            glyph: .select,
             title: "选择",
             action: #selector(selectModeTapped)
         )
         place(selectButton)
         separator()
+        // 形状按族分组，15 个图标连成一片没有落点。
+        var previousFamily: ToolFamily?
         for (index, entry) in ShapeCatalog.p2.enumerated() {
+            let family = entry.kind.family
+            if let previousFamily, previousFamily != family { separator(compact: true) }
+            previousFamily = family
             let button = makeHoverButton(
-                symbol: entry.symbol,
+                glyph: ToolbarGlyph.shape(entry.kind),
                 title: entry.title,
                 action: #selector(toolTapped(_:))
             )
@@ -198,95 +205,94 @@ final class AnnotateToolbar: NSView {
             toolButtons[entry.kind] = button
         }
         separator()
-        colorButton = makeHoverButton(symbol: nil, title: "颜色", action: #selector(colorTapped))
+        colorButton = makeHoverButton(glyph: nil, title: "颜色", action: #selector(colorTapped))
         colorButton.onScroll = { [weak self] deltaY in self?.stepAlpha(deltaY) }
         place(colorButton)
-        penButton = makeHoverButton(symbol: nil, title: "笔尖", action: #selector(penTapped))
+        penButton = makeHoverButton(glyph: nil, title: "笔尖", action: #selector(penTapped))
         place(penButton)
-        lineStyleButton = makeHoverButton(symbol: nil, title: "线型", action: #selector(lineStyleTapped))
-        lineStyleButton.contentTintColor = .white
+        lineStyleButton = makeHoverButton(glyph: nil, title: "线型", action: #selector(lineStyleTapped))
         place(lineStyleButton)
-        backgroundButton = makeHoverButton(symbol: nil, title: "背景", action: #selector(backgroundTapped))
+        backgroundButton = makeHoverButton(glyph: nil, title: "背景", action: #selector(backgroundTapped))
         place(backgroundButton)
-        arrowHeadsButton = makeHoverButton(symbol: nil, title: "箭头", action: #selector(arrowHeadsTapped))
+        arrowHeadsButton = makeHoverButton(glyph: nil, title: "箭头", action: #selector(arrowHeadsTapped))
         place(arrowHeadsButton)
-        undoButton = makeHoverButton(
-            symbol: "arrow.uturn.backward",
-            title: "撤销",
-            action: #selector(undoTapped)
-        )
+        separator()
+        undoButton = makeHoverButton(glyph: .undo, title: "撤销", action: #selector(undoTapped))
         place(undoButton)
-        redoButton = makeHoverButton(
-            symbol: "arrow.uturn.forward",
-            title: "重做",
-            action: #selector(redoTapped)
-        )
+        redoButton = makeHoverButton(glyph: .redo, title: "重做", action: #selector(redoTapped))
         place(redoButton)
         separator()
         ratioLabel = NSTextField(labelWithString: initialAspectRatio.title)
-        ratioLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-        ratioLabel.textColor = NSColor(white: 1, alpha: 0.7)
+        ratioLabel.font = .monospacedSystemFont(ofSize: 10, weight: .medium)
+        ratioLabel.textColor = NSColor(white: 1, alpha: 0.75)
         ratioLabel.alignment = .center
+        ratioLabel.wantsLayer = true
+        ratioLabel.layer?.backgroundColor = NSColor(white: 1, alpha: 0.10).cgColor
+        ratioLabel.layer?.cornerRadius = 5
         ratioLabel.frame = NSRect(
             x: x,
-            y: Metrics.padding,
+            y: Metrics.padding + 4,
             width: Metrics.ratioLabelWidth,
-            height: side
+            height: side - 8
         )
         addSubview(ratioLabel)
         x += Metrics.ratioLabelWidth + Metrics.spacing
-        place(makeHoverButton(symbol: "doc.on.doc", title: "复制", action: #selector(copyTapped)))
+        place(makeHoverButton(glyph: .copy, title: "复制", action: #selector(copyTapped)))
         textButton = makeHoverButton(
-            symbol: "text.viewfinder",
+            glyph: .extractText,
             title: "提取文字",
             action: #selector(extractTextTapped)
         )
         place(textButton)
         translateButton = makeHoverButton(
-            symbol: "character.bubble",
+            glyph: .translate,
             title: "翻译",
             action: #selector(translateTapped)
         )
         place(translateButton)
+        // 朝上有默认值：忘记同步时也不会露出 NSButton 的 "Button" 占位文字。
         translateTargetButton = makeHoverButton(
-            symbol: nil,
+            glyph: nil,
             title: TranslationTarget.auto.shortTitle,
             action: #selector(translateTargetTapped)
         )
         translateTargetButton.toolTip = "翻译方向"
+        translateTargetButton.font = .systemFont(ofSize: 10, weight: .medium)
+        translateTargetButton.wantsLayer = true
+        translateTargetButton.layer?.backgroundColor = NSColor(white: 1, alpha: 0.10).cgColor
+        translateTargetButton.layer?.cornerRadius = 5
         place(translateTargetButton)
         scrollingButton = makeHoverButton(
-            // "scroll" 是 macOS 13 起的符号，部署目标 12.0 上会显示空白。
-            symbol: "arrow.up.arrow.down",
+            glyph: .scroll,
             title: "滚动截图",
             action: #selector(scrollingCaptureTapped)
         )
         place(scrollingButton)
         barcodeButton = makeHoverButton(
-            symbol: "qrcode.viewfinder",
+            glyph: .barcode,
             title: "识别码",
             action: #selector(scanBarcodeTapped)
         )
         place(barcodeButton)
         saveButton = makeHoverButton(
-            symbol: "square.and.arrow.down",
+            glyph: .save,
             title: "保存",
             action: #selector(saveTapped)
         )
         place(saveButton)
         pinButton = makeHoverButton(
-            symbol: "pin",
+            glyph: .pin,
             title: "贴到屏幕",
             action: #selector(pinTapped)
         )
         place(pinButton)
         shareButton = makeHoverButton(
-            symbol: "square.and.arrow.up",
+            glyph: .share,
             title: "分享",
             action: #selector(shareTapped)
         )
         place(shareButton)
-        place(makeHoverButton(symbol: "xmark", title: "取消", action: #selector(cancelTapped)))
+        place(makeHoverButton(glyph: .close, title: "取消", action: #selector(cancelTapped)))
         // 宽度按实际排布收口，增删按钮不必再同步 Metrics.width。
         setFrameSize(NSSize(
             width: x - Metrics.spacing + Metrics.padding,
@@ -295,20 +301,16 @@ final class AnnotateToolbar: NSView {
     }
 
     private func makeHoverButton(
-        symbol: String?,
+        glyph: ToolbarGlyph?,
         title: String,
         action: Selector
     ) -> HoverButton {
         let button = HoverButton()
         button.isBordered = false
         button.refusesFirstResponder = true
-        if let symbol {
-            button.image = NSImage(
-                systemSymbolName: symbol,
-                accessibilityDescription: title
-            )?.withSymbolConfiguration(
-                NSImage.SymbolConfiguration(pointSize: 15, weight: .medium)
-            )
+        if let glyph {
+            button.image = ToolbarGlyph.image(glyph)
+            button.imageScaling = .scaleNone
             button.contentTintColor = .white
         }
         button.toolTip = title
@@ -317,24 +319,9 @@ final class AnnotateToolbar: NSView {
         return button
     }
 
-    /// 实心圆点图标，颜色/笔尖按钮与弹层色块共用。
+    /// 实心圆点图标，颜色/笔尖按钮与弹层色块共用。画法收在图标库里，贴图底栏也要用。
     static func dotImage(diameter: CGFloat, color: NSColor, ringed: Bool = false) -> NSImage {
-        let inset: CGFloat = 3
-        let size = NSSize(width: diameter + inset * 2, height: diameter + inset * 2)
-        let image = NSImage(size: size)
-        image.lockFocus()
-        let circle = NSBezierPath(ovalIn: NSRect(
-            x: inset, y: inset, width: diameter, height: diameter
-        ))
-        color.setFill()
-        circle.fill()
-        if ringed {
-            NSColor.white.setStroke()
-            circle.lineWidth = 2
-            circle.stroke()
-        }
-        image.unlockFocus()
-        return image
+        ToolbarGlyph.colorDot(color, ringed: ringed)
     }
 
     /// 颜色按钮上滚轮调透明度。档位从 100% 递减排列，向上滚往更不透明走。
@@ -352,47 +339,40 @@ final class AnnotateToolbar: NSView {
         onStyleChange?(currentStyle)
     }
 
-    private static func penDotDiameter(_ pen: PenSize) -> CGFloat {
-        4 + CGFloat(pen.rawValue - 1) * 3
-    }
-
     /// 刷新颜色/笔尖/线型/背景/箭头按钮，反映当前样式。
     /// 非描边类形状禁用电线型按钮，非箭头形状禁用箭头按钮。
     private func refreshStyleButtons() {
-        colorButton.image = Self.dotImage(diameter: 16, color: Self.nsColor(currentStyle.color))
-        penButton.image = Self.dotImage(
-            diameter: Self.penDotDiameter(currentStyle.pen),
-            color: .white
+        // 颜色按钮带白圈，否则和「笔宽」的点一样只是个圆点，看不出是色块。
+        colorButton.image = Self.dotImage(
+            diameter: 12,
+            color: Self.nsColor(currentStyle.color),
+            ringed: true
         )
-        lineStyleButton.image = Self.lineStyleImage(currentStyle.lineStyle)
-        lineStyleButton.isEnabled = selectedKind.supportsLineStyle
-        backgroundButton.attributedTitle = Self.backgroundTitle(
-            BackgroundCycle.of(currentStyle.background)
+        penButton.image = ToolbarGlyph.penWidth(currentStyle.pen)
+        lineStyleButton.image = ToolbarGlyph.lineStyle(currentStyle.lineStyle)
+        backgroundButton.image = ToolbarGlyph.background(
+            Self.swatch(currentStyle.background),
+            tint: Self.nsColor(currentStyle.color)
         )
-        arrowHeadsButton.attributedTitle = Self.arrowHeadsTitle(currentStyle.arrowHeads)
-        arrowHeadsButton.isEnabled = selectedKind == .arrow
+        arrowHeadsButton.image = ToolbarGlyph.arrowHeads(currentStyle.arrowHeads)
+        // 不适用的按钮压暗：模板图不会自动置灰。
+        for (button, enabled) in [
+            (lineStyleButton!, selectedKind.supportsLineStyle),
+            (arrowHeadsButton!, selectedKind == .arrow),
+        ] {
+            button.isEnabled = enabled
+            button.alphaValue = enabled ? 1 : 0.3
+        }
     }
 
-    /// 箭头按钮无图标，用箭头符号表示两端带头方式。
-    private static func arrowHeadsTitle(_ heads: ArrowHeads) -> NSAttributedString {
-        NSAttributedString(
-            string: heads.title,
-            attributes: [
-                .foregroundColor: NSColor.white,
-                .font: NSFont.systemFont(ofSize: 11, weight: .medium),
-            ]
-        )
-    }
-
-    /// 背景按钮无图标，用标题表示当前档位。
-    private static func backgroundTitle(_ cycle: BackgroundCycle) -> NSAttributedString {
-        NSAttributedString(
-            string: cycle.title,
-            attributes: [
-                .foregroundColor: NSColor.white,
-                .font: NSFont.systemFont(ofSize: 11, weight: .medium),
-            ]
-        )
+    /// 背景档位 → 图标状态。
+    private static func swatch(_ background: RGBAColor?) -> ToolbarGlyph.BackgroundSwatch {
+        switch BackgroundCycle.of(background) {
+        case .none: return .none
+        case .white: return .white
+        case .black: return .black
+        case .text: return .tint
+        }
     }
 
     /// 背景按钮的四档循环：无 → 白 → 黑 → 文字色。档位只由样式反推，不另存状态。
@@ -401,15 +381,6 @@ final class AnnotateToolbar: NSView {
 
         static let whiteColor = RGBAColor(r: 1, g: 1, b: 1, a: 0.85)
         static let blackColor = RGBAColor(r: 0, g: 0, b: 0, a: 0.70)
-
-        var title: String {
-            switch self {
-            case .none: return "背景"
-            case .white: return "白"
-            case .black: return "黑"
-            case .text: return "彩"
-            }
-        }
 
         /// 当前样式落在哪一档。非白非黑的自定义背景按文字色档处理。
         static func of(_ background: RGBAColor?) -> BackgroundCycle {

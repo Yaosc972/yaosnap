@@ -19,6 +19,7 @@ swiftc -O -target "$(uname -m)-apple-macos12.0" \
     Sources/Yaosnap/Scroll/ScrollDebug.swift \
     Sources/Yaosnap/Scroll/ScrollResultWindow.swift \
     Sources/Yaosnap/Annotate/AnnotateToolbar.swift \
+    Sources/Yaosnap/Annotate/ToolbarGlyphs.swift \
     Sources/Yaosnap/Annotate/AnnotationCanvas.swift \
     Sources/Yaosnap/Annotate/ToolStyleStore.swift \
     Tools/verify/P2AnnotateE2E.swift \
